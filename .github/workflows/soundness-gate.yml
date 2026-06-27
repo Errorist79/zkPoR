@@ -1,0 +1,43 @@
+name: soundness-gate
+
+# End-to-end on-chain soundness gate for the production Proof-of-Reserves
+# pipeline. Runs on a SELF-HOSTED runner on the toolchain box: the gate needs
+# the BN254 host functions (Protocol-26 localnet) and the real Noir/bb proving
+# toolchain, which hosted GitHub runners do not provide. See tools/gate/README.md
+# for the runner requirements. No credentials are used.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'circuits/**'
+      - 'contracts/**'
+      - 'tools/**'
+      - 'scripts/versions.env'
+      - '.github/workflows/soundness-gate.yml'
+  pull_request:
+    paths:
+      - 'circuits/**'
+      - 'contracts/**'
+      - 'tools/**'
+      - 'scripts/versions.env'
+      - '.github/workflows/soundness-gate.yml'
+  workflow_dispatch:
+
+# One gate run at a time: it deploys to a shared local network on the runner.
+concurrency:
+  group: soundness-gate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    runs-on: [self-hosted, zkpor]
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run production soundness gate
+        env:
+          START_LOCALNET: "1"
+        run: bash tools/gate/soundness-gate.sh
