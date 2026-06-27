@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Start a Protocol 26 localnet (quickstart "future" image) and register the
-# network profile. Adapted from the yugocabrio reference.
+# Start a Protocol 27 localnet (quickstart nightly image, protocol pinned via the
+# --protocol-version flag) and register the network profile. Adapted from the
+# yugocabrio reference.
 set -e
 source "$(dirname "${BASH_SOURCE[0]}")/config.sh"
 
 echo -e "${BLUE}Starting Stellar localnet container ($STELLAR_CONTAINER_NAME, Protocol $PROTOCOL_VERSION)...${NC}"
-stellar container start -t "$QUICKSTART_IMAGE_TAG" --name "$STELLAR_CONTAINER_NAME" --limits unlimited "$@"
+stellar container start --name "$STELLAR_CONTAINER_NAME" --limits unlimited \
+  --image-tag-override "$QUICKSTART_IMAGE_TAG" --protocol-version "$PROTOCOL_VERSION" "$@"
 
 echo -e "${BLUE}Configuring network profile ($STELLAR_NETWORK_NAME)...${NC}"
 stellar network add "$STELLAR_NETWORK_NAME" \

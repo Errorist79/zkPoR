@@ -2,7 +2,7 @@
 # Build circuits, build + optimize the verifier contract, deploy it with the
 # circuit VK set at construction.
 #
-# NOTE: On Stellar CLI 26.1.0, `stellar contract build --optimize` optimizes the
+# NOTE: On Stellar CLI 27.0.0, `stellar contract build --optimize` optimizes the
 # wasm in place (the standalone `stellar contract optimize` is deprecated here).
 set -e
 source "$(dirname "${BASH_SOURCE[0]}")/config.sh"

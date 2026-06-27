@@ -3,7 +3,7 @@
 //!
 //! Adapted from the yugocabrio reference contract `rs-soroban-ultrahonk` (MIT).
 //! It is a thin wrapper around the host-accelerated `ultrahonk_soroban_verifier`
-//! crate, which performs the BN254 MSM and pairing checks through Protocol 26
+//! crate, which performs the BN254 MSM and pairing checks through Protocol 26+
 //! (CAP-0080) host functions. The verification key is set once at deploy time.
 
 use soroban_sdk::{contract, contracterror, contractimpl, symbol_short, Bytes, Env, Symbol};

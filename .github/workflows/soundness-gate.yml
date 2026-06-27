@@ -2,7 +2,7 @@ name: soundness-gate
 
 # End-to-end on-chain soundness gate for the production Proof-of-Reserves
 # pipeline. Runs on a SELF-HOSTED runner on the toolchain box: the gate needs
-# the BN254 host functions (Protocol-26 localnet) and the real Noir/bb proving
+# the BN254 host functions (Protocol-27 localnet) and the real Noir/bb proving
 # toolchain, which hosted GitHub runners do not provide. See tools/gate/README.md
 # for the runner requirements. No credentials are used.
 

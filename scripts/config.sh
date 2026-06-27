@@ -35,7 +35,7 @@ export STELLAR_SOURCE_ACCOUNT="${STELLAR_SOURCE_ACCOUNT:-alice}"
 export STELLAR_CONTAINER_NAME="${STELLAR_CONTAINER_NAME:-stellar-local}"
 
 # Build artifacts. The package "ultrahonk-verifier" emits ultrahonk_verifier.wasm.
-# `stellar contract build --optimize` (26.1.0) optimizes it in place.
+# `stellar contract build --optimize` ($STELLAR_CLI_VERSION) optimizes it in place.
 export CONTRACT_WASM="$ROOT_DIR/target/wasm32v1-none/release/ultrahonk_verifier.wasm"
 
 # CIRCUIT selects which circuit's VK/proof to deploy and verify (the VK is set
