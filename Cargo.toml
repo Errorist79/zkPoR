@@ -1,0 +1,20 @@
+# Workspace layout and release profile follow the yugocabrio host-accelerated
+# reference (ultrahonk-rust-verifier) pinned in scripts/versions.env.
+[workspace]
+resolver = "2"
+members = [
+    "contracts/verifier",
+    "contracts/vendor/ultrahonk-soroban-verifier",
+]
+
+[workspace.dependencies]
+# Exact pin (not caret): the spike verified 26.0.1. Cargo.lock pins the full graph.
+soroban-sdk = { version = "=26.0.1", default-features = false }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+overflow-checks = true
