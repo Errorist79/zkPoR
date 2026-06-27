@@ -24,7 +24,7 @@
 # other outcome (including an infrastructure error) FAILS LOUDLY (non-zero exit).
 #
 # Requires the pinned toolchain on PATH (nargo 1.0.0-beta.9, bb 0.87.0, stellar
-# 26.1.0, cargo/rustc 1.96.0) and a Protocol-26 localnet. See tools/gate/README.md.
+# 27.0.0, cargo/rustc 1.96.0) and a Protocol-27 localnet. See tools/gate/README.md.
 #
 # Environment (all optional):
 #   SOROBAN_RPC      localnet RPC (default http://localhost:8000/soroban/rpc)
@@ -69,11 +69,11 @@ rpc_healthy() {
 ensure_localnet() {
   rpc_healthy && return 0
   if [ "${START_LOCALNET:-0}" = "1" ]; then
-    note "localnet RPC unreachable; starting quickstart:future container"
-    stellar container start "$NET" --limits unlimited --image-tag-override future >/dev/null 2>&1 || true
+    note "localnet RPC unreachable; starting quickstart:nightly (P27) container"
+    stellar container start "$NET" --limits unlimited --image-tag-override nightly --protocol-version 27 >/dev/null 2>&1 || true
     for _ in $(seq 1 30); do rpc_healthy && { note "localnet RPC healthy"; return 0; }; sleep 5; done
   fi
-  die "localnet RPC unreachable at $RPC (infra). Start a Protocol-26 localnet, or set START_LOCALNET=1."
+  die "localnet RPC unreachable at $RPC (infra). Start a Protocol-27 localnet, or set START_LOCALNET=1."
 }
 
 prove_poseidon() { # bytecode witness outdir
