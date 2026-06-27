@@ -1,0 +1,16 @@
+[package]
+name = "recursion-gen"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone: detached from the contract workspace so its host build does not
+# inherit the wasm/release profile.
+[workspace]
+
+[dependencies]
+# soroban-poseidon is the SAME Poseidon2 the on-chain side uses; running it
+# host-side (Env::default) reproduces the in-circuit subroot exactly, so the
+# inner circuit's assert(subtree_root(leaves) == subroot) holds.
+soroban-sdk = { version = "=26.0.1", features = ["testutils"] }
+soroban-poseidon = "=26.0.0"
+num-bigint = "0.4"

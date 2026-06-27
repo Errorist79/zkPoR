@@ -1,0 +1,12 @@
+# Single source of truth for the recursion-aggregation circuit constants.
+# The generator (tools/recursion-gen) reads this and regenerates each circuit's
+# src/params.nr. Change a value here only.
+
+# Customers per inner batch = leaves in one inner subtree. Power of two.
+batch_b = 8
+# Inner batch proofs folded by one aggregator run. Power of two, >= 2.
+# The measurement driver sweeps this (K=2, K=4) to isolate the marginal
+# per-batch in-circuit verification cost; this is the canonical default.
+num_batches_k = 2
+# Poseidon2 inputs per node: binary Merkle tree => 2.
+hash_arity = 2

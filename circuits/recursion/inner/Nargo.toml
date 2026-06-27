@@ -1,0 +1,8 @@
+[package]
+name = "recursion_inner"
+type = "bin"
+authors = [""]
+compiler_version = ">=1.0.0"
+
+[dependencies]
+recursion_common = { path = "../common" }
