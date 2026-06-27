@@ -1,0 +1,20 @@
+[package]
+name = "ultrahonk-verifier"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = { workspace = true, features = ["alloc"] }
+# Host-accelerated UltraHonk verifier (CAP-0080 BN254 host functions).
+# Vendored in-repo at contracts/vendor/ultrahonk-soroban-verifier; provenance
+# (upstream repo + rev) and the applied completed-pairing patch are recorded in
+# that directory's VENDOR.md and scripts/versions.env. The pure-Wasm indextree
+# verifier is NOT used here because it exceeds the per-transaction instruction
+# limit.
+ultrahonk_soroban_verifier = { path = "../vendor/ultrahonk-soroban-verifier", default-features = false }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils", "alloc"] }
