@@ -9,6 +9,37 @@ validates the recursive path on the real Stellar testnet at Protocol 27.
 See [`docs/architecture.md`](docs/architecture.md) for the design. See
 [`SECURITY.md`](SECURITY.md) for the security model and the on-chain validation.
 
+## Status
+
+Two stages of work meet in this repository, and this section separates them.
+The first list is validated, with evidence a reader can check independently.
+The second list is under construction, and no item in it works yet.
+
+Validated (on-chain evidence dated June 27, 2026):
+
+- The recursive proving pipeline: the inner batch circuit, the hardened
+  aggregator, and the off-circuit generator (`circuits/recursion/`,
+  `tools/recursion-gen/`).
+- The host-accelerated verifier contract with the completed pairing
+  (`contracts/verifier/`, `contracts/vendor/`).
+- End-to-end soundness on the real Protocol 27 testnet: verifier contract
+  `CCADPDEROE6OXGODBMAC7SU3Q3VOUZQAKYAQL67YNBMSTROJSSK7ATZ7` accepted the
+  honest proofs and rejected the forged and the deflated proofs. The four
+  confirmed transaction hashes are in [`SECURITY.md`](SECURITY.md). The
+  honest verify used 106,670,237 instructions.
+- The adversarial soundness gate that reproduces this result on a localnet
+  (`tools/gate/`).
+
+Under construction (specified in [`docs/protocol.md`](docs/protocol.md), not
+implemented):
+
+- The asset registry contract.
+- Context binding and salted leaves in the circuits.
+- Per-customer inclusion paths and inclusion packages.
+- The TypeScript SDK.
+- The issuer dashboard.
+- The verification-key pin checks in CI.
+
 ## How it works
 
 A liabilities proof must cover every customer. The on-chain verification is the
