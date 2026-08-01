@@ -49,9 +49,9 @@ of each public input, and section 2.2 forbids a consumer to locate a
 public input by its value. An edit that relaxes either rule reopens this
 question.
 
-A future protocol version must not add a hash at an input count already in
-use, unless the new preimage starts with a domain tag.
-The salt derivation of section 4.2 follows this rule.
+A future protocol version must not add a hash at an input count already
+in use, unless the new preimage starts with a domain tag. The salt
+derivation of section 4.2 follows this rule.
 
 ### 1.3 Test vectors
 
