@@ -12,6 +12,7 @@ circuits/*/target
 # Soundness-gate generated witnesses / proofs (recursion pipeline + harness).
 # The checked-in src/params.nr files are kept; only per-run witness/proof
 # outputs and the regenerated Prover.toml inputs are ignored.
+circuits/recursion/.key-check/
 circuits/recursion/inner/out/
 circuits/recursion/inner/Prover.toml
 circuits/recursion/inner/Prover_*.toml

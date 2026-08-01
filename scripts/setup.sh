@@ -62,11 +62,49 @@ echo "### bb ${BB_VERSION} ###"
 # have. A comparison of version numbers is not sufficient, because two libraries
 # set the limit. The script runs the downloaded binary one time, and it keeps
 # the binary only if the run succeeds. If the run fails, bb runs in a container,
-# and $HOME/.bb/bin/bb becomes a wrapper that calls that container. The image
-# tag follows BB_VERSION, so a version bump cannot use the image of an older bb.
-BB_IMAGE="zkpor-bb:${BB_SEMVER}"
+# and $HOME/.bb/bin/bb becomes a wrapper that calls that container.
 BB_RELEASE_URL="https://github.com/AztecProtocol/aztec-packages/releases/download/${BB_VERSION}"
 BB_LINUX_AMD64_TARBALL="barretenberg-amd64-linux.tar.gz"
+BB_DOCKERFILE=$(cat <<'DOCKERFILE'
+FROM ubuntu:24.04
+ARG BB_TARBALL_URL
+# bb reads a compiled circuit through jq and gunzip, so jq must be present.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates libstdc++6 libgomp1 jq \
+ && rm -rf /var/lib/apt/lists/*
+RUN curl -fL "$BB_TARBALL_URL" -o /tmp/bb.tar.gz \
+ && tar -xzf /tmp/bb.tar.gz -C /usr/local/bin \
+ && rm /tmp/bb.tar.gz \
+ && chmod +x /usr/local/bin/bb
+DOCKERFILE
+)
+
+sha256_short() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi | cut -c1-12
+}
+
+# The tag carries the bb version and a hash of the recipe above. A version bump
+# cannot use the image of an older bb, and a change to the recipe cannot leave
+# the wrapper on an image that this script no longer describes.
+BB_IMAGE="zkpor-bb:${BB_SEMVER}-$(printf '%s' "$BB_DOCKERFILE" | sha256_short)"
+
+bb_container_install() {
+  if ! docker image inspect "$BB_IMAGE" >/dev/null 2>&1; then
+    echo "building ${BB_IMAGE}"
+    printf '%s\n' "$BB_DOCKERFILE" | docker build -t "$BB_IMAGE" \
+      --build-arg "BB_TARBALL_URL=${BB_RELEASE_URL}/${BB_LINUX_AMD64_TARBALL}" -
+  fi
+  # The container keeps the downloaded CRS, so a proof does not fetch it again.
+  cat > "$BB_BIN_DIR/bb" <<EOF
+#!/usr/bin/env bash
+mkdir -p "\$HOME/.bb-crs"
+exec docker run --rm -i \\
+  -v "\$PWD":"\$PWD" \\
+  -v "\$HOME/.bb-crs":/root/.bb-crs \\
+  -w "\$PWD" ${BB_IMAGE} bb "\$@"
+EOF
+  chmod +x "$BB_BIN_DIR/bb"
+}
 
 # A wrapper whose image is gone reports no version, and the script repairs it.
 if [ "$(bb_installed)" != "${BB_SEMVER}" ]; then
@@ -84,33 +122,12 @@ if [ "$(bb_installed)" != "${BB_SEMVER}" ]; then
     mv "$bb_stage"/* "$BB_BIN_DIR/"
   else
     echo "this host cannot run the native bb ${BB_VERSION}; bb runs in a container"
-    if ! docker image inspect "$BB_IMAGE" >/dev/null 2>&1; then
-      echo "building ${BB_IMAGE}"
-      docker build -t "$BB_IMAGE" \
-        --build-arg "BB_TARBALL_URL=${BB_RELEASE_URL}/${BB_LINUX_AMD64_TARBALL}" - <<'DOCKERFILE'
-FROM ubuntu:24.04
-ARG BB_TARBALL_URL
-RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates libstdc++6 libgomp1 \
- && rm -rf /var/lib/apt/lists/*
-RUN curl -fL "$BB_TARBALL_URL" -o /tmp/bb.tar.gz \
- && tar -xzf /tmp/bb.tar.gz -C /usr/local/bin \
- && rm /tmp/bb.tar.gz \
- && chmod +x /usr/local/bin/bb
-DOCKERFILE
-    fi
-    # The container keeps the downloaded CRS, so a proof does not fetch it again.
-    cat > "$BB_BIN_DIR/bb" <<EOF
-#!/usr/bin/env bash
-mkdir -p "\$HOME/.bb-crs"
-exec docker run --rm -i \\
-  -v "\$PWD":"\$PWD" \\
-  -v "\$HOME/.bb-crs":/root/.bb-crs \\
-  -w "\$PWD" ${BB_IMAGE} bb "\$@"
-EOF
-    chmod +x "$BB_BIN_DIR/bb"
+    bb_container_install
   fi
   rm -rf "$bb_stage" /tmp/bb.tar.gz
+elif grep -qF "zkpor-bb:" "$BB_BIN_DIR/bb" 2>/dev/null && ! grep -qF "$BB_IMAGE" "$BB_BIN_DIR/bb"; then
+  echo "the container recipe changed; rebuilding the image and the wrapper"
+  bb_container_install
 fi
 "$BB_BIN_DIR/bb" --version
 

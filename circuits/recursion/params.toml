@@ -3,11 +3,12 @@
 # src/params.nr. Change a value here only.
 
 # Customers per inner batch = leaves in one inner subtree. Power of two.
-batch_b = 8
+batch_b = 1024
 # Inner batch proofs folded by one aggregator run. Power of two, >= 2.
-# The measurement driver sweeps this (K=2, K=4) to isolate the marginal
-# per-batch in-circuit verification cost; this is the canonical default.
-num_batches_k = 2
+# These two values are the release configuration. They fix the circuit shape,
+# both verification keys, and the deployed contract, so an artifact built at
+# another shape is not evidence about the release artifact.
+num_batches_k = 4
 # Poseidon2 inputs per internal node: binary Merkle tree => 2. A leaf takes
 # three inputs, which the protocol fixes, so it is not configurable here.
 node_hash_arity = 2

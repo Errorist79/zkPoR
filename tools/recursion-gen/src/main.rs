@@ -1,6 +1,6 @@
 //! Off-circuit driver for the recursive-aggregation circuits (inner + agg).
 //!
-//! Two subcommands split the work around the bb proving step:
+//! Three subcommands split the work around the bb proving step:
 //!
 //!   witness   Reads params.toml, the attestation context, and a customer
 //!             file, pads the customer list to the tree capacity, derives one
@@ -16,6 +16,12 @@
 //!                                             layout + the pinned inner-vk
 //!                                             hash)
 //!               - agg/Prover.toml            (context_hash, vk, K proofs+pubs)
+//!
+//!   manifest  Run AFTER the aggregator is compiled and its key is written. It
+//!             records the shape, both key hashes, and the public input schema
+//!             of the release artifact. It refuses every other shape, and the
+//!             deploy path needs the file, so a development artifact cannot
+//!             reach a contract.
 //!
 //! The positions of (batch_slot, subroot, subtotal) inside the vector that bb
 //! emits come from the compiled program's ABI, and never from a search by
@@ -33,12 +39,22 @@ use soroban_poseidon::Field;
 use soroban_sdk::{
     crypto::BnScalar, Address, Bytes, Env, String as SorobanString, Vec as SorobanVec, U256,
 };
-use std::{collections::HashMap, env, fs, path::Path, path::PathBuf};
+use std::{collections::HashMap, env, fs, path::Path, path::PathBuf, process::Command};
 use zkpor_context::{
     context_hash, derive_salt, fr_reduce, leaf_hash, node_hash, reserve_set_hash, FR_BYTES,
     PADDING_LEAF_BALANCE, PADDING_LEAF_ID,
 };
 
+/// The generated record of the release artifact.
+const MANIFEST_FILE: &str = "circuits/recursion/manifest.json";
+/// The committed aggregator verification key. The tooling writes it and no
+/// person edits it. A deployment must carry these bytes.
+const AGG_KEY_FILE: &str = "circuits/recursion/agg/vk";
+/// The pinned toolchain.
+const VERSIONS_FILE: &str = "scripts/versions.env";
+/// Scratch directory for the key that the manifest command writes again to
+/// compare with the key on disk. It never survives a run.
+const KEY_CHECK_DIR: &str = "circuits/recursion/.key-check";
 /// Name of the environment variable that carries the master secret.
 const MASTER_SECRET_VAR: &str = "ZKPOR_MASTER_SECRET";
 /// Names of the three public inputs of the inner circuit, in the order that
@@ -49,8 +65,8 @@ const INNER_PUBLIC_INPUTS: [&str; 3] = ["batch_slot", "subroot", "subtotal"];
 // <repo>/tools/recursion-gen, so ../.. is the repo root and `rel` is taken
 // from there (e.g. circuits/recursion/...).
 fn repo_path(rel: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
+    fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .expect("the repository root")
         .join(rel)
 }
 
@@ -288,6 +304,129 @@ fn public_input_layout(program: &Path) -> Vec<String> {
     names
 }
 
+/// The outer array length of one private parameter of a compiled program.
+///
+/// The shape of the artifact comes from the artifact itself, so a stale build
+/// output cannot be described as a current one.
+fn parameter_array_length(program: &Path, name: &str) -> usize {
+    let text = fs::read_to_string(program)
+        .unwrap_or_else(|_| panic!("read {}; compile the circuit first", program.display()));
+    let json: serde_json::Value = serde_json::from_str(&text).expect("compiled program is JSON");
+    let parameters = json["abi"]["parameters"]
+        .as_array()
+        .expect("abi.parameters is a list");
+    let parameter = parameters
+        .iter()
+        .find(|p| p["name"] == name)
+        .unwrap_or_else(|| panic!("the compiled program has no parameter {name}"));
+    parameter["type"]["length"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("parameter {name} is not an array")) as usize
+}
+
+/// Runs a command from the repository root and returns its output.
+///
+/// bb runs in a container on some hosts, and that container mounts the working
+/// directory, so every path must sit under the repository root.
+fn run(program: &str, args: &[&str]) -> std::process::Output {
+    let output = Command::new(program)
+        .args(args)
+        .current_dir(repo_path("."))
+        .output()
+        .unwrap_or_else(|_| panic!("run {program}; is it on PATH?"));
+    assert!(
+        output.status.success(),
+        "{program} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
+/// The first line of a command's output.
+fn first_line(program: &str, args: &[&str]) -> String {
+    let output = run(program, args);
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+/// Writes the key of a compiled program again and fails when the result differs
+/// from the key on disk.
+///
+/// This ties a key to its program by content. A modification time does not: a
+/// stale key that someone touched would pass, and that is the failure this
+/// check exists to stop.
+fn assert_key_matches_program(
+    program: &Path,
+    key_dir: &Path,
+    scheme: &str,
+    oracle_hash: &str,
+    recursive: bool,
+) {
+    let scratch = repo_path(KEY_CHECK_DIR);
+    let _ = fs::remove_dir_all(&scratch);
+    fs::create_dir_all(&scratch).expect("create the scratch directory");
+    let scratch_arg = scratch.to_string_lossy().to_string();
+    // bb runs from the repository root, so a path that the caller gave
+    // relative to another directory must become absolute first.
+    let program_arg = fs::canonicalize(program)
+        .unwrap_or_else(|_| panic!("read {}", program.display()))
+        .to_string_lossy()
+        .to_string();
+    let mut args = std::vec![
+        "write_vk",
+        "--scheme",
+        scheme,
+        "--oracle_hash",
+        oracle_hash,
+        "--bytecode_path",
+        &program_arg,
+        "--output_path",
+        &scratch_arg,
+        "--output_format",
+        "bytes_and_fields",
+    ];
+    if recursive {
+        args.extend_from_slice(&["--honk_recursion", "1", "--verifier_type", "standalone"]);
+    }
+    run("bb", &args);
+
+    // Read both files first, then remove the scratch directory, so a failure
+    // below leaves nothing behind.
+    let pairs: Vec<(&str, Vec<u8>, Vec<u8>)> = ["vk", "vk_fields.json"]
+        .iter()
+        .map(|name| {
+            let produced = fs::read(scratch.join(name)).expect("read the produced key");
+            let stored = fs::read(key_dir.join(name))
+                .unwrap_or_else(|_| panic!("read {}", key_dir.join(name).display()));
+            (*name, produced, stored)
+        })
+        .collect();
+    fs::remove_dir_all(&scratch).expect("remove the scratch directory");
+
+    for (name, produced, stored) in pairs {
+        assert!(
+            produced == stored,
+            "{} does not come from {}; rebuild before you describe the artifact",
+            key_dir.join(name).display(),
+            program.display()
+        );
+    }
+}
+
+/// The version that a tool reports, which can differ from the pin when another
+/// copy of the tool sits earlier on PATH.
+fn assert_tool_version(tool: &str, reported: &str, pinned: &str) {
+    assert_eq!(
+        reported, pinned,
+        "{tool} reports {reported}, and the pin is {pinned}; \
+         the manifest must not record a version that did not build the artifact"
+    );
+}
+
 /// The position of one public input. It fails when the name is absent or when
 /// the layout holds it more than once.
 fn position_of(layout: &[String], name: &str) -> usize {
@@ -303,6 +442,39 @@ fn position_of(layout: &[String], name: &str) -> usize {
         "the public input layout does not hold {name} exactly once"
     );
     found[0]
+}
+
+/// The release configuration. An artifact of another shape looks the same but
+/// proves nothing about the release artifact, so the pin path and the manifest
+/// refuse to produce one.
+const RELEASE_BATCH_B: usize = 1024;
+const RELEASE_NUM_BATCHES_K: usize = 4;
+/// Set this variable to build an artifact of another shape while you work. No
+/// manifest is written then, and the deploy path needs the manifest, so a
+/// development artifact cannot reach a contract.
+const DEVELOPMENT_VAR: &str = "ZKPOR_DEVELOPMENT_ARTIFACT";
+
+/// The public inputs of the terminal proof, in the order that the protocol
+/// fixes, with the name that the compiled ABI gives each one.
+const OUTER_PUBLIC_INPUTS: [(&str, &str); 4] = [
+    ("context_hash", "context_hash"),
+    ("inner_key_hash", "return.0"),
+    ("final_root", "return.1"),
+    ("L", "return.2"),
+];
+/// The verifier appends the limbs of the pairing point accumulator itself, so
+/// the key counts them and the public input byte string does not carry them.
+const PAIRING_POINT_LIMBS: usize = 16;
+/// Position of the public input count inside the field vector of an UltraHonk
+/// verification key. Read from the bb 0.87.0 output of the aggregator key.
+const VK_PUBLIC_INPUTS_SIZE_INDEX: usize = 1;
+
+fn is_release(b: usize, k: usize) -> bool {
+    b == RELEASE_BATCH_B && k == RELEASE_NUM_BATCHES_K
+}
+
+fn describe_release() -> String {
+    format!("batch_b = {RELEASE_BATCH_B} and num_batches_k = {RELEASE_NUM_BATCHES_K}")
 }
 
 /// B, K, and the tree capacity from params.toml.
@@ -389,7 +561,19 @@ fn read_field_json(path: &Path) -> Vec<BigUint> {
 }
 
 fn cmd_assemble(context_file: &Path, out: &Path) {
-    let (_, k, _) = read_shape();
+    let (b, k, _) = read_shape();
+    if !is_release(b, k) {
+        // The pin binds the aggregator to one inner circuit shape, so a pin of
+        // another shape must be a deliberate act and must stay visible.
+        assert!(
+            env::var(DEVELOPMENT_VAR).is_ok(),
+            "the pin needs the release configuration, {}; this tree holds \
+             batch_b = {b} and num_batches_k = {k}. Set {DEVELOPMENT_VAR}=1 to \
+             pin a development artifact, which gets no manifest and cannot deploy",
+            describe_release()
+        );
+        println!("WARNING: this pin is a development artifact of shape B={b} K={k}");
+    }
     let env = new_env();
     let context = read_context_hash(&env, context_file);
 
@@ -480,8 +664,149 @@ fn cmd_assemble(context_file: &Path, out: &Path) {
     );
 }
 
+/// Records the identity of the release artifact.
+///
+/// A reader of the manifest can tell which artifact a deployment holds without
+/// trusting the person who produced it: the shape, both key hashes, and the
+/// public input schema all come from the built files. The manifest exists only
+/// for the release configuration, and the deploy path needs it.
+fn cmd_manifest(inner_out: &Path, agg_target: &Path) {
+    let (b, k, _) = read_shape();
+    assert!(
+        is_release(b, k),
+        "a manifest needs the release configuration, {}; this tree holds \
+         batch_b = {b} and num_batches_k = {k}",
+        describe_release()
+    );
+    let env = new_env();
+    let versions = read_pairs(&repo_path(VERSIONS_FILE));
+    let scheme = text_value(&versions, "PROOF_SCHEME");
+    let inner_oracle = text_value(&versions, "INNER_ORACLE_HASH");
+    let terminal_oracle = text_value(&versions, "TERMINAL_ORACLE_HASH");
+
+    // The tools answer for themselves. A copy earlier on PATH would otherwise
+    // build the artifact while the manifest recorded the pinned version.
+    let bb_version = first_line("bb", &["--version"]);
+    let nargo_version = first_line("nargo", &["--version"])
+        .split_whitespace()
+        .last()
+        .unwrap_or_default()
+        .to_string();
+    assert_tool_version(
+        "bb",
+        &bb_version,
+        text_value(&versions, "BB_VERSION").trim_start_matches('v'),
+    );
+    assert_tool_version(
+        "nargo",
+        &nargo_version,
+        &text_value(&versions, "NARGO_VERSION"),
+    );
+
+    // The artifacts must describe this configuration, and each key must come
+    // from the program it belongs to. Without both checks a run over stale
+    // outputs would label a development key as the release key.
+    let inner_program = repo_path("circuits/recursion/inner/target/recursion_inner.json");
+    let agg_program = agg_target.join("recursion_agg.json");
+    let inner_key = inner_out.join("vk_fields.json");
+    let agg_key = agg_target.join("vk");
+    assert_eq!(
+        parameter_array_length(&inner_program, "ids"),
+        b,
+        "the compiled inner program does not hold batch_b leaves"
+    );
+    assert_eq!(
+        parameter_array_length(&agg_program, "proofs"),
+        k,
+        "the compiled aggregator does not fold num_batches_k proofs"
+    );
+    assert_key_matches_program(&inner_program, inner_out, &scheme, &inner_oracle, true);
+    assert_key_matches_program(&agg_program, agg_target, &scheme, &terminal_oracle, false);
+
+    let inner_vk = read_field_json(&inner_key);
+    let width = inner_vk.len().next_power_of_two();
+    let zero = BigUint::from(0u32);
+    let padded: Vec<U256> = (0..width)
+        .map(|i| to_fr(&env, inner_vk.get(i).unwrap_or(&zero)))
+        .collect();
+    let inner_key_hash = to_big(&subtree_root(&env, &padded));
+
+    let key_bytes = fs::read(&agg_key).expect("read the aggregator key bytes");
+    let key_sha256 = env
+        .crypto()
+        .sha256(&Bytes::from_slice(&env, &key_bytes))
+        .to_array();
+    let key_sha256: String = key_sha256
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+
+    let layout = public_input_layout(&agg_program);
+    let positions: Vec<(&str, usize)> = OUTER_PUBLIC_INPUTS
+        .iter()
+        .map(|(name, abi_name)| (*name, position_of(&layout, abi_name)))
+        .collect();
+    assert_eq!(
+        layout.len(),
+        positions.len(),
+        "the terminal proof does not carry exactly {} public inputs",
+        positions.len()
+    );
+
+    // The key counts the pairing point accumulator, and the public input byte
+    // string does not carry it, so the two counts differ by those limbs.
+    let agg_vk = read_field_json(&agg_target.join("vk_fields.json"));
+    let key_count = &agg_vk[VK_PUBLIC_INPUTS_SIZE_INDEX];
+    assert_eq!(
+        *key_count,
+        BigUint::from(layout.len() + PAIRING_POINT_LIMBS),
+        "the key counts {key_count} public inputs, and the layout holds {}",
+        layout.len()
+    );
+
+    // The pin binds the aggregator to this inner key, so the two must agree.
+    let pinned = fs::read_to_string(repo_path("circuits/recursion/agg/src/params.nr"))
+        .expect("read agg/src/params.nr");
+    assert!(
+        pinned.contains(&format!("PINNED_INNER_VK_HASH: Field = {inner_key_hash};")),
+        "the aggregator pins another inner key than the one in {}",
+        inner_key.display()
+    );
+
+    let schema: Vec<String> = positions
+        .iter()
+        .map(|(name, index)| format!("    \"{name}\": {index}"))
+        .collect();
+    let manifest = format!(
+        "{{\n  \"batch_b\": {b},\n  \"num_batches_k\": {k},\n  \
+         \"bb_version\": \"{}\",\n  \"nargo_version\": \"{}\",\n  \
+         \"proof_scheme\": \"{}\",\n  \"terminal_oracle_hash\": \"{}\",\n  \
+         \"inner_oracle_hash\": \"{}\",\n  \
+         \"inner_key_hash\": \"{inner_key_hash}\",\n  \
+         \"aggregator_key_file\": \"{AGG_KEY_FILE}\",\n  \
+         \"aggregator_key_sha256\": \"{key_sha256}\",\n  \
+         \"aggregator_key_bytes\": {},\n  \
+         \"public_input_count\": {},\n  \"public_input_bytes\": {},\n  \
+         \"public_input_positions\": {{\n{}\n  }}\n}}\n",
+        bb_version,
+        nargo_version,
+        scheme,
+        terminal_oracle,
+        inner_oracle,
+        key_bytes.len(),
+        layout.len(),
+        layout.len() * FR_BYTES,
+        schema.join(",\n")
+    );
+    fs::write(repo_path(MANIFEST_FILE), manifest).expect("write the manifest");
+    // The key travels with the manifest, so a reader can hash it and compare.
+    fs::write(repo_path(AGG_KEY_FILE), &key_bytes).expect("write the aggregator key");
+    println!("manifest: B={b} K={k} -> {MANIFEST_FILE} + {AGG_KEY_FILE}");
+}
+
 const USAGE: &str = "usage: recursion-gen witness <context.toml> <customers.csv>\n\
-                            recursion-gen assemble <context.toml> [out_dir]";
+                            recursion-gen assemble <context.toml> [out_dir]\n\
+                            recursion-gen manifest <inner_out_dir> <agg_target_dir>";
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -497,6 +822,10 @@ fn main() {
                 cmd_assemble(&context, &out);
             }
             None => usage(),
+        },
+        Some("manifest") => match (arg(2), arg(3)) {
+            (Some(inner_out), Some(agg_target)) => cmd_manifest(&inner_out, &agg_target),
+            _ => usage(),
         },
         _ => usage(),
     }

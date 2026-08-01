@@ -1,0 +1,21 @@
+{
+  "batch_b": 1024,
+  "num_batches_k": 4,
+  "bb_version": "0.87.0",
+  "nargo_version": "1.0.0-beta.9",
+  "proof_scheme": "ultra_honk",
+  "terminal_oracle_hash": "keccak",
+  "inner_oracle_hash": "poseidon2",
+  "inner_key_hash": "21328364434191421272252912670623927031304585141963122353817084063178220902570",
+  "aggregator_key_file": "circuits/recursion/agg/vk",
+  "aggregator_key_sha256": "e08adcfe939b0610ae80c07217abf5a5b177bed4a09478266d8b49108392634f",
+  "aggregator_key_bytes": 1760,
+  "public_input_count": 4,
+  "public_input_bytes": 128,
+  "public_input_positions": {
+    "context_hash": 0,
+    "inner_key_hash": 1,
+    "final_root": 2,
+    "L": 3
+  }
+}

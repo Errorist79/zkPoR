@@ -7,6 +7,7 @@
 //! (CAP-0080) host functions. The verification key is set once at deploy time.
 
 use soroban_sdk::{contract, contracterror, contractimpl, symbol_short, Bytes, Env, Symbol};
+use ultrahonk_soroban_verifier::verifier::VerifyError;
 use ultrahonk_soroban_verifier::{UltraHonkVerifier, VkLoadError, PROOF_BYTES};
 
 /// On-chain UltraHonk proof verifier.
@@ -40,6 +41,10 @@ pub enum Error {
     VkNotSet = 5,
     /// Constructor has already been called; VK is immutable.
     AlreadyInitialized = 6,
+    /// The public input byte string has a length that is not a multiple of the
+    /// field element size, or a count that the stored VK does not expect. This
+    /// is a caller mistake and not a failed proof, so it has its own code.
+    PublicInputsInvalid = 7,
 }
 
 #[contractimpl]
@@ -89,7 +94,12 @@ impl UltraHonkVerifierContract {
 
         verifier
             .verify(&env, &proof_bytes, &public_inputs)
-            .map_err(|_| Error::VerificationFailed)?;
+            .map_err(|e| match e {
+                VerifyError::InvalidInput => Error::PublicInputsInvalid,
+                VerifyError::SumcheckFailed | VerifyError::ShplonkFailed => {
+                    Error::VerificationFailed
+                }
+            })?;
         Ok(())
     }
 }

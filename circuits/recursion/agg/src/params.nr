@@ -1,10 +1,10 @@
-// Generated from params.toml + observed bb output by tools/recursion-gen.
-// Do not edit by hand.
-pub global NUM_BATCHES_K: u32 = 2;
+// Generated from params.toml + the compiled inner program by
+// tools/recursion-gen. Do not edit by hand.
+pub global NUM_BATCHES_K: u32 = 4;
 // Inner public-input vector length and the positions of (batch_slot,
-// subroot, subtotal) within it. The generator locates these by value, so
-// the layout bb emits for a honk_recursion proof (with any appended pairing
-// points) is handled without editing circuit logic.
+// subroot, subtotal) within it. The generator reads the positions from
+// the compiled program's ABI, so a value that appears twice cannot move
+// a position.
 pub global INNER_PUB_LEN: u32 = 3;
 pub global SLOT_IDX: u32 = 0;
 pub global SUBROOT_IDX: u32 = 1;
@@ -16,4 +16,4 @@ pub global PROOF_LEN: u32 = 456;
 // two) and the Poseidon2 binary-tree hash of the padded vk. The aggregator
 // recomputes this hash over the witnessed vk and asserts equality.
 pub global VK_COMMIT_WIDTH: u32 = 128;
-pub global PINNED_INNER_VK_HASH: Field = 1357273200117458797986844784429821263783956267355746105492988669212160577549;
+pub global PINNED_INNER_VK_HASH: Field = 21328364434191421272252912670623927031304585141963122353817084063178220902570;

@@ -11,24 +11,32 @@ failure, including an infrastructure error.
 - `circuits/recursion/{inner,agg,common}`: the inner batch circuit with its range
   checks, plus the hardened aggregator (inner-VK pin, shared binding root, slot
   anti-replay).
-- `tools/recursion-gen`: the off-circuit fold and witness generator (K=2 for
-  speed).
+- `tools/recursion-gen`: the off-circuit fold and witness generator. It reads
+  the release configuration from `circuits/recursion/params.toml`, and it
+  refuses to write the pin or the manifest for another configuration.
 - `contracts/verifier`: the host-accelerated UltraHonk verifier. It vendors
   `contracts/vendor/ultrahonk-soroban-verifier`, which completes the deferred
   pairing-point accumulator on-chain.
-- `tools/gate/attacks/inner_evil` plus `tools/gate/cheats.py`: the adversarial
+- `tools/gate/attacks/` plus `tools/gate/cheats.py`: the adversarial
   scaffolding. This gate is the only user of that scaffolding. It is never part
   of the production path.
+- `circuits/recursion/manifest.json`: the generated record of the artifact. It
+  holds the batch values, both key hashes, and the public input positions. The
+  gate reads the positions from it, and the deploy step stops when the key to
+  deploy is not the key that the manifest records.
 
 ## Verdict
 
 - `honest`: on-chain ACCEPT.
+- `foreigncontext` (the honest proof, with one changed `context_hash` and the
+  other three public inputs untouched): on-chain REJECT. This case shows that
+  the unconstrained public parameter enters the proof transcript.
 - `forged` (a foreign inner proof under the pinned VK array): on-chain REJECT.
 - `deflated` (a foreign inner proof without the range check, balance -100):
   on-chain REJECT.
 
-A green run means that the deployed verifier accepts the honest cases and rejects
-both attacks.
+A green run means that the deployed verifier accepts the honest case and rejects
+all three attacks.
 
 ## Running locally
 
@@ -61,7 +69,8 @@ the pin, and the script fails when a version does not match:
   glibc and libstdc++ than some hosts give. `scripts/setup.sh` runs the
   downloaded binary one time. If the run fails, the setup installs a thin
   wrapper at that path, and the wrapper runs the real `bb` in an `ubuntu:24.04`
-  container. The image tag follows the pinned `bb` version.
+  container. The image tag holds the pinned `bb` version and a hash of the
+  image recipe, so a change to either one builds a new image.
 - Stellar CLI 27.0.0 (`~/.local/bin`).
 - Docker, for the localnet and, where applicable, for the `bb` wrapper.
   `scripts/setup.sh` does not install Docker, because an install needs root and
