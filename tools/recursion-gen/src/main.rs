@@ -2,100 +2,172 @@
 //!
 //! Two subcommands split the work around the bb proving step:
 //!
-//!   witness   Reads params.toml + fixtures/customers.csv, splits the first
-//!             K*B customers into K batches of B, computes each batch's
-//!             Poseidon2 subroot and u128 subtotal, and writes
-//!               - inner/src/params.nr        (BATCH_B)
-//!               - inner/Prover_<k>.toml       (one per batch)
+//!   witness   Reads params.toml, the attestation context, and a customer
+//!             file, pads the customer list to the tree capacity, derives one
+//!             salt per leaf, computes each batch's Poseidon2 subroot and u128
+//!             subtotal, and writes
+//!               - common/src/params.nr       (BATCH_B)
+//!               - inner/Prover_<k>.toml      (one per batch)
 //!
 //!   assemble  Run AFTER bb has proven every inner batch. Reads the bb field
-//!             outputs (out/vk_fields.json + out/batch_<k>/*_fields.json) and writes
-//!               - agg/src/params.nr           (K + observed inner pub layout +
-//!                                              the pinned inner-vk hash)
-//!               - agg/Prover.toml             (vk, K proofs+pubs)
-//!             The inner public-input vector that bb emits for a
-//!             honk_recursion proof may carry a pairing-point accumulator, so
-//!             (batch_slot, subroot, subtotal) are LOCATED BY VALUE rather than
-//!             assumed at fixed indices; their positions and the vector length
-//!             are written back into agg/src/params.nr. The pinned inner-vk hash
-//!             is the Poseidon2 binary-tree hash of the zero-padded vk fields.
+//!             outputs (out/vk_fields.json + out/batch_<k>/*_fields.json) and
+//!             the compiled inner program, then writes
+//!               - agg/src/params.nr          (K + the inner public input
+//!                                             layout + the pinned inner-vk
+//!                                             hash)
+//!               - agg/Prover.toml            (context_hash, vk, K proofs+pubs)
 //!
-//! Poseidon2 is soroban-poseidon (the same permutation the on-chain side and
-//! the noir poseidon v0.2.0 dependency use), so the subroot computed here equals
-//! the one the inner circuit rebuilds.
+//! The positions of (batch_slot, subroot, subtotal) inside the vector that bb
+//! emits come from the compiled program's ABI, and never from a search by
+//! value. Two public inputs can hold one value, so a search by value can find
+//! the wrong position.
 //!
-//! Leaf formula MUST stay identical to the inner circuit's leaf_hash:
-//!   leaf = Poseidon2([id, balance], 2)
+//! The master secret arrives in ZKPOR_MASTER_SECRET, and never in a file of
+//! this repository. It never enters a circuit witness.
+//!
+//! Every hash comes from zkpor-context, which is the one Rust definition of
+//! the leaf, the node, the salt, and the context hash.
 
 use num_bigint::BigUint;
-use soroban_poseidon::{poseidon2_hash, Field};
-use soroban_sdk::{crypto::BnScalar, Bytes, Env, Vec as SorobanVec, U256};
+use soroban_poseidon::Field;
+use soroban_sdk::{
+    crypto::BnScalar, Address, Bytes, Env, String as SorobanString, Vec as SorobanVec, U256,
+};
 use std::{collections::HashMap, env, fs, path::Path, path::PathBuf};
+use zkpor_context::{
+    context_hash, derive_salt, fr_reduce, leaf_hash, node_hash, reserve_set_hash, FR_BYTES,
+    PADDING_LEAF_BALANCE, PADDING_LEAF_ID,
+};
+
+/// Name of the environment variable that carries the master secret.
+const MASTER_SECRET_VAR: &str = "ZKPOR_MASTER_SECRET";
+/// Names of the three public inputs of the inner circuit, in the order that
+/// agg/src/params.nr records their positions.
+const INNER_PUBLIC_INPUTS: [&str; 3] = ["batch_slot", "subroot", "subtotal"];
 
 // Resolve a path relative to the repo root. CARGO_MANIFEST_DIR is
 // <repo>/tools/recursion-gen, so ../.. is the repo root and `rel` is taken
 // from there (e.g. circuits/recursion/...).
 fn repo_path(rel: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(rel)
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(rel)
 }
 
-fn read_kv(path: &Path) -> HashMap<String, u64> {
+/// Key and value text of every assignment in a simple TOML file. A comment and
+/// a blank line are dropped. The value keeps its quotes and its brackets.
+fn read_pairs(path: &Path) -> HashMap<String, String> {
     let mut m = HashMap::new();
-    for line in fs::read_to_string(path).expect("read config").lines() {
+    let text = fs::read_to_string(path).unwrap_or_else(|_| panic!("read {}", path.display()));
+    for line in text.lines() {
         let line = line.split('#').next().unwrap_or("").trim();
         if let Some((k, v)) = line.split_once('=') {
-            m.insert(k.trim().to_string(), v.trim().parse::<u64>().expect("u64 value"));
+            m.insert(k.trim().to_string(), v.trim().to_string());
         }
     }
     m
 }
 
-/// (id, balance) rows from the customers fixture, header skipped.
+fn u64_value(pairs: &HashMap<String, String>, key: &str) -> u64 {
+    pairs
+        .get(key)
+        .unwrap_or_else(|| panic!("missing {key}"))
+        .parse()
+        .unwrap_or_else(|_| panic!("{key} must be an unsigned integer"))
+}
+
+fn text_value(pairs: &HashMap<String, String>, key: &str) -> String {
+    pairs
+        .get(key)
+        .unwrap_or_else(|| panic!("missing {key}"))
+        .trim_matches('"')
+        .to_string()
+}
+
+fn list_value(pairs: &HashMap<String, String>, key: &str) -> Vec<String> {
+    pairs
+        .get(key)
+        .unwrap_or_else(|| panic!("missing {key}"))
+        .trim_matches(|c| c == '[' || c == ']')
+        .split(',')
+        .map(|item| item.trim().trim_matches('"').to_string())
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
+/// (id, balance) rows from a customer file. A comment line and the header line
+/// are dropped.
 fn read_customers(path: &Path) -> Vec<(BigUint, u64)> {
     let mut rows = Vec::new();
-    for (i, line) in fs::read_to_string(path).expect("read customers.csv").lines().enumerate() {
+    let text = fs::read_to_string(path).unwrap_or_else(|_| panic!("read {}", path.display()));
+    for line in text.lines() {
         let line = line.trim();
-        if i == 0 || line.is_empty() {
-            continue; // header / blank
+        if line.is_empty() || line.starts_with('#') || line.starts_with("id,") {
+            continue;
         }
         let (id, bal) = line.split_once(',').expect("id,balance");
-        let id = id.trim().parse::<BigUint>().expect("id is a non-negative integer");
+        let id = id
+            .trim()
+            .parse::<BigUint>()
+            .expect("id is a non-negative integer");
         let bal = bal.trim().parse::<u64>().expect("balance is u64");
         rows.push((id, bal));
     }
     rows
 }
 
-fn be32(x: &BigUint) -> [u8; 32] {
-    let mut be = x.to_bytes_be();
-    if be.len() > 32 {
-        be = be[be.len() - 32..].to_vec();
+/// Fills the customer list up to the tree capacity with padding leaves.
+///
+/// A padding leaf carries the defined identifier and balance, and it later
+/// takes a real derived salt, so it is indistinguishable from a customer leaf
+/// and the tree does not reveal the customer count.
+fn pad_to_capacity(mut rows: Vec<(BigUint, u64)>, capacity: usize) -> Vec<(BigUint, u64)> {
+    assert!(
+        rows.len() <= capacity,
+        "the customer file holds {} rows and the tree holds {capacity}; \
+         raise batch_b or num_batches_k. The generator does not cut the list, \
+         because a cut removes liabilities from the total",
+        rows.len()
+    );
+    while rows.len() < capacity {
+        rows.push((BigUint::from(PADDING_LEAF_ID), PADDING_LEAF_BALANCE));
     }
-    let mut out = [0u8; 32];
-    out[32 - be.len()..].copy_from_slice(&be);
+    rows
+}
+
+fn be32(x: &BigUint) -> [u8; FR_BYTES] {
+    let be = x.to_bytes_be();
+    assert!(
+        be.len() <= FR_BYTES,
+        "value does not fit in a field element"
+    );
+    let mut out = [0u8; FR_BYTES];
+    out[FR_BYTES - be.len()..].copy_from_slice(&be);
     out
 }
 
-fn field_hash2(env: &Env, a: &BigUint, b: &BigUint) -> BigUint {
-    let a_bytes = Bytes::from_array(env, &be32(a));
-    let b_bytes = Bytes::from_array(env, &be32(b));
-    let modulus = <BnScalar as Field>::modulus(env);
-    let mut inputs = SorobanVec::new(env);
-    inputs.push_back(U256::from_be_bytes(env, &a_bytes).rem_euclid(&modulus));
-    inputs.push_back(U256::from_be_bytes(env, &b_bytes).rem_euclid(&modulus));
-    let out = poseidon2_hash::<4, BnScalar>(env, &inputs);
-    let mut out_arr = [0u8; 32];
-    out.to_be_bytes().copy_into_slice(&mut out_arr);
-    BigUint::from_bytes_be(&out_arr)
+fn to_fr(env: &Env, x: &BigUint) -> U256 {
+    let value = U256::from_be_bytes(env, &Bytes::from_array(env, &be32(x)));
+    assert!(
+        value < <BnScalar as Field>::modulus(env),
+        "value is not below the field modulus"
+    );
+    value
+}
+
+fn to_big(value: &U256) -> BigUint {
+    let mut bytes = [0u8; FR_BYTES];
+    value.to_be_bytes().copy_into_slice(&mut bytes);
+    BigUint::from_bytes_be(&bytes)
 }
 
 /// Root of a full binary tree over `leaves` (len a power of two, >= 2).
 /// Pairwise bottom-up; identical pairing order to common/lib.nr subtree_root.
-fn subtree_root(env: &Env, leaves: &[BigUint]) -> BigUint {
-    let mut level: Vec<BigUint> = leaves.to_vec();
+fn subtree_root(env: &Env, leaves: &[U256]) -> U256 {
+    let mut level: Vec<U256> = leaves.to_vec();
     while level.len() > 1 {
         level = (0..level.len() / 2)
-            .map(|k| field_hash2(env, &level[2 * k], &level[2 * k + 1]))
+            .map(|k| node_hash(env, &level[2 * k], &level[2 * k + 1]))
             .collect();
     }
     level.into_iter().next().expect("non-empty tree")
@@ -106,72 +178,200 @@ fn fmt_field_array(values: &[BigUint]) -> String {
     format!("[{}]", items.join(", "))
 }
 
-/// (subroots, subtotals) for the K batches, computed from the fixture.
-/// Shared by `witness` (to fill Prover.toml) and `assemble` (to locate the
-/// subroot/subtotal positions inside bb's public-input vector by value).
-fn batch_commitments(env: &Env, b: usize, k: usize) -> (Vec<BigUint>, Vec<BigUint>) {
-    let customers = read_customers(&repo_path("circuits/recursion/inner/fixtures/customers.csv"));
-    assert!(customers.len() >= b * k, "fixture has {} customers, need {}", customers.len(), b * k);
-
-    let mut subroots = Vec::with_capacity(k);
-    let mut subtotals = Vec::with_capacity(k);
-    for batch in 0..k {
-        let mut leaves = Vec::with_capacity(b);
-        let mut sum: u128 = 0;
-        for j in 0..b {
-            let (id, bal) = &customers[batch * b + j];
-            leaves.push(field_hash2(env, id, &BigUint::from(*bal)));
-            sum += *bal as u128;
-        }
-        subroots.push(subtree_root(env, &leaves));
-        subtotals.push(BigUint::from(sum));
-    }
-    (subroots, subtotals)
-}
-
 fn new_env() -> Env {
     let env = Env::default();
     env.cost_estimate().budget().reset_unlimited();
     env
 }
 
-fn cmd_witness() {
-    let cfg = read_kv(&repo_path("circuits/recursion/params.toml"));
-    let b = *cfg.get("batch_b").expect("missing batch_b") as usize;
-    let k = *cfg.get("num_batches_k").expect("missing num_batches_k") as usize;
-    let arity = *cfg.get("hash_arity").expect("missing hash_arity") as usize;
+fn address(env: &Env, strkey: &str) -> Address {
+    Address::from_string(&SorobanString::from_str(env, strkey))
+}
+
+/// The value that binds the proof to one authority, one asset, one reserve
+/// address set, and one snapshot.
+fn read_context_hash(env: &Env, path: &Path) -> U256 {
+    let pairs = read_pairs(path);
+    let mut reserves = SorobanVec::new(env);
+    for strkey in list_value(&pairs, "reserves") {
+        reserves.push_back(address(env, &strkey));
+    }
+    let set = reserve_set_hash(env, &reserves).expect("the reserve set is not valid");
+    let snapshot_ledger = u64_value(&pairs, "snapshot_ledger");
+    let snapshot_ledger = u32::try_from(snapshot_ledger).expect("snapshot_ledger is a u32");
+    context_hash(
+        env,
+        &address(env, &text_value(&pairs, "authority")),
+        &address(env, &text_value(&pairs, "asset")),
+        &set,
+        snapshot_ledger,
+    )
+    .expect("the context addresses are not valid")
+}
+
+/// The master secret that seeds every salt.
+///
+/// It arrives in the environment, so it never sits in a file of this
+/// repository, and only the step that derives the salts asks for it.
+fn read_master_secret(env: &Env) -> U256 {
+    let raw = env::var(MASTER_SECRET_VAR)
+        .unwrap_or_else(|_| panic!("set {MASTER_SECRET_VAR} to 32 bytes of hex"));
+    let raw = raw.trim();
+    let raw = raw.strip_prefix("0x").unwrap_or(raw);
+    fr_reduce(env, &hex_bytes(raw))
+}
+
+fn hex_bytes(text: &str) -> [u8; FR_BYTES] {
+    assert_eq!(
+        text.len(),
+        FR_BYTES * 2,
+        "{MASTER_SECRET_VAR} must be 32 bytes of hex"
+    );
+    let mut out = [0u8; FR_BYTES];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&text[2 * i..2 * i + 2], 16)
+            .unwrap_or_else(|_| panic!("{MASTER_SECRET_VAR} is not hex"));
+    }
+    out
+}
+
+/// The names of the public inputs of a compiled Noir program, in the order
+/// that the prover emits them: the public parameters in declaration order,
+/// then the public return value.
+///
+/// This replaces a search by value. Two public inputs can hold one value, so a
+/// search by value can find the wrong position.
+fn public_input_layout(program: &Path) -> Vec<String> {
+    let text = fs::read_to_string(program)
+        .unwrap_or_else(|_| panic!("read {}; compile the circuit first", program.display()));
+    let json: serde_json::Value = serde_json::from_str(&text).expect("compiled program is JSON");
+    let abi = &json["abi"];
+
+    let mut names = Vec::new();
+    let parameters = abi["parameters"]
+        .as_array()
+        .expect("abi.parameters is a list");
+    for parameter in parameters {
+        if parameter["visibility"] != "public" {
+            continue;
+        }
+        let name = parameter["name"].as_str().expect("a parameter has a name");
+        assert_eq!(
+            parameter["type"]["kind"], "field",
+            "public parameter {name} is not one field element"
+        );
+        names.push(name.to_string());
+    }
+
+    let ret = &abi["return_type"];
+    if !ret.is_null() {
+        assert_eq!(
+            ret["visibility"], "public",
+            "a private return value is not supported"
+        );
+        let kind = &ret["abi_type"]["kind"];
+        if kind == "field" {
+            names.push("return".to_string());
+        } else if kind == "tuple" {
+            let fields = ret["abi_type"]["fields"].as_array().expect("tuple fields");
+            for (i, field) in fields.iter().enumerate() {
+                assert_eq!(
+                    field["kind"], "field",
+                    "return value {i} is not one field element"
+                );
+                names.push(format!("return.{i}"));
+            }
+        } else {
+            panic!("return kind {kind} is not supported");
+        }
+    }
+    names
+}
+
+/// The position of one public input. It fails when the name is absent or when
+/// the layout holds it more than once.
+fn position_of(layout: &[String], name: &str) -> usize {
+    let found: Vec<usize> = layout
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| *n == name)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        found.len(),
+        1,
+        "the public input layout does not hold {name} exactly once"
+    );
+    found[0]
+}
+
+/// B, K, and the tree capacity from params.toml.
+fn read_shape() -> (usize, usize, usize) {
+    let cfg = read_pairs(&repo_path("circuits/recursion/params.toml"));
+    let b = u64_value(&cfg, "batch_b") as usize;
+    let k = u64_value(&cfg, "num_batches_k") as usize;
+    let arity = u64_value(&cfg, "node_hash_arity") as usize;
     assert_eq!(arity, 2, "only binary (arity 2) Poseidon2 is supported");
-    assert!(b >= 2 && b.is_power_of_two(), "batch_b must be a power of two >= 2");
-    assert!(k >= 2 && k.is_power_of_two(), "num_batches_k must be a power of two >= 2");
+    assert!(
+        b >= 2 && b.is_power_of_two(),
+        "batch_b must be a power of two >= 2"
+    );
+    assert!(
+        k >= 2 && k.is_power_of_two(),
+        "num_batches_k must be a power of two >= 2"
+    );
+    (b, k, b * k)
+}
+
+fn cmd_witness(context_file: &Path, customers_file: &Path) {
+    let (b, k, capacity) = read_shape();
+    let env = new_env();
+    let context = read_context_hash(&env, context_file);
+    let master_secret = read_master_secret(&env);
+    let rows = pad_to_capacity(read_customers(customers_file), capacity);
 
     fs::write(
-        repo_path("circuits/recursion/inner/src/params.nr"),
+        repo_path("circuits/recursion/common/src/params.nr"),
         format!(
             "// Generated from params.toml by tools/recursion-gen. Do not edit by hand.\n\
              pub global BATCH_B: u32 = {b};\n"
         ),
     )
-    .expect("write inner/src/params.nr");
-
-    let customers = read_customers(&repo_path("circuits/recursion/inner/fixtures/customers.csv"));
-    let env = new_env();
-    let (subroots, subtotals) = batch_commitments(&env, b, k);
+    .expect("write common/src/params.nr");
 
     for batch in 0..k {
-        let ids: Vec<BigUint> = (0..b).map(|j| customers[batch * b + j].0.clone()).collect();
-        let balances: Vec<String> =
-            (0..b).map(|j| format!("\"{}\"", customers[batch * b + j].1)).collect();
+        let mut ids = Vec::with_capacity(b);
+        let mut balances = Vec::with_capacity(b);
+        let mut salts = Vec::with_capacity(b);
+        let mut leaves = Vec::with_capacity(b);
+        let mut sum: u128 = 0;
+        for j in 0..b {
+            let global_index = (batch * b + j) as u64;
+            let (id, balance) = &rows[batch * b + j];
+            let id_fr = to_fr(&env, id);
+            let salt = derive_salt(&env, &master_secret, &context, global_index);
+            leaves.push(leaf_hash(&env, &id_fr, *balance, &salt));
+            ids.push(id.clone());
+            balances.push(*balance);
+            salts.push(to_big(&salt));
+            sum += *balance as u128;
+        }
+        let balance_items: Vec<String> = balances.iter().map(|v| format!("\"{v}\"")).collect();
         let toml = format!(
-            "batch_slot = \"{batch}\"\nsubroot = \"{}\"\nsubtotal = \"{}\"\nids = {}\nbalances = [{}]\n",
-            subroots[batch],
-            subtotals[batch],
+            "batch_slot = \"{batch}\"\nsubroot = \"{}\"\nsubtotal = \"{sum}\"\n\
+             ids = {}\nbalances = [{}]\nsalts = {}\n",
+            to_big(&subtree_root(&env, &leaves)),
             fmt_field_array(&ids),
-            balances.join(", "),
+            balance_items.join(", "),
+            fmt_field_array(&salts),
         );
-        fs::write(repo_path(&format!("circuits/recursion/inner/Prover_{batch}.toml")), toml)
-            .expect("write inner Prover_<k>.toml");
+        fs::write(
+            repo_path(&format!("circuits/recursion/inner/Prover_{batch}.toml")),
+            toml,
+        )
+        .expect("write inner Prover_<k>.toml");
     }
-    println!("witness: B={b} K={k} -> inner/src/params.nr + {k} inner Prover_<k>.toml");
+    println!("witness: B={b} K={k} -> common/src/params.nr + {k} inner Prover_<k>.toml");
 }
 
 /// bb `--output_format fields` emits a JSON array of 0x-prefixed field strings
@@ -188,43 +388,36 @@ fn read_field_json(path: &Path) -> Vec<BigUint> {
         .collect()
 }
 
-fn find_index(v: &[BigUint], target: &BigUint, what: &str) -> usize {
-    v.iter().position(|x| x == target).unwrap_or_else(|| panic!("{what} not found in public inputs"))
-}
-
-fn cmd_assemble(out: &Path) {
-    let cfg = read_kv(&repo_path("circuits/recursion/params.toml"));
-    let b = *cfg.get("batch_b").expect("missing batch_b") as usize;
-    let k = *cfg.get("num_batches_k").expect("missing num_batches_k") as usize;
-
+fn cmd_assemble(context_file: &Path, out: &Path) {
+    let (_, k, _) = read_shape();
     let env = new_env();
-    let (subroots, subtotals) = batch_commitments(&env, b, k);
+    let context = read_context_hash(&env, context_file);
+
+    let layout = public_input_layout(&repo_path(
+        "circuits/recursion/inner/target/recursion_inner.json",
+    ));
+    let [slot_idx, subroot_idx, subtotal_idx] =
+        INNER_PUBLIC_INPUTS.map(|name| position_of(&layout, name));
+    let pub_len = layout.len();
 
     let vk = read_field_json(&out.join("vk_fields.json"));
-
     let mut proofs: Vec<Vec<BigUint>> = Vec::with_capacity(k);
     let mut pubs: Vec<Vec<BigUint>> = Vec::with_capacity(k);
-    let (mut pub_len, mut slot_idx, mut subroot_idx, mut subtotal_idx) =
-        (0usize, 0usize, 0usize, 0usize);
     for batch in 0..k {
         let proof = read_field_json(&out.join(format!("batch_{batch}/proof_fields.json")));
         let pi = read_field_json(&out.join(format!("batch_{batch}/public_inputs_fields.json")));
-        // batch_slot value is the batch index; located by value like the others
-        // so any pairing points bb may append do not shift the layout.
-        let l_idx = find_index(&pi, &BigUint::from(batch), "batch_slot");
-        let s_idx = find_index(&pi, &subroots[batch], "subroot");
-        let t_idx = find_index(&pi, &subtotals[batch], "subtotal");
-        if batch == 0 {
-            pub_len = pi.len();
-            slot_idx = l_idx;
-            subroot_idx = s_idx;
-            subtotal_idx = t_idx;
-        } else {
-            assert_eq!(pi.len(), pub_len, "inner public-input length differs across batches");
-            assert_eq!(l_idx, slot_idx, "batch_slot index differs across batches");
-            assert_eq!(s_idx, subroot_idx, "subroot index differs across batches");
-            assert_eq!(t_idx, subtotal_idx, "subtotal index differs across batches");
-        }
+        assert_eq!(
+            pi.len(),
+            pub_len,
+            "the emitted vector does not match the compiled layout"
+        );
+        // The slot value is the batch index, so this confirms the layout that
+        // the ABI reports against the vector that bb emits.
+        assert_eq!(
+            pi[slot_idx],
+            BigUint::from(batch),
+            "batch {batch} does not carry its slot at the position the ABI reports"
+        );
         proofs.push(proof);
         pubs.push(pi);
     }
@@ -232,20 +425,22 @@ fn cmd_assemble(out: &Path) {
     // Constraint 1 commitment: Poseidon2 binary-tree hash of the inner vk fields,
     // zero-padded to a power of two, matching the aggregator's in-circuit hash.
     let vk_commit_width = vk.len().next_power_of_two();
-    let mut padded = vk.clone();
-    padded.resize(vk_commit_width, BigUint::from(0u32));
-    let pinned_vk_hash = subtree_root(&env, &padded);
+    let zero = BigUint::from(0u32);
+    let padded: Vec<U256> = (0..vk_commit_width)
+        .map(|i| to_fr(&env, vk.get(i).unwrap_or(&zero)))
+        .collect();
+    let pinned_vk_hash = to_big(&subtree_root(&env, &padded));
 
     fs::write(
         repo_path("circuits/recursion/agg/src/params.nr"),
         format!(
-            "// Generated from params.toml + observed bb output by tools/recursion-gen.\n\
-             // Do not edit by hand.\n\
+            "// Generated from params.toml + the compiled inner program by\n\
+             // tools/recursion-gen. Do not edit by hand.\n\
              pub global NUM_BATCHES_K: u32 = {k};\n\
              // Inner public-input vector length and the positions of (batch_slot,\n\
-             // subroot, subtotal) within it. The generator locates these by value, so\n\
-             // the layout bb emits for a honk_recursion proof (with any appended pairing\n\
-             // points) is handled without editing circuit logic.\n\
+             // subroot, subtotal) within it. The generator reads the positions from\n\
+             // the compiled program's ABI, so a value that appears twice cannot move\n\
+             // a position.\n\
              pub global INNER_PUB_LEN: u32 = {pub_len};\n\
              pub global SLOT_IDX: u32 = {slot_idx};\n\
              pub global SUBROOT_IDX: u32 = {subroot_idx};\n\
@@ -267,13 +462,14 @@ fn cmd_assemble(out: &Path) {
     // No inner_key_hash input: the aggregator derives key_hash by hashing the
     // witnessed inner_vk in-circuit and asserts it equals PINNED_INNER_VK_HASH,
     // then exposes that hash as a public output for the caller to bind.
-    let mut toml = String::new();
+    let mut toml = format!("context_hash = \"{}\"\n", to_big(&context));
     toml.push_str(&format!("inner_vk = {}\n", fmt_field_array(&vk)));
     let proof_rows: Vec<String> = proofs.iter().map(|p| fmt_field_array(p)).collect();
     toml.push_str(&format!("proofs = [{}]\n", proof_rows.join(", ")));
     let pub_rows: Vec<String> = pubs.iter().map(|p| fmt_field_array(p)).collect();
     toml.push_str(&format!("pub_inputs = [{}]\n", pub_rows.join(", ")));
-    fs::write(repo_path("circuits/recursion/agg/Prover.toml"), toml).expect("write agg/Prover.toml");
+    fs::write(repo_path("circuits/recursion/agg/Prover.toml"), toml)
+        .expect("write agg/Prover.toml");
 
     println!(
         "assemble: K={k} VK_LEN={} PROOF_LEN={} INNER_PUB_LEN={pub_len} \
@@ -284,19 +480,108 @@ fn cmd_assemble(out: &Path) {
     );
 }
 
+const USAGE: &str = "usage: recursion-gen witness <context.toml> <customers.csv>\n\
+                            recursion-gen assemble <context.toml> [out_dir]";
+
 fn main() {
     let args: Vec<String> = env::args().collect();
+    let arg = |i: usize| args.get(i).map(PathBuf::from);
     match args.get(1).map(String::as_str) {
-        Some("witness") => cmd_witness(),
-        Some("assemble") => {
-            let out = args.get(2).map(PathBuf::from).unwrap_or_else(|| {
-                repo_path("circuits/recursion/inner/out")
-            });
-            cmd_assemble(&out);
+        Some("witness") => match (arg(2), arg(3)) {
+            (Some(context), Some(customers)) => cmd_witness(&context, &customers),
+            _ => usage(),
+        },
+        Some("assemble") => match arg(2) {
+            Some(context) => {
+                let out = arg(3).unwrap_or_else(|| repo_path("circuits/recursion/inner/out"));
+                cmd_assemble(&context, &out);
+            }
+            None => usage(),
+        },
+        _ => usage(),
+    }
+}
+
+fn usage() -> ! {
+    eprintln!("{USAGE}");
+    std::process::exit(2);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rows(count: usize) -> Vec<(BigUint, u64)> {
+        (0..count)
+            .map(|i| (BigUint::from(i as u64 + 1), i as u64 + 1))
+            .collect()
+    }
+
+    #[test]
+    fn a_count_below_the_capacity_is_padded() {
+        let padded = pad_to_capacity(rows(3), 8);
+        assert_eq!(padded.len(), 8);
+        for row in padded.iter().skip(3) {
+            assert_eq!(*row, (BigUint::from(PADDING_LEAF_ID), PADDING_LEAF_BALANCE));
         }
-        _ => {
-            eprintln!("usage: recursion-gen <witness | assemble [out_dir]>");
-            std::process::exit(2);
-        }
+        // A padding leaf adds nothing to the total.
+        let total: u64 = padded.iter().map(|(_, balance)| balance).sum();
+        assert_eq!(
+            total,
+            rows(3).iter().map(|(_, balance)| balance).sum::<u64>()
+        );
+    }
+
+    #[test]
+    fn a_count_at_the_capacity_is_unchanged() {
+        assert_eq!(pad_to_capacity(rows(8), 8), rows(8));
+    }
+
+    #[test]
+    #[should_panic(expected = "does not cut the list")]
+    fn a_count_above_the_capacity_fails() {
+        pad_to_capacity(rows(9), 8);
+    }
+
+    /// The abi block of a compiled program, with one public parameter and a
+    /// public tuple return value.
+    const ABI: &str = r#"{"abi": {
+        "parameters": [
+            {"name": "context_hash", "type": {"kind": "field"}, "visibility": "public"},
+            {"name": "inner_vk", "type": {"kind": "array", "length": 2,
+             "type": {"kind": "field"}}, "visibility": "private"}],
+        "return_type": {"abi_type": {"kind": "tuple", "fields": [
+            {"kind": "field"}, {"kind": "field"}]}, "visibility": "public"}}}"#;
+
+    fn write_temp(name: &str, text: &str) -> PathBuf {
+        let path = env::temp_dir().join(name);
+        fs::write(&path, text).expect("write the temporary program");
+        path
+    }
+
+    #[test]
+    fn the_layout_holds_the_public_parameters_and_then_the_return_values() {
+        let layout = public_input_layout(&write_temp("zkpor_layout_ok.json", ABI));
+        assert_eq!(layout, ["context_hash", "return.0", "return.1"]);
+        assert_eq!(position_of(&layout, "context_hash"), 0);
+        assert_eq!(position_of(&layout, "return.1"), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "exactly once")]
+    fn an_absent_public_input_fails() {
+        let layout = public_input_layout(&write_temp("zkpor_layout_absent.json", ABI));
+        position_of(&layout, "subroot");
+    }
+
+    #[test]
+    #[should_panic(expected = "is not one field element")]
+    fn a_public_parameter_that_is_not_one_field_element_fails() {
+        let abi = ABI.replace(
+            "{\"name\": \"context_hash\", \"type\": {\"kind\": \"field\"}, \"visibility\": \"public\"}",
+            "{\"name\": \"context_hash\", \"type\": {\"kind\": \"array\", \"length\": 2, \
+             \"type\": {\"kind\": \"field\"}}, \"visibility\": \"public\"}",
+        );
+        public_input_layout(&write_temp("zkpor_layout_array.json", &abi));
     }
 }

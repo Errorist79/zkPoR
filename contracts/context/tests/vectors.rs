@@ -7,8 +7,9 @@
 use soroban_sdk::{address_payload::AddressPayload, Address, BytesN, Env, Vec, U256};
 use std::{env as std_env, fs, path::PathBuf, string::String, vec::Vec as StdVec};
 use zkpor_context::{
-    context_hash, ctx_domain_tag, encode_address, reserve_set_hash, ADDRESS_PAYLOAD_BYTES,
-    ADDRESS_TAG_ACCOUNT, ADDRESS_TAG_CONTRACT, ATTESTATION_MAX_AGE_LEDGERS, MAX_RESERVE_ADDRESSES,
+    context_hash, ctx_domain_tag, derive_salt, encode_address, leaf_hash, reserve_set_hash,
+    salt_domain_tag, ADDRESS_PAYLOAD_BYTES, ADDRESS_TAG_ACCOUNT, ADDRESS_TAG_CONTRACT,
+    ATTESTATION_MAX_AGE_LEDGERS, MAX_RESERVE_ADDRESSES, PADDING_LEAF_BALANCE, PADDING_LEAF_ID,
 };
 
 const VECTOR_FILE: &str = "fixtures/context_vectors.json";
@@ -28,6 +29,16 @@ const ADDRESSES: [(u32, u8); 4] = [
 const RESERVE_SETS: [&[usize]; 3] = [&[0], &[3, 1, 2], &[0, 1, 2, 3]];
 /// Authority index, asset index, reserve set index, and snapshot ledger.
 const CONTEXTS: [(usize, usize, usize, u32); 2] = [(1, 2, 0, 0), (0, 3, 1, 4_294_967_295)];
+/// Identifier, balance, and salt of each leaf. The first entry is a padding
+/// leaf, and the last two share an identifier and a balance, so the file also
+/// pins the effect of the salt.
+const LEAVES: [(u32, u64, u32); 3] = [
+    (PADDING_LEAF_ID, PADDING_LEAF_BALANCE, 1),
+    (7, 100, 2),
+    (7, 100, 3),
+];
+/// Master secret, index into CONTEXTS, and global leaf index.
+const SALTS: [(u32, usize, u64); 3] = [(1, 0, 0), (1, 0, 1), (2, 1, 4_294_967_296)];
 
 fn address(env: &Env, index: usize) -> Address {
     let (tag, pattern) = ADDRESSES[index];
@@ -37,6 +48,10 @@ fn address(env: &Env, index: usize) -> Address {
     } else {
         AddressPayload::ContractIdHash(payload).to_address(env)
     }
+}
+
+fn fr(env: &Env, value: u32) -> U256 {
+    U256::from_u32(env, value)
 }
 
 fn hex(value: &U256) -> String {
@@ -78,20 +93,45 @@ fn vectors(env: &Env) -> String {
         set_hashes.push(hash);
     }
 
-    let contexts: StdVec<String> = CONTEXTS
+    let mut context_hashes = StdVec::new();
+    let mut contexts = StdVec::new();
+    for (authority, asset, set, ledger) in CONTEXTS {
+        let hash = context_hash(
+            env,
+            &address(env, authority),
+            &address(env, asset),
+            &set_hashes[set],
+            ledger,
+        )
+        .unwrap();
+        contexts.push(std::format!(
+            "{{\"authority\": {authority}, \"asset\": {asset}, \"reserve_set\": {set}, \
+             \"snapshot_ledger\": {ledger}, \"context_hash\": \"{}\"}}",
+            hex(&hash)
+        ));
+        context_hashes.push(hash);
+    }
+
+    let leaves: StdVec<String> = LEAVES
         .iter()
-        .map(|(authority, asset, set, ledger)| {
-            let hash = context_hash(
-                env,
-                &address(env, *authority),
-                &address(env, *asset),
-                &set_hashes[*set],
-                *ledger,
-            )
-            .unwrap();
+        .map(|(id, balance, salt)| {
+            let hash = leaf_hash(env, &fr(env, *id), *balance, &fr(env, *salt));
             std::format!(
-                "{{\"authority\": {authority}, \"asset\": {asset}, \"reserve_set\": {set}, \
-                 \"snapshot_ledger\": {ledger}, \"context_hash\": \"{}\"}}",
+                "{{\"id\": {id}, \"balance\": {balance}, \"salt\": \"{}\", \"leaf\": \"{}\"}}",
+                hex(&fr(env, *salt)),
+                hex(&hash)
+            )
+        })
+        .collect();
+
+    let salts: StdVec<String> = SALTS
+        .iter()
+        .map(|(secret, context, index)| {
+            let hash = derive_salt(env, &fr(env, *secret), &context_hashes[*context], *index);
+            std::format!(
+                "{{\"master_secret\": \"{}\", \"context\": {context}, \
+                 \"global_index\": {index}, \"salt\": \"{}\"}}",
+                hex(&fr(env, *secret)),
                 hex(&hash)
             )
         })
@@ -99,18 +139,23 @@ fn vectors(env: &Env) -> String {
 
     std::format!(
         "{{\n  \"constants\": {{\n    \"ctx_domain_tag\": \"{}\",\n    \
+         \"salt_domain_tag\": \"{}\",\n    \
          \"max_reserve_addresses\": {},\n    \"attestation_max_age_ledgers\": {},\n    \
          \"address_tag_account\": {},\n    \"address_tag_contract\": {}\n  }},\n  \
          \"addresses\": [\n    {}\n  ],\n  \"reserve_sets\": [\n    {}\n  ],\n  \
-         \"contexts\": [\n    {}\n  ]\n}}\n",
+         \"contexts\": [\n    {}\n  ],\n  \"leaves\": [\n    {}\n  ],\n  \
+         \"salts\": [\n    {}\n  ]\n}}\n",
         hex(&ctx_domain_tag(env)),
+        hex(&salt_domain_tag(env)),
         MAX_RESERVE_ADDRESSES,
         ATTESTATION_MAX_AGE_LEDGERS,
         ADDRESS_TAG_ACCOUNT,
         ADDRESS_TAG_CONTRACT,
         addresses.join(",\n    "),
         sets.join(",\n    "),
-        contexts.join(",\n    ")
+        contexts.join(",\n    "),
+        leaves.join(",\n    "),
+        salts.join(",\n    ")
     )
 }
 

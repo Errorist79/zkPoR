@@ -1,0 +1,12 @@
+[package]
+name = "recursion_inner_stale_leaf"
+type = "bin"
+authors = [""]
+compiler_version = ">=1.0.0"
+
+# Adversarial inner circuit for the hardening negative tests only. NOT part of
+# the production path: it keeps the old two-input leaf and ignores the salt, so
+# the leaves stay guessable. Its vk differs from the pinned inner circuit, so
+# the hardened aggregator must reject any batch proven with it.
+[dependencies]
+recursion_common = { path = "../../../../circuits/recursion/common" }

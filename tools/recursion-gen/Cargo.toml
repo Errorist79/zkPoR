@@ -14,3 +14,7 @@ edition = "2021"
 soroban-sdk = { version = "=26.0.1", features = ["testutils"] }
 soroban-poseidon = "=26.0.0"
 num-bigint = "0.4"
+serde_json = "1"
+# The one Rust definition of the leaf, the node, the salt, and the context
+# hash. The generator must not hold a second copy of any of them.
+zkpor-context = { path = "../../contracts/context" }

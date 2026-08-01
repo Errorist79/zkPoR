@@ -16,8 +16,8 @@ circuits/recursion/inner/out/
 circuits/recursion/inner/Prover.toml
 circuits/recursion/inner/Prover_*.toml
 circuits/recursion/agg/Prover.toml
-tools/gate/attacks/inner_evil/out/
-tools/gate/attacks/inner_evil/Prover.toml
+tools/gate/attacks/*/out/
+tools/gate/attacks/*/Prover.toml
 
 # Deploy state and local overrides
 .contract_id*

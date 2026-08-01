@@ -32,7 +32,16 @@
 //! accept a foreign inner proof under the pinned vk array, silently breaking
 //! constraints 1+2.
 //!
-//! Public inputs : (inner_key_hash, final_root, L) -- all outputs.
+//! CONTEXT BINDING: context_hash is a public parameter and the circuit does not
+//! constrain it. Its only job is to enter the proof transcript, so a proof that
+//! carries one context cannot verify as a proof that carries another. The
+//! registry recomputes the expected value from its own state and builds the
+//! public input bytes itself, so a prover cannot substitute a foreign context.
+//! The circuit holds no witness for the authority, the asset, the reserve set,
+//! or the snapshot, so there is nothing here to prove the value against.
+//!
+//! Public inputs : (context_hash, inner_key_hash, final_root, L).
+//!                 context_hash is a parameter; the other three are outputs.
 //! Private inputs: inner_vk, the K (proof, public_inputs).
 //!
 //! The outer proof is generated with the keccak oracle for the Soroban
@@ -48,10 +57,12 @@ use params::{
 };
 
 fn main(
+    context_hash: pub Field,
     inner_vk: [Field; VK_LEN],
     proofs: [[Field; PROOF_LEN]; NUM_BATCHES_K],
     pub_inputs: [[Field; INNER_PUB_LEN]; NUM_BATCHES_K],
 ) -> pub (Field, Field, Field) {
+    let _ = context_hash; // bound as a public input (context binding); see header
     // Constraint 1: pin the inner circuit. The vk is a witness, so hash it and
     // bind the hash to the pinned commitment; verify then uses this exact vk.
     let mut padded = [0; VK_COMMIT_WIDTH];
@@ -71,7 +82,9 @@ fn main(
         // proof. Only the pinned (range-checking) inner circuit can satisfy it.
         verify_ultrahonk_proof(inner_vk, proofs[k], pub_inputs[k], vk_hash);
         subroots[k] = pub_inputs[k][SUBROOT_IDX];
-        total += pub_inputs[k][SUBTOTAL_IDX] as u128; // subtotal < 2^128 (inner-bounded)
+        // The pinned inner circuit binds its subtotal to a u128 sum in the
+        // field, so this cast reads the same value and cannot truncate.
+        total += pub_inputs[k][SUBTOTAL_IDX] as u128;
     }
     // Constraint 3: deterministic single root + summed total, both as outputs.
     (vk_hash, subtree_root(subroots), total as Field)

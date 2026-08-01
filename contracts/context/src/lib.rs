@@ -1,12 +1,13 @@
 //! Shared encoding of the proof of reserves context.
 //!
 //! This crate is the one Rust definition of the address encoding, the reserve
-//! set hash, and the context hash. The registry contract, the witness
-//! generator, and the test vectors all use these functions, so a value that
-//! one component computes always equals the value another component computes.
+//! set hash, the context hash, the leaf hash, and the salt derivation. The
+//! registry contract, the witness generator, and the test vectors all use
+//! these functions, so a value that one component computes always equals the
+//! value another component computes.
 #![no_std]
 
-use soroban_poseidon::poseidon2_hash;
+use soroban_poseidon::{poseidon2_hash, Field};
 use soroban_sdk::{
     address_payload::AddressPayload, contracterror, crypto::bn254::Bn254Fr, Address, Bytes, Env,
     Vec, U256,
@@ -30,8 +31,16 @@ pub const ATTESTATION_MAX_AGE_LEDGERS: u32 = 720;
 /// The ASCII string of the context domain tag. The tag versions the preimage
 /// layout, so a change of the field list or the order changes this string.
 pub const CTX_DOMAIN_TAG_ASCII: &[u8; 16] = b"zkpor-context-v1";
+/// The ASCII string of the salt domain tag. The input count does not separate
+/// the salt derivation from the reserve set hash of two addresses, because
+/// both hash four inputs, so the salt derivation carries this tag.
+pub const SALT_DOMAIN_TAG_ASCII: &[u8; 13] = b"zkpor-salt-v1";
 /// State width of the Poseidon2 sponge. The rate is the width minus one.
 pub const POSEIDON2_STATE_WIDTH: u32 = 4;
+/// Identifier of a padding leaf.
+pub const PADDING_LEAF_ID: u32 = 0;
+/// Balance of a padding leaf. A padding leaf adds nothing to the total.
+pub const PADDING_LEAF_BALANCE: u64 = 0;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -54,12 +63,28 @@ fn hash(env: &Env, inputs: &Vec<U256>) -> U256 {
     poseidon2_hash::<POSEIDON2_STATE_WIDTH, Bn254Fr>(env, inputs)
 }
 
-/// The domain tag as a field element: the ASCII string, left-padded with zero
+/// A domain tag as a field element: the ASCII string, left-padded with zero
 /// bytes to the serialized length.
-pub fn ctx_domain_tag(env: &Env) -> U256 {
+fn domain_tag(env: &Env, ascii: &[u8]) -> U256 {
     let mut bytes = [0u8; FR_BYTES];
-    bytes[FR_BYTES - CTX_DOMAIN_TAG_ASCII.len()..].copy_from_slice(CTX_DOMAIN_TAG_ASCII);
+    bytes[FR_BYTES - ascii.len()..].copy_from_slice(ascii);
     fr_from_be(env, &bytes)
+}
+
+/// The domain tag of the context hash.
+pub fn ctx_domain_tag(env: &Env) -> U256 {
+    domain_tag(env, CTX_DOMAIN_TAG_ASCII)
+}
+
+/// The domain tag of the salt derivation.
+pub fn salt_domain_tag(env: &Env) -> U256 {
+    domain_tag(env, SALT_DOMAIN_TAG_ASCII)
+}
+
+/// Reduces 32 bytes into the field. A random source gives the master secret,
+/// so its value can be equal to or larger than the modulus.
+pub fn fr_reduce(env: &Env, bytes: &[u8; FR_BYTES]) -> U256 {
+    fr_from_be(env, bytes).rem_euclid(&<Bn254Fr as Field>::modulus(env))
 }
 
 fn address_parts(address: &Address) -> Result<AddressParts, ContextError> {
@@ -159,4 +184,40 @@ pub fn context_hash(
     inputs.push_back(reserve_set.clone());
     inputs.push_back(U256::from_u32(env, snapshot_ledger));
     Ok(hash(env, &inputs))
+}
+
+/// Hashes one internal node of the liabilities tree.
+pub fn node_hash(env: &Env, left: &U256, right: &U256) -> U256 {
+    let mut inputs = Vec::new(env);
+    inputs.push_back(left.clone());
+    inputs.push_back(right.clone());
+    hash(env, &inputs)
+}
+
+/// Hashes one leaf of the liabilities tree.
+///
+/// The salt blinds the leaf. A customer who checks an inclusion package reads
+/// the sibling hashes, and a balance has low entropy, so an unsalted leaf
+/// falls to a search over plausible identifier and balance pairs.
+pub fn leaf_hash(env: &Env, id: &U256, balance: u64, salt: &U256) -> U256 {
+    let mut inputs = Vec::new(env);
+    inputs.push_back(id.clone());
+    inputs.push_back(U256::from_u128(env, balance as u128));
+    inputs.push_back(salt.clone());
+    hash(env, &inputs)
+}
+
+/// Derives the salt of the leaf at one global index.
+///
+/// The context binds every salt to one authority, one asset, one reserve
+/// address set, and one snapshot, so two attestations never share a salt. The
+/// derivation runs outside every circuit, and no circuit sees the master
+/// secret.
+pub fn derive_salt(env: &Env, master_secret: &U256, context: &U256, global_index: u64) -> U256 {
+    let mut inputs = Vec::new(env);
+    inputs.push_back(salt_domain_tag(env));
+    inputs.push_back(master_secret.clone());
+    inputs.push_back(context.clone());
+    inputs.push_back(U256::from_u128(env, global_index as u128));
+    hash(env, &inputs)
 }

@@ -1,0 +1,8 @@
+# TEST ONLY. This context describes no real authority, no real asset, and no
+# real reserve address. Every address holds one repeated payload byte, so it is
+# recognizable in a dump. A real attestation reads these values from the
+# registry.
+authority = "GAIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCF6M"
+asset = "CARCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEVQO"
+reserves = ["GAZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTHCM6", "CBCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEJ5HZ"]
+snapshot_ledger = 1000
