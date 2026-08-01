@@ -39,7 +39,9 @@ A hand computation of Poseidon2 is not practical. Therefore this document
 contains no example hash values. The shared Rust crate is the reference
 implementation of every algorithm in this document. It generates the test
 vector files. The Noir and TypeScript implementations must reproduce those
-vectors exactly, and their test suites must fail on any mismatch.
+vectors exactly, and their test suites must fail on any mismatch. The
+vectors cover computed values only. They do not fix the identity of a
+reported error, in agreement with section 3.3.
 
 ### 1.4 Configuration parameters
 
@@ -165,6 +167,19 @@ muxed accounts with the same key onto the same limb pair. That collision
 breaks the binding between the proof and the reserve set, so a partial
 encoding is forbidden and the type is rejected instead.
 
+The rejection of the other address types is a requirement on every
+implementation, in every language. The address types that a language can
+represent differ. In soroban-sdk 26.0.1, an `Address` value cannot hold a
+rejected type. `Address::from_string` accepts only account (`G...`) and
+contract (`C...`) strkeys (`src/address.rs`). The payload conversion
+returns no value for any other type (`src/address_payload.rs`). In the
+Stellar SDK for JavaScript, the `Address` class parses and holds all five
+types (`js-stellar-base`, `src/address.js`). A muxed strkey (`M...`)
+parses there normally. An implementation must not drop the rejection
+because another implementation cannot trigger it. Every implementation
+must have a negative test that submits each rejected address type and
+confirms the rejection.
+
 If a future protocol version accepts an additional address type, the
 accepted tag list changes. That changes the meaning of the preimage, so the
 `CTX_DOMAIN_TAG` string of section 3.1 must change with it.
@@ -193,12 +208,27 @@ because the tag and every payload bit survive in the limb pair.
 `reserve_set_hash` commits to the set of authorized reserve addresses:
 
 1. Reject the set if any address is not an accepted type per section 3.2.
-2. Sort the addresses in ascending byte order of `(tag, payload)`.
+2. Sort the addresses in ascending lexicographic order of the sort key. The
+   sort key of an address is 33 bytes: the tag as one byte, then the 32-byte
+   payload.
 3. Reject the set if it contains a duplicate address.
 4. Reject the set if it is empty or larger than `MAX_RESERVE_ADDRESSES` (16).
 5. Encode each address as `(addr_hi, addr_lo)` per section 3.2.
 6. Concatenate the limb pairs in sorted order into one list of `2N` elements.
 7. `reserve_set_hash = H_2N(list)`.
+
+The steps define the value and the rejection rules. They do not fix an
+execution order. An implementation may evaluate the rejection rules of
+steps 1, 3, and 4 in any order. When a set violates more than one rule, the
+implementation may report any one of the violated rules. Only the accept or
+reject outcome is normative. The identity of the reported error is not.
+
+Two other comparisons produce the same order as the sort key. A comparison
+by the tag as an integer, then by the payload bytes, is equivalent, because
+both accepted tags fit in one byte. A comparison by the encoded limb pair
+`(addr_hi, addr_lo)` as a pair of integers is also equivalent. It is
+equivalent because the tag occupies the highest bits of `addr_hi`. An
+implementation may sort with any of the three.
 
 The sort makes the value a set hash: the same addresses in any submission
 order produce the same hash. The capacity rule of section 1.2 encodes the
