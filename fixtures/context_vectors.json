@@ -1,0 +1,24 @@
+{
+  "constants": {
+    "ctx_domain_tag": "0x000000000000000000000000000000007a6b706f722d636f6e746578742d7631",
+    "max_reserve_addresses": 16,
+    "attestation_max_age_ledgers": 720,
+    "address_tag_account": 0,
+    "address_tag_contract": 1
+  },
+  "addresses": [
+    {"tag": 0, "payload_byte": 0, "hi": "0x0000000000000000000000000000000000000000000000000000000000000000", "lo": "0x0000000000000000000000000000000000000000000000000000000000000000"},
+    {"tag": 0, "payload_byte": 1, "hi": "0x0000000000000000000000000000000001010101010101010101010101010101", "lo": "0x0000000000000000000000000000000001010101010101010101010101010101"},
+    {"tag": 1, "payload_byte": 1, "hi": "0x0000000000000000000000000000000101010101010101010101010101010101", "lo": "0x0000000000000000000000000000000001010101010101010101010101010101"},
+    {"tag": 1, "payload_byte": 255, "hi": "0x00000000000000000000000000000001ffffffffffffffffffffffffffffffff", "lo": "0x00000000000000000000000000000000ffffffffffffffffffffffffffffffff"}
+  ],
+  "reserve_sets": [
+    {"addresses": [0], "reserve_set_hash": "0x0b63a53787021a4a962a452c2921b3663aff1ffd8d5510540f8e659e782956f1"},
+    {"addresses": [3, 1, 2], "reserve_set_hash": "0x02515c0c97f3c3c715cb0b382987a309f77e3d2b435aea94a6205cd355438f50"},
+    {"addresses": [0, 1, 2, 3], "reserve_set_hash": "0x10c35ad5bd2ff8230d2beb00704ddafa9a658e063ff281ca2322bd6349a7d9cc"}
+  ],
+  "contexts": [
+    {"authority": 1, "asset": 2, "reserve_set": 0, "snapshot_ledger": 0, "context_hash": "0x0915cbaa340f8ec9b21f480258bcafa9faf8eb70e9f9c97e4b594715b6e8e868"},
+    {"authority": 0, "asset": 3, "reserve_set": 1, "snapshot_ledger": 4294967295, "context_hash": "0x2de0bce3836d2d98c8a1cffc70b1cda70f29dfb3f476c72cf55e1f99f4ab1a19"}
+  ]
+}
