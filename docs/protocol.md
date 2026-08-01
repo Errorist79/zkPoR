@@ -33,6 +33,26 @@ An implementation must not substitute another Poseidon variant, another state
 width, or another capacity rule. Any such substitution changes every root and
 every proof in the system.
 
+Two hashes with the same input count share one hash domain. This protocol
+has one such meeting: a tree node of section 5 and a one-address reserve
+set hash of section 3.3 both take two inputs. No substitution path exists
+between them. The registry computes `reserve_set_hash` from the addresses
+itself, so a prover cannot supply a tree node in its place. An equality
+would also need a node whose two inputs equal an address limb pair. Node
+inputs are hash outputs, the limbs are below 2^129 and 2^128, and no known
+method produces such a node.
+
+The inner key tree of section 2.1 and the liabilities tree of section 5
+share the two-input domain, so a value from one tree could in principle
+appear in the other. This is safe because section 2.1 fixes the position
+of each public input, and section 2.2 forbids a consumer to locate a
+public input by its value. An edit that relaxes either rule reopens this
+question.
+
+A future protocol version must not add a hash at an input count already in
+use, unless the new preimage starts with a domain tag.
+The salt derivation of section 4.2 follows this rule.
+
 ### 1.3 Test vectors
 
 A hand computation of Poseidon2 is not practical. Therefore this document
@@ -83,6 +103,15 @@ The on-chain verifier takes a `public_inputs` byte string. The byte string
 must be the concatenation of the four elements above, in index order, each
 serialized as 32 bytes big-endian. The total length is exactly 128 bytes.
 There is no length prefix, no separator, and no padding.
+
+The four positions are normative. A tool may map this order onto the
+vector that a prover toolchain emits. It must establish the mapping from
+toolchain metadata or from pairwise distinct probe values. It must fail
+when the mapping is not unique, and it must write the result into a
+generated artifact. A consumer must read the positions from that artifact.
+A consumer must not locate a public input by its value, and it must not
+hard-code a position. Two public inputs can hold the same field value, so
+a search by value can find the wrong position.
 
 ### 2.3 The pairing point accumulator occupies no slot
 
@@ -259,28 +288,42 @@ entropy per leaf and closes that search.
 ### 4.2 Salt derivation
 
 ```
-salt_i = H_3([master_secret, epoch_nonce, i])
+salt_i = H_4([SALT_DOMAIN_TAG, master_secret, context_hash, i])
 ```
 
+- `SALT_DOMAIN_TAG` is the `Fr` element whose big-endian byte representation
+  is the ASCII string `zkpor-salt-v1` (13 bytes), left-padded with zero
+  bytes to 32 bytes. The tag separates the salt derivation from every other
+  hash in this protocol. The input count alone does not separate it,
+  because a reserve set of two addresses also hashes four inputs.
 - `master_secret` is 32 bytes from a cryptographically secure random source,
   reduced modulo `r`. The authority must keep it confidential and must not put
   it into any circuit witness or any distributed file.
-- `epoch_nonce` is a value the authority chooses once per reporting epoch, as an
-  `Fr` element. It must be unique per epoch. The recommended value is the
-  snapshot ledger sequence of the epoch.
+- `context_hash` is the value of section 3.1 for this attestation. It binds
+  every salt to one authority, one asset, one reserve address set, and one
+  snapshot. Two attestations with different contexts therefore never share
+  a salt, even at the same snapshot ledger.
 - `i` is the global leaf index of section 5.2, embedded into `Fr`.
 
+The derivation has no circular dependency. The salts build the leaves, and
+no input of the context hash depends on a leaf or on the root. Every input
+of the context hash is fixed before the derivation starts. A change to the
+reserve set or to the snapshot changes the context hash, so it changes
+every salt and every leaf. The authority must fix both before it derives
+the salts.
+
 The derivation runs outside every circuit. The circuits receive each salt as
-a private input and never see the master secret. The authority stores one
-secret
-per epoch instead of one salt per customer.
+a private input and never see the master secret. The derivation does not
+change any verification key. The authority stores one secret instead of one
+salt per customer.
 
 A leaked salt exposes exactly one leaf. With `salt_i`, a third party can test
 candidate `(id, balance)` pairs for leaf `i` only. The salts of all other
 leaves stay independent, so the sibling hashes of the leaked leaf reveal
-nothing. A leaked `master_secret` with its `epoch_nonce` exposes every leaf
-of that epoch, which is why the secret must never leave the authority's
-environment.
+nothing. The other derivation inputs are public, so a leaked `master_secret`
+exposes every leaf of every context that used it. The secret must never
+leave the authority's environment. The authority may rotate the secret
+between snapshots to bound that exposure.
 
 ### 4.3 Padding leaves
 
@@ -295,6 +338,12 @@ A padding leaf adds zero to `L`. Because its salt is real, a padding leaf is
 indistinguishable from a customer leaf, so the tree does not reveal the true
 customer count. The authority must not issue an inclusion package for a padding
 leaf.
+
+The tree capacity bounds the customer count. A count equal to `B*K` needs
+no padding leaf. A count below `B*K` fills every remaining position with a
+padding leaf. A generator must reject a count above `B*K`. It must not
+truncate the list, because a silent truncation removes liabilities from
+`L`.
 
 ## 5. Tree and authentication path
 
