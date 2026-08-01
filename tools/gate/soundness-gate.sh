@@ -286,22 +286,9 @@ run_case() { # label kind expected
 # changed. The circuit does not constrain that public input, so only its place
 # in the proof transcript can reject this.
 run_foreign_context_case() {
-  python3 - "$ATGT/public_inputs" "$ATGT/public_inputs.foreign" "$CTX_IDX" "$PI_BYTES" \
-    "$PI_COUNT" <<'PY' || die "cannot build the foreign context input"
-import sys
-src, dst = sys.argv[1], sys.argv[2]
-index, expected, count = int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5])
-data = bytearray(open(src, "rb").read())
-if len(data) != expected:
-    sys.exit(f"the public input string is {len(data)} bytes, and the manifest says {expected}")
-size = expected // count
-start = index * size
-original = bytes(data[start:start + size])
-data[start:start + size] = (int.from_bytes(original, "big") ^ 1).to_bytes(size, "big")
-if bytes(data[start:start + size]) == original:
-    sys.exit("the context_hash did not change")
-open(dst, "wb").write(bytes(data))
-PY
+  python3 "$REPO_ROOT/scripts/tamper_public_input.py" \
+    "$ATGT/public_inputs" "$ATGT/public_inputs.foreign" \
+    "$CTX_IDX" "$PI_BYTES" "$PI_COUNT" || die "cannot build the foreign context input"
   record foreigncontext "$(onchain_verify "$ATGT/public_inputs.foreign" "$ATGT/proof")" \
     REJECT "the honest proof, context_hash at index $CTX_IDX changed by one bit"
 }

@@ -394,8 +394,9 @@ fn assert_key_matches_program(
     }
     run("bb", &args);
 
-    // Read both files first, then remove the scratch directory, so a failure
-    // below leaves nothing behind.
+    // Read both files, then remove the scratch directory before the comparison,
+    // so a mismatch leaves nothing behind. A read that fails, or a signal,
+    // still leaves the directory, which git ignores.
     let pairs: Vec<(&str, Vec<u8>, Vec<u8>)> = ["vk", "vk_fields.json"]
         .iter()
         .map(|name| {
@@ -447,6 +448,13 @@ fn position_of(layout: &[String], name: &str) -> usize {
 /// The release configuration. An artifact of another shape looks the same but
 /// proves nothing about the release artifact, so the pin path and the manifest
 /// refuse to produce one.
+///
+/// These two values repeat params.toml on purpose, and neither one is a
+/// configuration value here. params.toml states the shape that the tooling
+/// builds, and these state the only shape that may become a release. The two
+/// meet in one comparison that fails loudly, so an edit of params.toml alone
+/// cannot turn a development shape into a release. Do not delete them as a
+/// duplicate.
 const RELEASE_BATCH_B: usize = 1024;
 const RELEASE_NUM_BATCHES_K: usize = 4;
 /// Set this variable to build an artifact of another shape while you work. No

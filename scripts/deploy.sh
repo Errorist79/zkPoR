@@ -10,17 +10,9 @@
 set -e
 source "$(dirname "${BASH_SOURCE[0]}")/config.sh"
 
-MANIFEST="$ROOT_DIR/circuits/recursion/manifest.json"
-RELEASE_KEY="$ROOT_DIR/circuits/recursion/agg/vk"
-CONTRACT_ID_FILE="$ROOT_DIR/.contract_id.recursion"
-
-manifest_field() {
-  python3 -c "import json,sys;print(json.load(open(sys.argv[1]))[sys.argv[2]])" "$MANIFEST" "$1"
-}
-
 echo -e "${BLUE}1. Checking the release artifact against the manifest...${NC}"
-[ -f "$MANIFEST" ] || {
-  echo -e "${RED}no manifest at $MANIFEST: this tree holds no release artifact${NC}"; exit 1; }
+[ -f "$MANIFEST_FILE" ] || {
+  echo -e "${RED}no manifest at $MANIFEST_FILE: this tree holds no release artifact${NC}"; exit 1; }
 [ -f "$RELEASE_KEY" ] || {
   echo -e "${RED}no verification key at $RELEASE_KEY${NC}"; exit 1; }
 KEY_SHA256=$(python3 -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$RELEASE_KEY")
