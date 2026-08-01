@@ -50,13 +50,16 @@ below). Useful environment variables:
 labels `self-hosted, zkpor`. The gate needs the BN254 host functions and a real
 proving toolchain, so it cannot run on a hosted GitHub runner. The host of the
 runner must make the pinned toolchain from `scripts/versions.env` available on
-`PATH`:
+`PATH`. `scripts/setup.sh` installs that toolchain and it is safe to run again:
 
 - Rust 1.96.0 (`cargo`, `rustc`) plus the targets `wasm32v1-none` and
   `wasm32-unknown-unknown`.
 - nargo 1.0.0-beta.9 (`~/.nargo/bin`).
-- Barretenberg `bb` 0.87.0 (`~/.bb/bin`). On a host with GLIBC < 2.38 this is a
-  thin wrapper that runs the real `bb` inside an `ubuntu:24.04` container.
+- Barretenberg `bb` 0.87.0 (`~/.bb/bin`). The official release needs a newer
+  glibc and libstdc++ than some hosts give. `scripts/setup.sh` runs the
+  downloaded binary one time. If the run fails, the setup installs a thin
+  wrapper at that path, and the wrapper runs the real `bb` in an `ubuntu:24.04`
+  container. The image tag follows the pinned `bb` version.
 - Stellar CLI 27.0.0 (`~/.local/bin`).
 - Docker, for the localnet and, where applicable, for the `bb` wrapper.
 - A Protocol-27 localnet (`stellar/quickstart:nightly` with
