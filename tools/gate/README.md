@@ -50,7 +50,9 @@ below). Useful environment variables:
 labels `self-hosted, zkpor`. The gate needs the BN254 host functions and a real
 proving toolchain, so it cannot run on a hosted GitHub runner. The host of the
 runner must make the pinned toolchain from `scripts/versions.env` available on
-`PATH`. `scripts/setup.sh` installs that toolchain and it is safe to run again:
+`PATH`. `scripts/setup.sh` installs that toolchain, and it is safe to run the
+script again. The last step of the script compares each installed version with
+the pin, and the script fails when a version does not match:
 
 - Rust 1.96.0 (`cargo`, `rustc`) plus the targets `wasm32v1-none` and
   `wasm32-unknown-unknown`.
@@ -62,6 +64,9 @@ runner must make the pinned toolchain from `scripts/versions.env` available on
   container. The image tag follows the pinned `bb` version.
 - Stellar CLI 27.0.0 (`~/.local/bin`).
 - Docker, for the localnet and, where applicable, for the `bb` wrapper.
+  `scripts/setup.sh` does not install Docker, because an install needs root and
+  changes the host. The setup stops with an error when Docker is absent or when
+  the daemon does not answer.
 - A Protocol-27 localnet (`stellar/quickstart:nightly` with
   `--protocol-version 27`) that is reachable at the RPC. As an alternative, run
   the gate with `START_LOCALNET=1` and the gate starts one.
