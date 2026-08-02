@@ -4,6 +4,15 @@
 # A gate sources this file after it sets REPO_ROOT, RPC, NET, and the pinned
 # proof scheme and oracle hashes.
 
+# Changes directory, or stops the run.
+#
+# A gate runs without exit-on-error, so a failed change would leave the shell
+# in the directory it started from, and the next command would act there. Some
+# of those commands remove a directory tree.
+enter() {
+  cd "$1" || die "cannot enter $1"
+}
+
 rpc_healthy() {
   curl -s -m 5 -X POST -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' "$RPC" 2>/dev/null | grep -q '"status":"healthy"'

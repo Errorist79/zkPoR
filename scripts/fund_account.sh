@@ -13,7 +13,6 @@ echo -e "${BLUE}Ensuring identity '$STELLAR_SOURCE_ACCOUNT'...${NC}"
 stellar keys generate "$STELLAR_SOURCE_ACCOUNT" 2>/dev/null || true
 
 echo -e "${BLUE}Funding '$STELLAR_SOURCE_ACCOUNT' on '$STELLAR_NETWORK_NAME'...${NC}"
-ADDR=$(stellar keys address "$STELLAR_SOURCE_ACCOUNT")
 FUNDED=0
 for i in $(seq 1 "$STELLAR_HEALTH_RETRIES"); do
   OUT=$(stellar keys fund "$STELLAR_SOURCE_ACCOUNT" --network "$STELLAR_NETWORK_NAME" 2>&1) && { FUNDED=1; break; }

@@ -109,7 +109,7 @@ ensure_localnet
 # -----------------------------------------------------------------------------
 ( cd "$GEN" && cargo run --release --quiet -- witness "$CONTEXT_FILE" "$CUSTOMERS_FILE" ) \
   || die "recursion-gen witness"
-cd "$INNER"; rm -rf target out; nargo compile || die "inner compile"
+enter "$INNER"; rm -rf target out; nargo compile || die "inner compile"
 for k in $(seq 0 $((K - 1))); do
   cp "Prover_${k}.toml" Prover.toml
   nargo execute "wit${k}" >/dev/null 2>&1 || die "inner execute $k"
@@ -143,7 +143,7 @@ grep -E 'PINNED_INNER_VK_HASH|SLOT_IDX|SUBROOT_IDX|SUBTOTAL_IDX|INNER_PUB_LEN|NU
 #    batch_0 (honest values) for the forged fold, deflate (-100) for the
 #    deflated-total fold. Both pass nargo execute; caught only at the verifier.
 # -----------------------------------------------------------------------------
-cd "$EVIL"; rm -rf target out; nargo compile || die "inner_evil compile"
+enter "$EVIL"; rm -rf target out; nargo compile || die "inner_evil compile"
 # Only slot 0 carries an adversarial batch in either attack, so only batch 0 and
 # the deflated batch are proven here.
 python3 "$PY" evil-prover 0 plain > Prover.toml || die "evil-prover 0"
@@ -164,7 +164,7 @@ bb write_vk --scheme "$PROOF_SCHEME" --oracle_hash "$INNER_ORACLE_HASH" --honk_r
 # 3b. Adversarial inner_stale_leaf proof: the old two-input leaf, the salt
 #     ignored, and an honest total. Only the pinned inner key rejects it.
 # -----------------------------------------------------------------------------
-cd "$STALE"; rm -rf target out; nargo compile || die "inner_stale_leaf compile"
+enter "$STALE"; rm -rf target out; nargo compile || die "inner_stale_leaf compile"
 python3 "$PY" evil-prover 0 plain > Prover.toml || die "stale-prover 0"
 nargo execute swit0 >/dev/null 2>&1 || die "stale execute 0"
 mkdir -p out/batch_0
@@ -174,7 +174,7 @@ prove_inner target/recursion_inner_stale_leaf.json target/swit0.gz out/batch_0 \
 # -----------------------------------------------------------------------------
 # 4. Compile the aggregator + write its (circuit-constant) keccak vk for deploy
 # -----------------------------------------------------------------------------
-cd "$AGG"; rm -rf target; nargo compile || die "agg compile"
+enter "$AGG"; rm -rf target; nargo compile || die "agg compile"
 bb write_vk --scheme "$PROOF_SCHEME" --oracle_hash "$TERMINAL_ORACLE_HASH" \
   --bytecode_path "$ATGT/recursion_agg.json" --output_path "$ATGT" \
   --output_format bytes_and_fields >/dev/null 2>&1 || die "agg write_vk"

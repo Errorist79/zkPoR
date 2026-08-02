@@ -26,7 +26,6 @@
 # Environment (all optional):
 #   SOROBAN_RPC      localnet RPC (default http://localhost:8000/soroban/rpc)
 #   START_LOCALNET   =1 to start the localnet container if the RPC is unreachable
-#   SKIP_PROVE       =1 to reuse the proof of an earlier run of this gate
 # =============================================================================
 set -uo pipefail
 source "$HOME/.cargo/env" 2>/dev/null || true
@@ -38,10 +37,8 @@ NET="${SOROBAN_NET:-local}"
 RPC="${SOROBAN_RPC:-http://localhost:8000/soroban/rpc}"
 
 REC="$REPO_ROOT/circuits/recursion"
-INNER="$REC/inner"; AGG="$REC/agg"; ATGT="$AGG/target"; OUT="$INNER/out"
-GEN="$REPO_ROOT/tools/recursion-gen"
 REGISTRY_CRATE="$REPO_ROOT/contracts/registry"
-CUSTOMERS_FILE="$INNER/fixtures/customers_below_capacity.csv"
+CUSTOMERS_FILE="$REC/inner/fixtures/customers_below_capacity.csv"
 CONTEXT_FILE="$REPO_ROOT/circuits/recursion/.registry-gate-context.toml"
 WORK="$REPO_ROOT/circuits/recursion/.registry-gate"
 ASSET_CODE="USDX"
@@ -64,16 +61,11 @@ for bin in nargo bb stellar cargo python3; do
   command -v "$bin" >/dev/null 2>&1 || die "missing required tool on PATH: $bin"
 done
 
+# The localnet image tag and the protocol version come from the pinned file.
 # shellcheck source=/dev/null
 . "$REPO_ROOT/scripts/versions.env"
 # shellcheck source=/dev/null
-. "$REPO_ROOT/fixtures/test_only_master_secret.env"
-export ZKPOR_MASTER_SECRET="$TEST_ONLY_MASTER_SECRET"
-# shellcheck source=/dev/null
 . "$GATE_DIR/lib.sh"
-
-K=$(sed -nE "s/^num_batches_k *= *([0-9]+).*/\\1/p" "$REC/params.toml")
-[ -n "$K" ] || die "cannot read num_batches_k from params.toml"
 
 mkdir -p "$WORK"
 echo "=== REGISTRY-GATE START $(date -u) ==="
@@ -184,35 +176,21 @@ reserves = ["$RESERVE"]
 snapshot_ledger = $SNAPSHOT
 EOF
 
-if [ "${SKIP_PROVE:-0}" != "1" ]; then
-  ( cd "$GEN" && cargo run --release --quiet -- witness "$CONTEXT_FILE" "$CUSTOMERS_FILE" ) \
-    || die "recursion-gen witness"
-  cd "$INNER" || die "inner directory"
-  rm -rf target out; nargo compile || die "inner compile"
-  for k in $(seq 0 $((K - 1))); do
-    cp "Prover_${k}.toml" Prover.toml
-    nargo execute "wit${k}" >/dev/null 2>&1 || die "inner execute $k"
-    mkdir -p "$OUT/batch_${k}"
-    prove_inner target/recursion_inner.json "target/wit${k}.gz" "$OUT/batch_${k}" \
-      >/dev/null 2>&1 || die "inner prove $k"
-    note "inner batch $k proved"
-  done
-  bb write_vk --scheme "$PROOF_SCHEME" --oracle_hash "$INNER_ORACLE_HASH" --honk_recursion 1 \
-    --verifier_type standalone --bytecode_path target/recursion_inner.json \
-    --output_path "$OUT" --output_format bytes_and_fields >/dev/null 2>&1 || die "inner write_vk"
-
-  ( cd "$GEN" && cargo run --release --quiet -- assemble "$CONTEXT_FILE" "$OUT" ) \
-    || die "recursion-gen assemble"
-  cd "$AGG" || die "aggregator directory"
-  rm -rf target; nargo compile || die "agg compile"
-  nargo execute aggwit >/dev/null 2>&1 || die "agg execute"
-  bb prove --scheme "$PROOF_SCHEME" --oracle_hash "$TERMINAL_ORACLE_HASH" \
-    --bytecode_path "$ATGT/recursion_agg.json" --witness_path "$ATGT/aggwit.gz" \
-    --output_path "$ATGT" --output_format bytes_and_fields >/dev/null 2>&1 || die "agg prove"
-  cp "$ATGT/proof" "$WORK/proof"
-  cp "$ATGT/public_inputs" "$WORK/public_inputs"
-fi
-[ -f "$WORK/proof" ] || die "no proof at $WORK/proof"
+# The gate proves and submits through the issuer flow itself, so the honest
+# case measures the script that an issuer runs, and not a copy of its steps.
+# The flow refuses the fixture secret and every file under a fixtures
+# directory, so this run derives its own secret and writes its own copy of the
+# customer rows.
+GATE_SECRET="0x$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+GATE_CUSTOMERS="$WORK/customers.csv"
+cp "$CUSTOMERS_FILE" "$GATE_CUSTOMERS" || die "cannot copy the customer rows"
+HONEST=$(ZKPOR_MASTER_SECRET="$GATE_SECRET" ZKPOR_REGISTRY="$REGISTRY" \
+  ZKPOR_WORK="$WORK" STELLAR_SOURCE_ACCOUNT=registry-gate-issuer \
+  STELLAR_NETWORK_NAME="$NET" \
+  bash "$REPO_ROOT/scripts/attest.sh" "$CONTEXT_FILE" "$GATE_CUSTOMERS" 2>&1) \
+  || die "the issuer flow did not reach an accepted attestation: $HONEST"
+note "honest ACCEPT through scripts/attest.sh"
+[ -f "$WORK/proof" ] || die "the flow left no proof at $WORK/proof"
 
 # The root and the total of the run come from the public input string that the
 # prover wrote, so this gate never states them itself.
@@ -243,12 +221,6 @@ expect_refusal() { # case output variant
     || die "$1: the call failed, and not with $3 (number $expected): $2"
   note "$1 REJECT with $3"
 }
-
-if RESULT=$(submit "$ASSET" "$SNAPSHOT"); then
-  note "honest ACCEPT"
-else
-  die "honest: the registry refused a proof of its own context: $RESULT"
-fi
 
 # The same proof under another snapshot ledger. The registry derives the
 # context itself, so the verifier sees a public input string it never proved.

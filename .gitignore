@@ -15,6 +15,7 @@ circuits/*/target
 circuits/recursion/.key-check/
 circuits/recursion/.registry-gate/
 circuits/recursion/.registry-gate-context.toml
+circuits/recursion/.attest/
 circuits/recursion/inner/out/
 circuits/recursion/inner/Prover.toml
 circuits/recursion/inner/Prover_*.toml

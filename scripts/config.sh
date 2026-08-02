@@ -44,6 +44,7 @@ export MANIFEST_FILE="$ROOT_DIR/circuits/recursion/manifest.json"
 export RELEASE_KEY="$ROOT_DIR/circuits/recursion/agg/vk"
 export AGG_TARGET="$ROOT_DIR/circuits/recursion/agg/target"
 export CONTRACT_ID_FILE="$ROOT_DIR/.contract_id.recursion"
+export REGISTRY_ID_FILE="$ROOT_DIR/.contract_id.registry"
 export TAMPER_SCRIPT="$ROOT_DIR/scripts/tamper_public_input.py"
 
 # One field of the manifest. Both the deploy path and the verify path read the

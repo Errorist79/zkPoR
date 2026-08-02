@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+# The issuer flow: a customer file becomes an accepted attestation.
+#
+# usage: attest.sh <context.toml> <customers.csv>
+#
+# Everything runs on the machine that the issuer controls. This script takes
+# no address for any intermediate value, and the project runs no service that
+# could receive one, so no setting can send them anywhere. What leaves the
+# machine is one transaction: the four public inputs, which are two hashes,
+# one root and one total, and the proof bytes.
+#
+# An accepted attestation ends with the removal of the balances, the salts,
+# and the witnesses. A run that stops early leaves them on disk for the
+# diagnosis, and the issuer owns their disposal from that point.
+#
+# The context file describes the attestation:
+#
+#   authority       = "G..."     the issuer account or the administrator
+#   asset           = "C..."     the asset contract
+#   reserves        = ["G...", "C..."]
+#   snapshot_ledger = 12345      the ledger at which the liabilities freeze
+#
+# The values must equal the entry that the registry holds, because the
+# registry derives the context hash from its own state, and a proof of another
+# context does not verify.
+#
+# The master secret arrives in ZKPOR_MASTER_SECRET and never in a file of this
+# repository. It never enters a witness. A run without it fails, and a run
+# with the test fixture secret fails, because those salts are public.
+#
+# This script is one step of the work. The issuer still does these by hand:
+#
+#   - deploy the verifier and the registry, register the asset, and record the
+#     registry address. Registration needs the consent of every reserve
+#     address, and a reserve account signs that consent with a wallet;
+#   - produce the customer file from its own records, and freeze the liability
+#     set at the ledger that the context names;
+#   - generate the master secret from a random source, keep it, and rotate it;
+#   - fund the account that pays the fee, and read the result of the
+#     transaction;
+#   - give each customer an inclusion package. Nothing here writes one yet.
+#
+# Environment:
+#   ZKPOR_MASTER_SECRET  required. 32 random bytes as hexadecimal.
+#   ZKPOR_REGISTRY       the registry contract, or .contract_id.registry
+#   STELLAR_SOURCE_ACCOUNT  the identity of the authority
+#   STELLAR_NETWORK_NAME    local (default), testnet, or mainnet
+#   ZKPOR_WORK           where the run keeps its files
+source "$(dirname "${BASH_SOURCE[0]}")/config.sh"
+# The shared configuration turns on exit-on-error. This script reports every
+# failure with its own reason instead, so it turns that off again.
+set +e -uo pipefail
+export PATH="$HOME/.nargo/bin:$HOME/.bb/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+
+REC="$ROOT_DIR/circuits/recursion"
+INNER="$REC/inner"; AGG="$REC/agg"; ATGT="$AGG/target"; OUT="$INNER/out"
+GEN="$ROOT_DIR/tools/recursion-gen"
+WORK="${ZKPOR_WORK:-$REC/.attest}"
+FIXTURE_SECRET_FILE="$ROOT_DIR/fixtures/test_only_master_secret.env"
+# The public secret of the gates. The value stands here, and not only in the
+# file, because a guard that a deleted file switches off is no guard. The
+# check below compares the file with this copy, so the two cannot drift.
+FIXTURE_SECRET="0x7a6b706f722d746573742d6f6e6c792d6d61737465722d736563726574212121"
+# The proof of the release configuration takes minutes, and a network closes a
+# ledger every few seconds. A run that starts with less than this much window
+# left would prove a snapshot that expires before the transaction arrives, so
+# it stops instead.
+PROVING_MARGIN_LEDGERS=120
+
+die() { echo -e "\n${RED}attest: $*${NC}" >&2; exit 1; }
+note() { echo -e "${BLUE}[attest]${NC} $*"; }
+
+[ $# -eq 2 ] || die "usage: attest.sh <context.toml> <customers.csv>"
+# Each step runs from its own directory, so a relative path would resolve
+# somewhere else.
+absolute() {
+  [ -f "$1" ] || die "no file at $1"
+  echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+}
+CONTEXT_FILE=$(absolute "$1") || exit 1
+CUSTOMERS_FILE=$(absolute "$2") || exit 1
+
+for bin in nargo bb cargo stellar python3; do
+  command -v "$bin" >/dev/null 2>&1 || die "missing required tool on PATH: $bin"
+done
+
+# -----------------------------------------------------------------------------
+# 1. Refuse a run that would produce salts anybody can recompute
+# -----------------------------------------------------------------------------
+[ -n "${ZKPOR_MASTER_SECRET:-}" ] \
+  || die "ZKPOR_MASTER_SECRET is not set. Every salt comes from it, so a run without it would leak every leaf."
+[ "$ZKPOR_MASTER_SECRET" != "$FIXTURE_SECRET" ] \
+  || die "ZKPOR_MASTER_SECRET is the test fixture. Its salts are in this repository, so anybody can recompute every leaf."
+if [ -f "$FIXTURE_SECRET_FILE" ]; then
+  # shellcheck source=/dev/null
+  . "$FIXTURE_SECRET_FILE"
+  [ "$TEST_ONLY_MASTER_SECRET" = "$FIXTURE_SECRET" ] \
+    || die "the fixture secret changed, and the value that this script refuses did not. Update it."
+fi
+
+# Repository fixtures describe no real asset and carry no real balance. A run
+# that names one would attest data that this repository publishes.
+for path in "$CONTEXT_FILE" "$CUSTOMERS_FILE"; do
+  case "$path" in
+    */fixtures/*) die "$path is a fixture of this repository. Write your own context and your own customer file." ;;
+  esac
+done
+
+REGISTRY="${ZKPOR_REGISTRY:-}"
+[ -n "$REGISTRY" ] || REGISTRY=$(cat "$REGISTRY_ID_FILE" 2>/dev/null)
+[ -n "$REGISTRY" ] || die "no registry contract. Set ZKPOR_REGISTRY, or deploy one and record it in $REGISTRY_ID_FILE."
+
+# -----------------------------------------------------------------------------
+# 2. The customer list must fit the tree, and the snapshot must still be open
+# -----------------------------------------------------------------------------
+K=$(sed -nE "s/^num_batches_k *= *([0-9]+).*/\1/p" "$REC/params.toml")
+B=$(sed -nE "s/^batch_b *= *([0-9]+).*/\1/p" "$REC/params.toml")
+[ -n "$K" ] && [ -n "$B" ] || die "cannot read batch_b and num_batches_k from params.toml"
+CAPACITY=$((B * K))
+ROWS=$(grep -cvE '^\s*(#|id,|$)' "$CUSTOMERS_FILE")
+[ "$ROWS" -le "$CAPACITY" ] \
+  || die "the customer file holds $ROWS rows and the tree holds $CAPACITY. The flow does not cut the list, because a cut removes liabilities from the total."
+
+SNAPSHOT=$(sed -nE "s/^snapshot_ledger *= *([0-9]+).*/\1/p" "$CONTEXT_FILE")
+[ -n "$SNAPSHOT" ] || die "the context file states no snapshot_ledger"
+# The window lives in the contract that enforces it, so this reads it there.
+WINDOW=$(sed -nE "s/^pub const ATTESTATION_MAX_AGE_LEDGERS: u32 = ([0-9]+);.*/\1/p" \
+  "$ROOT_DIR/contracts/context/src/lib.rs")
+[ -n "$WINDOW" ] || die "cannot read the age window from the context crate"
+LEDGER=$(curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getLatestLedger"}' "$STELLAR_RPC_URL" \
+  | sed -nE 's/.*"sequence":([0-9]+).*/\1/p')
+[ -n "$LEDGER" ] || die "cannot read the current ledger from $STELLAR_RPC_URL"
+[ "$SNAPSHOT" -le "$LEDGER" ] \
+  || die "the snapshot ledger $SNAPSHOT is later than the current ledger $LEDGER"
+REMAINING=$((SNAPSHOT + WINDOW - LEDGER))
+[ "$REMAINING" -gt 0 ] \
+  || die "the snapshot ledger $SNAPSHOT expired at $((SNAPSHOT + WINDOW)), and the network is at $LEDGER"
+[ "$REMAINING" -ge "$PROVING_MARGIN_LEDGERS" ] \
+  || die "only $REMAINING ledgers of the window are left, and the proof needs more. Take a fresh snapshot."
+
+mkdir -p "$WORK"
+
+# -----------------------------------------------------------------------------
+# 3. The context must equal the entry that the registry holds
+# -----------------------------------------------------------------------------
+# The registry derives the context hash from its own state, so a context that
+# differs anywhere produces a proof that the registry refuses. The comparison
+# runs before the proof, which takes minutes. It needs the network, and so does
+# the window check above, so an unreachable chain already stopped this run.
+ASSET=$(sed -nE 's/^asset *= *"(.*)".*/\1/p' "$CONTEXT_FILE")
+[ -n "$ASSET" ] || die "the context file names no asset"
+# The answer of the registry arrives on the output, and the notes of the
+# command line arrive on the error stream, so the two do not mix.
+ENTRY=$(stellar contract invoke --id "$REGISTRY" --source "$STELLAR_SOURCE_ACCOUNT" \
+  --network "$STELLAR_NETWORK_NAME" -- entry --asset "$ASSET" 2>"$WORK/entry.error") \
+  || die "the registry holds no entry for $ASSET:\n$(cat "$WORK/entry.error")"
+# The comparison stops the run when it finds a difference and when it cannot
+# read either side, so a silent answer never passes for agreement.
+DIFFERENCE=$(echo "$ENTRY" | python3 "$ROOT_DIR/scripts/compare_context.py" "$CONTEXT_FILE" 2>&1) \
+  || die "the context does not match the entry that the registry holds:\n$DIFFERENCE"
+
+note "context=$CONTEXT_FILE customers=$ROWS of $CAPACITY snapshot=$SNAPSHOT window left=$REMAINING"
+
+# -----------------------------------------------------------------------------
+# 3. Salts, witnesses, and one proof per batch
+# -----------------------------------------------------------------------------
+( cd "$GEN" && cargo run --release --quiet -- witness "$CONTEXT_FILE" "$CUSTOMERS_FILE" ) \
+  || die "the generator did not write the witnesses"
+cd "$INNER" || die "no inner circuit directory"
+rm -rf target out; nargo compile || die "the inner circuit did not compile"
+for k in $(seq 0 $((K - 1))); do
+  cp "Prover_${k}.toml" Prover.toml
+  nargo execute "wit${k}" >/dev/null 2>&1 || die "batch $k did not execute"
+  mkdir -p "$OUT/batch_${k}"
+  bb prove --scheme "$PROOF_SCHEME" --oracle_hash "$INNER_ORACLE_HASH" --honk_recursion 1 \
+    --bytecode_path target/recursion_inner.json --witness_path "target/wit${k}.gz" \
+    --output_path "$OUT/batch_${k}" --output_format bytes_and_fields >/dev/null 2>&1 \
+    || die "batch $k did not prove"
+  note "batch $k of $K proved"
+done
+bb write_vk --scheme "$PROOF_SCHEME" --oracle_hash "$INNER_ORACLE_HASH" --honk_recursion 1 \
+  --verifier_type standalone --bytecode_path target/recursion_inner.json \
+  --output_path "$OUT" --output_format bytes_and_fields >/dev/null 2>&1 \
+  || die "the inner key did not write"
+
+# -----------------------------------------------------------------------------
+# 4. Fold the batches and produce the terminal proof
+# -----------------------------------------------------------------------------
+( cd "$GEN" && cargo run --release --quiet -- assemble "$CONTEXT_FILE" "$OUT" ) \
+  || die "the generator did not assemble the aggregator input"
+cd "$AGG" || die "no aggregator directory"
+rm -rf target; nargo compile || die "the aggregator did not compile"
+nargo execute aggwit >/dev/null 2>&1 || die "the aggregator did not execute"
+bb prove --scheme "$PROOF_SCHEME" --oracle_hash "$TERMINAL_ORACLE_HASH" \
+  --bytecode_path "$ATGT/recursion_agg.json" --witness_path "$ATGT/aggwit.gz" \
+  --output_path "$ATGT" --output_format bytes_and_fields >/dev/null 2>&1 \
+  || die "the terminal proof did not prove"
+cp "$ATGT/proof" "$WORK/proof" || die "the proof did not reach $WORK"
+cp "$ATGT/public_inputs" "$WORK/public_inputs" \
+  || die "the public inputs did not reach $WORK"
+note "terminal proof written to $WORK/proof"
+
+# The root and the total come out of the public input string that the prover
+# wrote, so this script states neither of them itself.
+read -r FINAL_ROOT TOTAL < <(python3 "$ROOT_DIR/tools/gate/public_input_fields.py" \
+  "$WORK/public_inputs" "$MANIFEST_FILE") || die "cannot read the public inputs"
+note "final_root=$FINAL_ROOT total_liabilities=$TOTAL"
+
+# -----------------------------------------------------------------------------
+# 5. Submit. The registry builds the public inputs from its own state.
+# -----------------------------------------------------------------------------
+note "submitting to $REGISTRY as $STELLAR_SOURCE_ACCOUNT on $STELLAR_NETWORK_NAME"
+SUBMISSION=$(stellar contract invoke --id "$REGISTRY" --source "$STELLAR_SOURCE_ACCOUNT" \
+  --network "$STELLAR_NETWORK_NAME" --send yes -- submit_attestation \
+  --asset "$(sed -nE 's/^asset *= *"(.*)".*/\1/p' "$CONTEXT_FILE")" \
+  --snapshot_ledger "$SNAPSHOT" --final_root "$FINAL_ROOT" \
+  --total_liabilities "$TOTAL" --proof-file-path "$WORK/proof" 2>&1) \
+  || die "the registry refused the attestation:\n$SUBMISSION"
+echo "$SUBMISSION"
+
+# The balances, the salts, and the witnesses have no use after an accepted
+# attestation, so the run removes them. The proof and the public inputs stay
+# in the work directory, because a resubmission needs them.
+rm -f "$INNER"/Prover.toml "$INNER"/Prover_*.toml "$AGG/Prover.toml"
+rm -rf "$OUT" "$INNER/target" "$ATGT"
+note "the balances, the salts, and the witnesses are removed"
+
+echo -e "\n${GREEN}The registry accepted the attestation of snapshot $SNAPSHOT.${NC}"
