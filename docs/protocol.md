@@ -442,7 +442,12 @@ lapsed until a fresher attestation replaces it.
 ### 6.3 The two reserve readings
 
 The registry produces two different reserve numbers, and they must never
-share a name, a field, or a headline:
+share a name, a field, or a headline. Both numbers are sums of the
+balances that the reserve addresses hold in the registered asset itself.
+Each number claims custody of that asset. It does not claim collateral in
+any other asset.
+
+The two numbers are:
 
 - `reserve_sum`, with `attested_ledger`: the sum of the registered reserve
   balances that the registry read inside the attestation transaction, at
@@ -452,6 +457,15 @@ share a name, a field, or a headline:
   sum and the ledger of the reading. No attestation covers this value.
   Interfaces present it as an observation and must state that the
   attestation does not cover it.
+
+A balance read can fail. An account address without a trustline in the
+asset makes the read fail, while a contract address without a balance
+entry answers zero (soroban-env-host 26.1.3,
+src/builtin_contracts/stellar_asset_contract/balance.rs). When any balance
+read fails, the attestation must fail. The registry must not substitute
+zero for a failed read, because a substituted zero hides a reserve address
+that cannot hold the asset. The authority repairs the reserve set with
+`set_reserves`, which collects consent again.
 
 ### 6.4 What an accepted attestation proves
 
@@ -513,10 +527,11 @@ The registry supports two kinds of asset, with different verifiable claims:
    A contract token must expose the `admin()` function of the Stellar
    Asset administrative interface. A token without it cannot be
    registered. The `admin()` value is code that the token author wrote, so
-   tier 2 does not prove provenance: the surviving attack is registering a
+   tier 2 does not prove provenance: one surviving attack is registering a
    lookalike token that the attacker deployed, and the record then names
-   the attacker as administrator of the attacker's own contract. Readers
-   must identify an asset by its contract address, never by its symbol.
+   the attacker as administrator of the attacker's own contract. Section
+   7.2 states the other limits of tier 2. Readers must identify an asset
+   by its contract address, never by its symbol.
 
 The native asset (XLM) has no registration path, as a deliberate scope
 boundary: the native asset has no issuer account, so tier 1 cannot apply,
@@ -525,6 +540,15 @@ tier 2 fails (verified on the test network: the native asset contract
 answers `name()` and returns a missing-value error for `admin()`). No party
 can authenticate as the authority of the native asset, so the registry must
 reject it under both tiers.
+
+Each tier detects the native asset in its own way. Tier 1 reads the type
+discriminant of the serialized asset and rejects the native type. Tier 2
+receives only a contract address. The registry therefore derives the
+canonical asset contract address of the native asset and rejects that
+address. The serialized native asset is the four zero bytes of its XDR
+discriminant, and the derivation is the same host derivation as in tier 1.
+Under the network identifier of the test network, this derivation returns
+the address of the deployed native asset contract on that network.
 
 An asset registers once; the first registration wins. Later changes require
 authorization from the recorded authority (the issuer account for tier 1,
@@ -554,6 +578,38 @@ Consequences of the authorization model:
   a willing collaborator's address remains possible, and the collaboration
   is co-signed inside the registration transaction, so it is publicly
   attributable.
+
+A reserve balance means backing only when the holder cannot create the
+asset. A party that can create the asset at will does not need a balance,
+because it can mint what it must show. For a classic asset, the issuer
+account is such a party, and the host reports the issuer balance as
+`i64::MAX` (soroban-env-host 26.1.3,
+src/builtin_contracts/stellar_asset_contract/balance.rs). For a contract
+token, the `mint` function of the standard administrative interface
+requires the authorization of the administrator (the same crate,
+contract.rs). Under both tiers the recorded authority can create the
+asset.
+
+The registry must therefore reject a reserve set that contains the
+recorded authority. The check runs at `register_asset` and at
+`set_reserves`. Those calls know the authority and the reserve set, so the
+check is early and cheap. An entry that fails the check could never attest
+honestly.
+
+The authority check has limits, and all of them belong to tier 2:
+
+- Token code outside the standard interface can hold other mint paths,
+  and the registry cannot see them.
+- A classic asset that registers under tier 2 keeps its issuer account as
+  a creator that the registry cannot identify.
+- The standard interface has `set_admin` (soroban-sdk 26.0.1, token.rs),
+  so the administrator can change after registration. The check compares
+  the recorded authority, so mint capability can move to an address that
+  the registry never compares against.
+
+A tier 2 record therefore proves who authorized the registration at that
+time. It does not prove who can create the asset now. These limits stand
+next to the lookalike limit of section 7.1.
 
 The registry records consent only. It holds no funds, moves no funds, and
 takes no authority over any balance.

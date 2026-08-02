@@ -1,0 +1,21 @@
+[package]
+name = "zkpor-registry"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# hazmat-address gives Address::from_payload. The registry builds an account
+# address from the ed25519 key inside a serialized classic asset, and compares
+# it with the supplied authority.
+soroban-sdk = { workspace = true, features = ["hazmat-address"] }
+# The one Rust definition of the address encoding, the reserve set hash, and
+# the context hash. The registry defines none of them again.
+zkpor-context = { path = "../context" }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["hazmat-address", "testutils"] }
+# The constructor test reads the key that a real verifier contract stores.
+ultrahonk-verifier = { path = "../verifier" }

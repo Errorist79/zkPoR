@@ -19,9 +19,10 @@
 //!
 //!   manifest  Run AFTER the aggregator is compiled and its key is written. It
 //!             records the shape, both key hashes, and the public input schema
-//!             of the release artifact. It refuses every other shape, and the
-//!             deploy path needs the file, so a development artifact cannot
-//!             reach a contract.
+//!             of the release artifact, and it writes the two constants that
+//!             the registry contract compiles in. It refuses every other
+//!             shape, and the deploy path needs the file, so a development
+//!             artifact cannot reach a contract.
 //!
 //! The positions of (batch_slot, subroot, subtotal) inside the vector that bb
 //! emits come from the compiled program's ABI, and never from a search by
@@ -50,6 +51,10 @@ const MANIFEST_FILE: &str = "circuits/recursion/manifest.json";
 /// The committed aggregator verification key. The tooling writes it and no
 /// person edits it. A deployment must carry these bytes.
 const AGG_KEY_FILE: &str = "circuits/recursion/agg/vk";
+/// The generated constants of the registry contract. The registry compares the
+/// key that a verifier stores against these bytes at its own deployment, so
+/// they come from the built artifact and never from a person.
+const REGISTRY_PARAMS_FILE: &str = "contracts/registry/src/params.rs";
 /// The pinned toolchain.
 const VERSIONS_FILE: &str = "scripts/versions.env";
 /// Scratch directory for the key that the manifest command writes again to
@@ -809,7 +814,58 @@ fn cmd_manifest(inner_out: &Path, agg_target: &Path) {
     fs::write(repo_path(MANIFEST_FILE), manifest).expect("write the manifest");
     // The key travels with the manifest, so a reader can hash it and compare.
     fs::write(repo_path(AGG_KEY_FILE), &key_bytes).expect("write the aggregator key");
-    println!("manifest: B={b} K={k} -> {MANIFEST_FILE} + {AGG_KEY_FILE}");
+    write_registry_params(&key_sha256, &inner_key_hash);
+    println!("manifest: B={b} K={k} -> {MANIFEST_FILE} + {AGG_KEY_FILE} + {REGISTRY_PARAMS_FILE}");
+}
+
+/// Rust source of a 32-byte array, eight bytes to a line.
+fn byte_array_source(bytes: &[u8; FR_BYTES]) -> String {
+    bytes
+        .chunks(8)
+        .map(|row| {
+            let cells: Vec<String> = row.iter().map(|byte| format!("0x{byte:02x},")).collect();
+            format!("    {}\n", cells.join(" "))
+        })
+        .collect()
+}
+
+/// Writes the two constants that the registry compiles in.
+///
+/// The registry must not trust a verifier address by configuration alone, so
+/// it needs the hash of the key that this artifact produced. The inner key
+/// hash travels with it, because the terminal proof carries that value as a
+/// public input.
+fn write_registry_params(key_sha256: &str, inner_key_hash: &BigUint) {
+    let mut key_bytes = [0u8; FR_BYTES];
+    for (index, cell) in key_bytes.iter_mut().enumerate() {
+        *cell = u8::from_str_radix(&key_sha256[index * 2..index * 2 + 2], 16)
+            .expect("the key hash is hexadecimal");
+    }
+    let mut hash_bytes = [0u8; FR_BYTES];
+    let be = inner_key_hash.to_bytes_be();
+    hash_bytes[FR_BYTES - be.len()..].copy_from_slice(&be);
+
+    fs::write(
+        repo_path(REGISTRY_PARAMS_FILE),
+        format!(
+            "//! Generated from the built artifacts by tools/recursion-gen. Do not\n\
+             //! edit by hand.\n\
+             \n\
+             /// SHA-256 of the aggregator verification key that this build expects a\n\
+             /// verifier to hold: {key_sha256}.\n\
+             #[rustfmt::skip]\n\
+             pub const AGGREGATOR_KEY_SHA256: [u8; {FR_BYTES}] = [\n{}];\n\
+             \n\
+             /// The Poseidon2 tree hash of the pinned inner verification key, as {FR_BYTES}\n\
+             /// big-endian bytes. The terminal proof carries this value as a public\n\
+             /// input, and the aggregator asserts it in the circuit.\n\
+             #[rustfmt::skip]\n\
+             pub const INNER_KEY_HASH: [u8; {FR_BYTES}] = [\n{}];\n",
+            byte_array_source(&key_bytes),
+            byte_array_source(&hash_bytes),
+        ),
+    )
+    .expect("write the registry parameters");
 }
 
 const USAGE: &str = "usage: recursion-gen witness <context.toml> <customers.csv>\n\

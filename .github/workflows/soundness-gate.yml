@@ -51,4 +51,5 @@ jobs:
             circuits/recursion/manifest.json \
             circuits/recursion/agg/vk \
             circuits/recursion/agg/src/params.nr \
-            circuits/recursion/common/src/params.nr
+            circuits/recursion/common/src/params.nr \
+            contracts/registry/src/params.rs
