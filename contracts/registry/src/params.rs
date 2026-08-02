@@ -21,3 +21,15 @@ pub const INNER_KEY_HASH: [u8; 32] = [
     0xe4, 0xeb, 0x5e, 0x73, 0xd9, 0xca, 0xc2, 0xab,
     0xc4, 0x7e, 0xd2, 0xef, 0xc7, 0x50, 0x18, 0xaa,
 ];
+
+/// Number of elements of the public input byte string of the terminal
+/// proof. Each element is 32 bytes big-endian.
+pub const PUBLIC_INPUT_COUNT: u32 = 4;
+
+/// Position of each element inside that byte string. A consumer reads
+/// the positions here, because two elements can hold one value and a
+/// search by value can find the wrong one.
+pub const CONTEXT_HASH_INDEX: u32 = 0;
+pub const INNER_KEY_HASH_INDEX: u32 = 1;
+pub const FINAL_ROOT_INDEX: u32 = 2;
+pub const L_INDEX: u32 = 3;

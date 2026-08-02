@@ -13,62 +13,25 @@
 //!   holds no account signers, so a test cannot lower a weight below a
 //!   threshold.
 
-use core::fmt::Debug;
+mod common;
+
+use common::{
+    account, addresses, canonical_address, classic_asset, classic_fixture, deploy_registry,
+    expect_authorization_failure, expect_error, test_env, PassiveContract, PermissiveAccount,
+    StubVerifier, ASSET_CODE12, ASSET_CODE4, ISSUER_KEY, OTHER_ACCOUNT_KEY, RELEASE_KEY,
+};
 use soroban_sdk::{
-    address_payload::AddressPayload,
-    contract, contractimpl, symbol_short,
     testutils::{
         storage::{Instance as _, Persistent as _},
         Address as _, Ledger as _, MockAuth, MockAuthInvoke,
     },
-    xdr, Address, Bytes, BytesN, Env, IntoVal, Val, Vec, U256,
+    xdr, Address, Bytes, Env, IntoVal, Val, Vec, U256,
 };
 use zkpor_context::MAX_RESERVE_ADDRESSES;
 use zkpor_registry::{
     AssetAuthenticity, AssetEntry, AssetTier, Attestation, AttestationSlot, DataKey, Error,
-    Registry, RegistryClient, ASSET_TYPE_ALPHANUM12, ASSET_TYPE_ALPHANUM4, NATIVE_ASSET_XDR,
-    PUBLIC_KEY_TYPE_ED25519,
+    Registry, RegistryClient, NATIVE_ASSET_XDR,
 };
-
-/// The committed aggregator verification key. The registry compiles in the
-/// hash of these bytes, so a verifier that holds them satisfies its
-/// constructor.
-const RELEASE_KEY: &[u8] = include_bytes!("../../../circuits/recursion/agg/vk");
-/// The ed25519 key of the issuer account in the test fixtures.
-const ISSUER_KEY: [u8; 32] = [7u8; 32];
-/// The ed25519 key of an account that is not the issuer.
-const OTHER_ACCOUNT_KEY: [u8; 32] = [9u8; 32];
-/// The four-character code of the test asset.
-const ASSET_CODE4: [u8; 4] = *b"USDX";
-/// The twelve-character code of the test asset.
-const ASSET_CODE12: [u8; 12] = *b"LONGERASSET1";
-
-/// A contract that answers with the key it was given. The registry reads a
-/// verifier through this interface, and a test needs a verifier that holds
-/// another key as well.
-#[contract]
-struct KeyHolder;
-
-#[contractimpl]
-impl KeyHolder {
-    pub fn __constructor(env: Env, key: Bytes) {
-        env.storage().instance().set(&symbol_short!("key"), &key);
-    }
-
-    pub fn vk_bytes(env: Env) -> Bytes {
-        env.storage().instance().get(&symbol_short!("key")).unwrap()
-    }
-}
-
-/// A contract that holds a balance and nothing else. It names no
-/// administrator, and it cannot authorize a call.
-#[contract]
-struct PassiveContract;
-
-#[contractimpl]
-impl PassiveContract {
-    pub fn hold(_env: Env) {}
-}
 
 /// How long a consent of the authorization tests stays valid. The value is
 /// test data. It must stay below the largest time to live that the network
@@ -77,103 +40,6 @@ const AUTH_LIFETIME_LEDGERS: u32 = 1_000;
 /// The ledger that the authorization tests start from. A test needs a past
 /// ledger for an expired consent, so the sequence cannot start at zero.
 const AUTH_START_LEDGER: u32 = 100;
-
-/// An account contract that accepts every signature.
-///
-/// `set_auths` does not register an account contract, unlike `mock_auths`, so
-/// a test that builds its own authorization entries registers this one at each
-/// consenting address. The host then reaches the nonce check and the
-/// expiration check, which is what those tests measure.
-#[contract]
-struct PermissiveAccount;
-
-#[contractimpl]
-impl PermissiveAccount {
-    #[allow(non_snake_case)]
-    pub fn __check_auth(_signature_payload: Val, _signatures: Val, _auth_context: Val) {}
-}
-
-/// The Poseidon2 permutation is a host function, and the default budget stops
-/// a test that hashes a reserve set.
-fn test_env() -> Env {
-    let env = Env::default();
-    env.cost_estimate().budget().reset_unlimited();
-    env
-}
-
-fn account(env: &Env, key: &[u8; 32]) -> Address {
-    Address::from_payload(
-        env,
-        AddressPayload::AccountIdPublicKeyEd25519(BytesN::from_array(env, key)),
-    )
-}
-
-/// The serialized `Asset` XDR: the asset type, the asset code, the public key
-/// type of the issuer, and the issuer key.
-fn classic_asset(env: &Env, code: &[u8], issuer_key: &[u8; 32]) -> Bytes {
-    let asset_type = if code.len() == ASSET_CODE4.len() {
-        ASSET_TYPE_ALPHANUM4
-    } else {
-        ASSET_TYPE_ALPHANUM12
-    };
-    let mut bytes = Bytes::new(env);
-    bytes.extend_from_array(&asset_type.to_be_bytes());
-    bytes.extend_from_slice(code);
-    bytes.extend_from_array(&PUBLIC_KEY_TYPE_ED25519.to_be_bytes());
-    bytes.extend_from_array(issuer_key);
-    bytes
-}
-
-fn canonical_address(env: &Env, serialized_asset: &Bytes) -> Address {
-    env.deployer()
-        .with_stellar_asset(serialized_asset.clone())
-        .deployed_address()
-}
-
-fn deploy_registry(env: &Env) -> Address {
-    let verifier = env.register(KeyHolder, (Bytes::from_slice(env, RELEASE_KEY),));
-    env.register(Registry, (verifier,))
-}
-
-fn addresses(env: &Env, count: u32) -> Vec<Address> {
-    let mut reserves = Vec::new(env);
-    for _ in 0..count {
-        reserves.push_back(Address::generate(env));
-    }
-    reserves
-}
-
-fn expect_error<T: Debug, E: Debug>(result: Result<T, Result<Error, E>>, expected: Error) {
-    match result {
-        Err(Ok(actual)) => assert_eq!(actual, expected),
-        other => panic!("expected {expected:?}, and the call returned {other:?}"),
-    }
-}
-
-/// A failed authorization is a host error, so it never carries a contract
-/// error of this registry.
-fn expect_authorization_failure<T: Debug, E: Debug>(result: Result<T, Result<Error, E>>) {
-    match result {
-        Err(Err(_)) => (),
-        other => panic!("expected an authorization failure, and the call returned {other:?}"),
-    }
-}
-
-/// One registered classic asset, with the issuer as its authority.
-struct Classic {
-    asset: Address,
-    issuer: Address,
-    serialized: Bytes,
-}
-
-fn classic_fixture(env: &Env, code: &[u8]) -> Classic {
-    let serialized = classic_asset(env, code, &ISSUER_KEY);
-    Classic {
-        asset: canonical_address(env, &serialized),
-        issuer: account(env, &ISSUER_KEY),
-        serialized,
-    }
-}
 
 #[test]
 fn the_deployment_reads_the_key_of_a_real_verifier() {
@@ -198,7 +64,7 @@ fn the_deployment_refuses_a_verifier_that_holds_another_key() {
     let env = test_env();
     let mut key = Bytes::from_slice(&env, RELEASE_KEY);
     key.set(0, key.get_unchecked(0) ^ 1);
-    let verifier = env.register(KeyHolder, (key,));
+    let verifier = env.register(StubVerifier, (key, true));
 
     env.register(Registry, (verifier,));
 }

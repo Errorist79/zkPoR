@@ -29,10 +29,12 @@
 //! asset that no party touched for a long time must restore the entry first.
 
 use soroban_sdk::{
-    address_payload::AddressPayload, contract, contracterror, contractimpl, contracttype,
-    symbol_short, Address, Bytes, BytesN, Env, Symbol, Vec, U256,
+    address_payload::AddressPayload, contract, contracterror, contractevent, contractimpl,
+    contracttype, symbol_short, Address, Bytes, BytesN, Env, IntoVal, Symbol, Vec, U256,
 };
-use zkpor_context::{reserve_set_hash, ContextError};
+use zkpor_context::{
+    context_hash, fr_in_range, reserve_set_hash, ContextError, ATTESTATION_MAX_AGE_LEDGERS,
+};
 
 pub mod params;
 
@@ -60,6 +62,12 @@ pub const NATIVE_ASSET_XDR: [u8; XDR_DISCRIMINANT_BYTES as usize] = [0, 0, 0, 0]
 const ADMIN_FN: Symbol = symbol_short!("admin");
 /// The function of the verifier contract that returns its stored key.
 const VK_BYTES_FN: Symbol = symbol_short!("vk_bytes");
+/// The function of the standard token interface that answers the balance of
+/// one address.
+const BALANCE_FN: Symbol = symbol_short!("balance");
+/// The function of the verifier contract that checks one proof. The name is
+/// longer than a short symbol, so it is built at the call.
+const VERIFY_PROOF_FN: &str = "verify_proof";
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -101,6 +109,23 @@ pub enum Error {
     /// The reserve set names the recorded authority, which can create the
     /// asset, so its balance is not backing.
     AuthorityInReserveSet = 14,
+    /// The ledger of the transaction is before the snapshot ledger, or later
+    /// than the age window allows.
+    SnapshotOutsideWindow = 15,
+    /// The verifier did not accept the proof under the public inputs that the
+    /// registry built.
+    ProofRejected = 16,
+    /// A reserve balance did not read. An account without a trustline in the
+    /// asset is the common cause.
+    ReserveBalanceUnavailable = 17,
+    /// The sum of the reserve balances leaves the range of the balance type.
+    ReserveSumOverflow = 18,
+    /// The registry holds no verifier address. A deployed registry always
+    /// holds one, so this reports a corrupted instance.
+    VerifierNotSet = 19,
+    /// The submitted root is not a field element, so the proof would carry
+    /// its reduction while the record kept the submitted value.
+    RootOutOfRange = 20,
 }
 
 /// The reasons of the shared encoding keep their identity here. A caller reads
@@ -196,6 +221,39 @@ pub struct AssetEntry {
     pub attestation: AttestationSlot,
 }
 
+/// A reading of the reserve balances that no attestation covers.
+///
+/// The field names do not repeat the names of the attestation record. A
+/// reader must never take this value for a number that a proof and a
+/// verifier stand behind.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReserveObservation {
+    /// The sum of the reserve balances at the ledger of the reading.
+    pub observed_sum: i128,
+    /// The ledger of the reading.
+    pub observed_ledger: u32,
+}
+
+/// The registry accepted one attestation.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttestationAccepted {
+    /// The asset of the attestation.
+    #[topic]
+    pub asset: Address,
+    /// The ledger at which the authority declares the liability set frozen.
+    pub snapshot_ledger: u32,
+    /// The ledger at which the registry read the reserve balances.
+    pub attested_ledger: u32,
+    /// The total liabilities under the attested root.
+    pub total_liabilities: u128,
+    /// The sum of the reserve balances at the attested ledger.
+    pub reserve_sum: i128,
+    /// The root of the liabilities tree.
+    pub final_root: U256,
+}
+
 /// Reads a big-endian `u32` at one offset of a byte string.
 fn u32_at(bytes: &Bytes, offset: u32) -> Result<u32, Error> {
     if bytes.len() < offset + XDR_DISCRIMINANT_BYTES {
@@ -271,6 +329,79 @@ fn reject_authority_as_reserve(reserves: &Vec<Address>, authority: &Address) -> 
         }
     }
     Ok(())
+}
+
+/// Builds the public input byte string of the terminal proof.
+///
+/// The registry writes every element itself, from its own state and from the
+/// typed arguments of the call, so no caller can put a foreign context in
+/// front of a proof. Each element is 32 bytes big-endian, and the position of
+/// each one comes from the generated artifact, because two elements can hold
+/// one value and a search by value can find the wrong position.
+fn public_inputs(env: &Env, context: &U256, final_root: &U256, total_liabilities: u128) -> Bytes {
+    let mut fields: Vec<Bytes> = Vec::new(env);
+    for _ in 0..params::PUBLIC_INPUT_COUNT {
+        fields.push_back(Bytes::new(env));
+    }
+    fields.set(params::CONTEXT_HASH_INDEX, context.to_be_bytes());
+    fields.set(
+        params::INNER_KEY_HASH_INDEX,
+        Bytes::from_array(env, &params::INNER_KEY_HASH),
+    );
+    fields.set(params::FINAL_ROOT_INDEX, final_root.to_be_bytes());
+    fields.set(
+        params::L_INDEX,
+        U256::from_u128(env, total_liabilities).to_be_bytes(),
+    );
+
+    let mut inputs = Bytes::new(env);
+    for field in fields.iter() {
+        inputs.append(&field);
+    }
+    inputs
+}
+
+/// Asks the verifier to check one proof under the public inputs above.
+///
+/// Every failure reads the same way here. The registry builds the byte string
+/// itself, and its deployment bound the key of this verifier, so a refusal
+/// that is not a failed proof would mean the artifact and the deployed key
+/// disagree, which the constructor already prevents.
+fn verify(env: &Env, inputs: &Bytes, proof: &Bytes) -> Result<(), Error> {
+    let verifier: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::Verifier)
+        .ok_or(Error::VerifierNotSet)?;
+    let mut args: Vec<soroban_sdk::Val> = Vec::new(env);
+    args.push_back(inputs.into_val(env));
+    args.push_back(proof.into_val(env));
+    env.try_invoke_contract::<(), Error>(&verifier, &Symbol::new(env, VERIFY_PROOF_FN), args)
+        .map_err(|_| Error::ProofRejected)?
+        .map_err(|_| Error::ProofRejected)
+}
+
+/// Sums the balances that the reserve addresses hold in the registered asset.
+///
+/// A read that fails fails the call. The registry must not read a failure as
+/// a zero, because a contract address without a balance entry answers a true
+/// zero, and the two would then look the same. The sum uses a checked
+/// addition, because the reserve set can hold enough large balances to leave
+/// the range of the balance type.
+fn reserve_sum(env: &Env, asset: &Address, reserves: &Vec<Address>) -> Result<i128, Error> {
+    let mut total: i128 = 0;
+    for reserve in reserves.iter() {
+        let mut args: Vec<soroban_sdk::Val> = Vec::new(env);
+        args.push_back(reserve.into_val(env));
+        let balance = env
+            .try_invoke_contract::<i128, Error>(asset, &BALANCE_FN, args)
+            .map_err(|_| Error::ReserveBalanceUnavailable)?
+            .map_err(|_| Error::ReserveBalanceUnavailable)?;
+        total = total
+            .checked_add(balance)
+            .ok_or(Error::ReserveSumOverflow)?;
+    }
+    Ok(total)
 }
 
 /// Extends one asset entry to the largest time to live that the network
@@ -409,6 +540,101 @@ impl Registry {
         extend_entry(&env, &key);
         extend_contract(&env);
         Ok(())
+    }
+
+    /// Records one attestation for a registered asset.
+    ///
+    /// The caller supplies no public input byte string. The registry derives
+    /// the context from its own state and from the submitted snapshot ledger,
+    /// and it builds the byte string itself, so a proof of another context
+    /// cannot pass here.
+    pub fn submit_attestation(
+        env: Env,
+        asset: Address,
+        snapshot_ledger: u32,
+        final_root: U256,
+        total_liabilities: u128,
+        proof: Bytes,
+    ) -> Result<(), Error> {
+        let key = DataKey::Asset(asset.clone());
+        let mut entry: AssetEntry = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::AssetNotRegistered)?;
+
+        // The chain assigns this ledger, so the window bounds how far the
+        // declared snapshot can sit from a ledger that anybody can verify.
+        // The addition saturates, because a snapshot near the end of the
+        // range would otherwise wrap and widen the window.
+        let attested_ledger = env.ledger().sequence();
+        if attested_ledger < snapshot_ledger
+            || attested_ledger > snapshot_ledger.saturating_add(ATTESTATION_MAX_AGE_LEDGERS)
+        {
+            return Err(Error::SnapshotOutsideWindow);
+        }
+        // The root arrives from outside, and the other three elements cannot
+        // leave the range: the registry computes the context itself, the
+        // inner key hash is a compiled-in hash, and the total is a u128.
+        if !fr_in_range(&env, &final_root) {
+            return Err(Error::RootOutOfRange);
+        }
+        entry.authority.require_auth();
+
+        let context = context_hash(
+            &env,
+            &entry.authority,
+            &asset,
+            &entry.reserve_set_hash,
+            snapshot_ledger,
+        )?;
+        verify(
+            &env,
+            &public_inputs(&env, &context, &final_root, total_liabilities),
+            &proof,
+        )?;
+
+        let reserve_sum = reserve_sum(&env, &asset, &entry.reserves)?;
+        entry.attestation = AttestationSlot::Filled(Attestation {
+            final_root: final_root.clone(),
+            total_liabilities,
+            snapshot_ledger,
+            reserve_sum,
+            attested_ledger,
+        });
+        env.storage().persistent().set(&key, &entry);
+        extend_entry(&env, &key);
+        extend_contract(&env);
+
+        AttestationAccepted {
+            asset,
+            snapshot_ledger,
+            attested_ledger,
+            total_liabilities,
+            reserve_sum,
+            final_root,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Reads the reserve balances now.
+    ///
+    /// No attestation covers this value. It carries the ledger of the
+    /// reading, and its field names differ from the names of the attestation
+    /// record, so a reader cannot take one for the other. A read that fails
+    /// fails this call, by the rule that the attestation path follows, so a
+    /// reserve address that cannot hold the asset stays visible.
+    pub fn observe_reserves(env: Env, asset: Address) -> Result<ReserveObservation, Error> {
+        let entry: AssetEntry = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Asset(asset.clone()))
+            .ok_or(Error::AssetNotRegistered)?;
+        Ok(ReserveObservation {
+            observed_sum: reserve_sum(&env, &asset, &entry.reserves)?,
+            observed_ledger: env.ledger().sequence(),
+        })
     }
 
     /// The entry of one asset.

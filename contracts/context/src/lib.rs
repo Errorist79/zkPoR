@@ -81,10 +81,25 @@ pub fn salt_domain_tag(env: &Env) -> U256 {
     domain_tag(env, SALT_DOMAIN_TAG_ASCII)
 }
 
+/// The modulus of the scalar field.
+pub fn fr_modulus(env: &Env) -> U256 {
+    <Bn254Fr as Field>::modulus(env)
+}
+
 /// Reduces 32 bytes into the field. A random source gives the master secret,
 /// so its value can be equal to or larger than the modulus.
 pub fn fr_reduce(env: &Env, bytes: &[u8; FR_BYTES]) -> U256 {
-    fr_from_be(env, bytes).rem_euclid(&<Bn254Fr as Field>::modulus(env))
+    fr_from_be(env, bytes).rem_euclid(&fr_modulus(env))
+}
+
+/// True when the value is below the modulus, and false otherwise.
+///
+/// A reader of an outside value must refuse a value that is not a field
+/// element. The host reduces such a value instead of refusing it, so the
+/// proof would carry the reduction while a record kept the value that the
+/// caller supplied, and the two would disagree.
+pub fn fr_in_range(env: &Env, value: &U256) -> bool {
+    *value < fr_modulus(env)
 }
 
 fn address_parts(address: &Address) -> Result<AddressParts, ContextError> {

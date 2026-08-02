@@ -814,7 +814,7 @@ fn cmd_manifest(inner_out: &Path, agg_target: &Path) {
     fs::write(repo_path(MANIFEST_FILE), manifest).expect("write the manifest");
     // The key travels with the manifest, so a reader can hash it and compare.
     fs::write(repo_path(AGG_KEY_FILE), &key_bytes).expect("write the aggregator key");
-    write_registry_params(&key_sha256, &inner_key_hash);
+    write_registry_params(&key_sha256, &inner_key_hash, &positions);
     println!("manifest: B={b} K={k} -> {MANIFEST_FILE} + {AGG_KEY_FILE} + {REGISTRY_PARAMS_FILE}");
 }
 
@@ -835,7 +835,12 @@ fn byte_array_source(bytes: &[u8; FR_BYTES]) -> String {
 /// it needs the hash of the key that this artifact produced. The inner key
 /// hash travels with it, because the terminal proof carries that value as a
 /// public input.
-fn write_registry_params(key_sha256: &str, inner_key_hash: &BigUint) {
+/// Rust name of the position constant of one public input.
+fn position_constant(name: &str) -> String {
+    format!("{}_INDEX", name.to_uppercase())
+}
+
+fn write_registry_params(key_sha256: &str, inner_key_hash: &BigUint, positions: &[(&str, usize)]) {
     let mut key_bytes = [0u8; FR_BYTES];
     for (index, cell) in key_bytes.iter_mut().enumerate() {
         *cell = u8::from_str_radix(&key_sha256[index * 2..index * 2 + 2], 16)
@@ -860,9 +865,26 @@ fn write_registry_params(key_sha256: &str, inner_key_hash: &BigUint) {
              /// big-endian bytes. The terminal proof carries this value as a public\n\
              /// input, and the aggregator asserts it in the circuit.\n\
              #[rustfmt::skip]\n\
-             pub const INNER_KEY_HASH: [u8; {FR_BYTES}] = [\n{}];\n",
+             pub const INNER_KEY_HASH: [u8; {FR_BYTES}] = [\n{}];\n\
+             \n\
+             /// Number of elements of the public input byte string of the terminal\n\
+             /// proof. Each element is {FR_BYTES} bytes big-endian.\n\
+             pub const PUBLIC_INPUT_COUNT: u32 = {};\n\
+             \n\
+             /// Position of each element inside that byte string. A consumer reads\n\
+             /// the positions here, because two elements can hold one value and a\n\
+             /// search by value can find the wrong one.\n\
+             {}",
             byte_array_source(&key_bytes),
             byte_array_source(&hash_bytes),
+            positions.len(),
+            positions
+                .iter()
+                .map(|(name, index)| format!(
+                    "pub const {}: u32 = {index};\n",
+                    position_constant(name)
+                ))
+                .collect::<String>(),
         ),
     )
     .expect("write the registry parameters");

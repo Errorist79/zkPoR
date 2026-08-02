@@ -95,26 +95,10 @@ export ZKPOR_MASTER_SECRET="$TEST_ONLY_MASTER_SECRET"
 manifest_field() { python3 -c "import json,sys;print(json.load(open(sys.argv[1]))[sys.argv[2]])" "$MANIFEST" "$1"; }
 manifest_position() { python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['public_input_positions'][sys.argv[2]])" "$MANIFEST" "$1"; }
 
-rpc_healthy() {
-  curl -s -m 5 -X POST -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' "$RPC" 2>/dev/null | grep -q '"status":"healthy"'
-}
-
-ensure_localnet() {
-  rpc_healthy && return 0
-  if [ "${START_LOCALNET:-0}" = "1" ]; then
-    note "localnet RPC unreachable; starting quickstart:nightly (P27) container"
-    stellar container start "$NET" --limits unlimited --image-tag-override nightly --protocol-version 27 >/dev/null 2>&1 || true
-    for _ in $(seq 1 30); do rpc_healthy && { note "localnet RPC healthy"; return 0; }; sleep 5; done
-  fi
-  die "localnet RPC unreachable at $RPC (infra). Start a Protocol-27 localnet, or set START_LOCALNET=1."
-}
-
-prove_inner() { # bytecode witness outdir
-  bb prove --scheme "$PROOF_SCHEME" --oracle_hash "$INNER_ORACLE_HASH" --honk_recursion 1 \
-    --bytecode_path "$1" --witness_path "$2" --output_path "$3" \
-    --output_format bytes_and_fields
-}
+# The localnet check and one inner proof live next to this file, because the
+# registry gate runs the same two steps.
+# shellcheck source=/dev/null
+. "$GATE_DIR/lib.sh"
 
 echo "=== SOUNDNESS-GATE START $(date -u) (B=$B K=$K) ==="
 echo "REPO_ROOT=$REPO_ROOT"

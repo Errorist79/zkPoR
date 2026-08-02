@@ -467,6 +467,11 @@ zero for a failed read, because a substituted zero hides a reserve address
 that cannot hold the asset. The authority repairs the reserve set with
 `set_reserves`, which collects consent again.
 
+`observe_reserves` follows the same rule. A failed read fails the call, and
+the function returns no sum. One rule covers both readings, so a reserve
+address that cannot hold the asset stays visible on both paths, and a
+reader never sees a sum that a silent zero made complete.
+
 ### 6.4 What an accepted attestation proves
 
 An accepted attestation proves the following. The proof verified under the

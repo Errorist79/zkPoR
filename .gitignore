@@ -13,12 +13,17 @@ circuits/*/target
 # The checked-in src/params.nr files are kept; only per-run witness/proof
 # outputs and the regenerated Prover.toml inputs are ignored.
 circuits/recursion/.key-check/
+circuits/recursion/.registry-gate/
+circuits/recursion/.registry-gate-context.toml
 circuits/recursion/inner/out/
 circuits/recursion/inner/Prover.toml
 circuits/recursion/inner/Prover_*.toml
 circuits/recursion/agg/Prover.toml
 tools/gate/attacks/*/out/
 tools/gate/attacks/*/Prover.toml
+
+# The soroban test harness writes one snapshot per test run.
+contracts/*/test_snapshots/
 
 # Deploy state and local overrides
 .contract_id*
