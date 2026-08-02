@@ -588,7 +588,7 @@ src/builtin_contracts/stellar_asset_contract/balance.rs). For a contract
 token, the `mint` function of the standard administrative interface
 requires the authorization of the administrator (the same crate,
 contract.rs). Under both tiers the recorded authority can create the
-asset.
+asset at the time of the registration.
 
 The registry must therefore reject a reserve set that contains the
 recorded authority. The check runs at `register_asset` and at
