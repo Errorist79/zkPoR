@@ -1,6 +1,7 @@
 //! Off-circuit driver for the recursive-aggregation circuits (inner + agg).
 //!
-//! Three subcommands split the work around the bb proving step:
+//! Three subcommands split the work around the bb proving step, and a fourth
+//! reads the same tree again for one customer:
 //!
 //!   witness   Reads params.toml, the attestation context, and a customer
 //!             file, pads the customer list to the tree capacity, derives one
@@ -8,6 +9,12 @@
 //!             subtotal, and writes
 //!               - common/src/params.nr       (BATCH_B)
 //!               - inner/Prover_<k>.toml      (one per batch)
+//!
+//!   path      Rebuilds the same tree from the same two files and prints the
+//!             authentication path of one customer: the global leaf index and
+//!             one sibling hash for each level, from the leaf level upward.
+//!             The direction of each step comes from the index, so the path
+//!             holds no direction bit.
 //!
 //!   assemble  Run AFTER bb has proven every inner batch. Reads the bb field
 //!             outputs (out/vk_fields.json + out/batch_<k>/*_fields.json) and
@@ -40,10 +47,16 @@ use soroban_poseidon::Field;
 use soroban_sdk::{
     crypto::BnScalar, Address, Bytes, Env, String as SorobanString, Vec as SorobanVec, U256,
 };
-use std::{collections::HashMap, env, fs, path::Path, path::PathBuf, process::Command};
+use std::{
+    collections::{HashMap, HashSet},
+    env, fs,
+    path::Path,
+    path::PathBuf,
+    process::Command,
+};
 use zkpor_context::{
-    context_hash, derive_salt, fr_reduce, leaf_hash, node_hash, reserve_set_hash, FR_BYTES,
-    PADDING_LEAF_BALANCE, PADDING_LEAF_ID,
+    context_hash, derive_salt, fr_modulus, fr_reduce, leaf_hash, node_hash, reserve_set_hash,
+    FR_BYTES, PADDING_LEAF_BALANCE, PADDING_LEAF_ID,
 };
 
 /// The generated record of the release artifact.
@@ -116,9 +129,44 @@ fn list_value(pairs: &HashMap<String, String>, key: &str) -> Vec<String> {
         .collect()
 }
 
+/// Rejects a liability list that breaks an identifier rule.
+///
+/// An identifier must be a field element, must not be zero, and must not
+/// appear twice. Zero is the padding identifier, so a zero row would produce
+/// the exact padding leaf of its position. A repeated identifier would let the
+/// authority split one liability across two leaves that each show a partial
+/// balance, and the total would still reconcile.
+///
+/// The circuits cannot enforce either rule. An inner circuit sees one batch,
+/// so it cannot see a repeated identifier in another batch.
+fn assert_identifier_rules(env: &Env, rows: &[(BigUint, u64)]) {
+    let padding = BigUint::from(PADDING_LEAF_ID);
+    let modulus = to_big(&fr_modulus(env));
+    let mut seen: HashSet<BigUint> = HashSet::with_capacity(rows.len());
+    for (row, (id, _)) in rows.iter().enumerate() {
+        assert!(
+            *id != padding,
+            "row {row} carries identifier {id}, and a customer identifier must not be zero"
+        );
+        assert!(
+            *id < modulus,
+            "row {row} carries identifier {id}, which is not below the field modulus"
+        );
+        assert!(
+            seen.insert(id.clone()),
+            "row {row} repeats identifier {id}, and an identifier appears once"
+        );
+    }
+}
+
 /// (id, balance) rows from a customer file. A comment line and the header line
 /// are dropped.
-fn read_customers(path: &Path) -> Vec<(BigUint, u64)> {
+///
+/// Every command that builds the tree reads the list here, and the identifier
+/// rules run before the reader returns. An invalid list therefore never
+/// becomes a tree: a tree that a wrong list builds is already wrong, and an
+/// attestation over it can leave a customer without a provable leaf.
+fn read_customers(env: &Env, path: &Path) -> Vec<(BigUint, u64)> {
     let mut rows = Vec::new();
     let text = fs::read_to_string(path).unwrap_or_else(|_| panic!("read {}", path.display()));
     for line in text.lines() {
@@ -134,6 +182,7 @@ fn read_customers(path: &Path) -> Vec<(BigUint, u64)> {
         let bal = bal.trim().parse::<u64>().expect("balance is u64");
         rows.push((id, bal));
     }
+    assert_identifier_rules(env, &rows);
     rows
 }
 
@@ -182,16 +231,99 @@ fn to_big(value: &U256) -> BigUint {
     BigUint::from_bytes_be(&bytes)
 }
 
+/// One step of the bottom-up fold: each adjacent pair becomes its parent.
+fn fold_level(env: &Env, level: &[U256]) -> Vec<U256> {
+    (0..level.len() / 2)
+        .map(|k| node_hash(env, &level[2 * k], &level[2 * k + 1]))
+        .collect()
+}
+
 /// Root of a full binary tree over `leaves` (len a power of two, >= 2).
 /// Pairwise bottom-up; identical pairing order to common/lib.nr subtree_root.
 fn subtree_root(env: &Env, leaves: &[U256]) -> U256 {
     let mut level: Vec<U256> = leaves.to_vec();
     while level.len() > 1 {
-        level = (0..level.len() / 2)
-            .map(|k| node_hash(env, &level[2 * k], &level[2 * k + 1]))
-            .collect();
+        level = fold_level(env, &level);
     }
     level.into_iter().next().expect("non-empty tree")
+}
+
+/// The root that the two circuit stages produce: each inner circuit folds one
+/// batch of `batch_size` leaves, and the aggregator folds the batch subroots
+/// with the same node hash.
+///
+/// The two stages give the root of one uniform tree over every leaf, so a
+/// customer follows a single path and never needs to know where a batch
+/// boundary is.
+fn folded_root(env: &Env, leaves: &[U256], batch_size: usize) -> U256 {
+    let subroots: Vec<U256> = leaves
+        .chunks(batch_size)
+        .map(|batch| subtree_root(env, batch))
+        .collect();
+    subtree_root(env, &subroots)
+}
+
+/// Every level of the tree, from the leaves up to the root. A caller that
+/// needs more than one path folds the tree once and reads each path from here.
+fn tree_levels(env: &Env, leaves: &[U256]) -> Vec<Vec<U256>> {
+    let mut levels = std::vec![leaves.to_vec()];
+    while levels.last().expect("the leaf level").len() > 1 {
+        levels.push(fold_level(env, levels.last().expect("the level below")));
+    }
+    levels
+}
+
+/// The sibling hashes of one leaf, from the leaf level up to the level below
+/// the root.
+///
+/// The path holds no direction bit. The bit of the index at each level states
+/// whether the current node is the left input or the right input, so no stored
+/// bit can disagree with the index.
+fn path_in_levels(levels: &[Vec<U256>], global_index: usize) -> Vec<U256> {
+    let leaf_count = levels.first().expect("the leaf level").len();
+    assert!(
+        global_index < leaf_count,
+        "leaf index {global_index} is outside a tree of {leaf_count} leaves"
+    );
+    let mut index = global_index;
+    let mut siblings = Vec::new();
+    for level in &levels[..levels.len() - 1] {
+        siblings.push(level[index ^ 1].clone());
+        index >>= 1;
+    }
+    siblings
+}
+
+/// Recomputes the root from one leaf and its authentication path.
+///
+/// `depth` comes from the tree shape, which is public. A path of another
+/// length fails here, so a short path cannot produce a value that looks like a
+/// root.
+fn root_from_path(
+    env: &Env,
+    leaf: &U256,
+    global_index: usize,
+    siblings: &[U256],
+    depth: usize,
+) -> U256 {
+    assert_eq!(
+        siblings.len(),
+        depth,
+        "the path does not hold one sibling for each of the {depth} levels"
+    );
+    assert!(
+        global_index < (1usize << depth),
+        "leaf index {global_index} is outside a tree of depth {depth}"
+    );
+    let mut node = leaf.clone();
+    for (level, sibling) in siblings.iter().enumerate() {
+        node = if (global_index >> level) & 1 == 0 {
+            node_hash(env, &node, sibling)
+        } else {
+            node_hash(env, sibling, &node)
+        };
+    }
+    node
 }
 
 fn fmt_field_array(values: &[BigUint]) -> String {
@@ -508,12 +640,26 @@ fn read_shape() -> (usize, usize, usize) {
     (b, k, b * k)
 }
 
+/// The salt and the leaf hash of one row at its global index.
+fn leaf_of_row(
+    env: &Env,
+    master_secret: &U256,
+    context: &U256,
+    row: &(BigUint, u64),
+    global_index: usize,
+) -> (U256, U256) {
+    let (id, balance) = row;
+    let salt = derive_salt(env, master_secret, context, global_index as u64);
+    let leaf = leaf_hash(env, &to_fr(env, id), *balance, &salt);
+    (salt, leaf)
+}
+
 fn cmd_witness(context_file: &Path, customers_file: &Path) {
     let (b, k, capacity) = read_shape();
     let env = new_env();
     let context = read_context_hash(&env, context_file);
     let master_secret = read_master_secret(&env);
-    let rows = pad_to_capacity(read_customers(customers_file), capacity);
+    let rows = pad_to_capacity(read_customers(&env, customers_file), capacity);
 
     fs::write(
         repo_path("circuits/recursion/common/src/params.nr"),
@@ -531,11 +677,11 @@ fn cmd_witness(context_file: &Path, customers_file: &Path) {
         let mut leaves = Vec::with_capacity(b);
         let mut sum: u128 = 0;
         for j in 0..b {
-            let global_index = (batch * b + j) as u64;
-            let (id, balance) = &rows[batch * b + j];
-            let id_fr = to_fr(&env, id);
-            let salt = derive_salt(&env, &master_secret, &context, global_index);
-            leaves.push(leaf_hash(&env, &id_fr, *balance, &salt));
+            let global_index = batch * b + j;
+            let row = &rows[global_index];
+            let (id, balance) = row;
+            let (salt, leaf) = leaf_of_row(&env, &master_secret, &context, row, global_index);
+            leaves.push(leaf);
             ids.push(id.clone());
             balances.push(*balance);
             salts.push(to_big(&salt));
@@ -557,6 +703,91 @@ fn cmd_witness(context_file: &Path, customers_file: &Path) {
         .expect("write inner Prover_<k>.toml");
     }
     println!("witness: B={b} K={k} -> common/src/params.nr + {k} inner Prover_<k>.toml");
+}
+
+/// The global leaf index of one customer identifier: the position of the row
+/// in the frozen list, counted from zero.
+///
+/// The reader already rejected a zero identifier and a repeated identifier, so
+/// only an absent identifier fails here.
+fn index_of_customer(rows: &[(BigUint, u64)], id: &BigUint) -> usize {
+    rows.iter()
+        .position(|(row_id, _)| row_id == id)
+        .unwrap_or_else(|| panic!("the customer file holds no row with identifier {id}"))
+}
+
+/// The leaves that the path command checks against the fold: the first leaf,
+/// the two leaves on the sides of the first batch boundary, the last customer
+/// row, and the leaf that the caller asked for. An index error shows at an
+/// edge, so the check reads the edges rather than arbitrary positions.
+fn self_check_indices(batch_size: usize, customer_count: usize, requested: usize) -> Vec<usize> {
+    let mut indices = std::vec![0, batch_size - 1, batch_size, customer_count - 1, requested];
+    indices.sort_unstable();
+    indices.dedup();
+    indices
+}
+
+/// Prints the authentication path of one customer.
+///
+/// The command rebuilds the same tree from the same two files as the witness
+/// command, so the path it prints belongs to the root that the proof carries.
+/// It recomputes the root from the path it produced and fails on a
+/// disagreement, so a drift between the fold and the path cannot leave this
+/// command.
+fn cmd_path(context_file: &Path, customers_file: &Path, customer_id: &str) {
+    let (b, _, capacity) = read_shape();
+    let depth = capacity.trailing_zeros() as usize;
+    let env = new_env();
+    let context = read_context_hash(&env, context_file);
+    let master_secret = read_master_secret(&env);
+
+    let customers = read_customers(&env, customers_file);
+    let customer_count = customers.len();
+    let id = customer_id
+        .trim()
+        .parse::<BigUint>()
+        .expect("the customer identifier is a non-negative integer");
+    let global_index = index_of_customer(&customers, &id);
+    let rows = pad_to_capacity(customers, capacity);
+    let balance = rows[global_index].1;
+
+    let mut leaves = Vec::with_capacity(capacity);
+    let mut salt = None;
+    for (index, row) in rows.iter().enumerate() {
+        let (row_salt, leaf) = leaf_of_row(&env, &master_secret, &context, row, index);
+        if index == global_index {
+            salt = Some(row_salt);
+        }
+        leaves.push(leaf);
+    }
+    let salt = salt.expect("the leaf of the customer");
+
+    // The levels come from the uniform fold and the root comes from the two
+    // circuit stages. The two computations stay separate, so the comparison
+    // below is evidence and not a restatement.
+    let levels = tree_levels(&env, &leaves);
+    let root = to_big(&folded_root(&env, &leaves, b));
+    for index in self_check_indices(b, customer_count, global_index) {
+        let path = path_in_levels(&levels, index);
+        assert_eq!(
+            to_big(&root_from_path(&env, &leaves[index], index, &path, depth)),
+            root,
+            "the path of leaf {index} does not recompute the root that the fold produces"
+        );
+    }
+
+    let siblings: Vec<BigUint> = path_in_levels(&levels, global_index)
+        .iter()
+        .map(to_big)
+        .collect();
+    println!("global_index = {global_index}");
+    println!("depth = {depth}");
+    println!("id = {id}");
+    println!("balance = {balance}");
+    println!("salt = {}", to_big(&salt));
+    println!("leaf = {}", to_big(&leaves[global_index]));
+    println!("root = {root}");
+    println!("siblings = {}", fmt_field_array(&siblings));
 }
 
 /// bb `--output_format fields` emits a JSON array of 0x-prefixed field strings
@@ -891,6 +1122,7 @@ fn write_registry_params(key_sha256: &str, inner_key_hash: &BigUint, positions: 
 }
 
 const USAGE: &str = "usage: recursion-gen witness <context.toml> <customers.csv>\n\
+                            recursion-gen path <context.toml> <customers.csv> <customer_id>\n\
                             recursion-gen assemble <context.toml> [out_dir]\n\
                             recursion-gen manifest <inner_out_dir> <agg_target_dir>";
 
@@ -900,6 +1132,10 @@ fn main() {
     match args.get(1).map(String::as_str) {
         Some("witness") => match (arg(2), arg(3)) {
             (Some(context), Some(customers)) => cmd_witness(&context, &customers),
+            _ => usage(),
+        },
+        Some("path") => match (arg(2), arg(3), args.get(4)) {
+            (Some(context), Some(customers), Some(id)) => cmd_path(&context, &customers, id),
             _ => usage(),
         },
         Some("assemble") => match arg(2) {
@@ -987,6 +1223,222 @@ mod tests {
     fn an_absent_public_input_fails() {
         let layout = public_input_layout(&write_temp("zkpor_layout_absent.json", ABI));
         position_of(&layout, "subroot");
+    }
+
+    /// Shapes that the path tests cover. Each pair is (B, K), and both values
+    /// are powers of two of at least 2, as params.toml requires.
+    const SHAPES: [(usize, usize); 5] = [(2, 2), (2, 4), (4, 2), (4, 4), (8, 2)];
+
+    /// Distinct leaves of a tree of `count` positions. The values only have to
+    /// differ, so the test builds them from the leaf hash directly instead of
+    /// from a context and a master secret.
+    fn leaves(env: &Env, count: usize) -> Vec<U256> {
+        (0..count)
+            .map(|i| {
+                let id = to_fr(env, &BigUint::from(i as u64 + 1));
+                let salt = to_fr(env, &BigUint::from(i as u64 + 1000));
+                leaf_hash(env, &id, i as u64 * 7 + 1, &salt)
+            })
+            .collect()
+    }
+
+    fn depth_of(capacity: usize) -> usize {
+        capacity.trailing_zeros() as usize
+    }
+
+    /// The path of one leaf. A test that reads a single path folds the tree
+    /// for that path, and a test that reads many folds it once.
+    fn path_of(env: &Env, leaves: &[U256], global_index: usize) -> Vec<U256> {
+        path_in_levels(&tree_levels(env, leaves), global_index)
+    }
+
+    /// The drift guard. The generator holds the path extraction next to the
+    /// fold, so this test fails as soon as one of the two moves.
+    #[test]
+    fn every_path_recomputes_the_root_that_the_fold_produces() {
+        let env = new_env();
+        for (b, k) in SHAPES {
+            let capacity = b * k;
+            let tree = leaves(&env, capacity);
+            let root = to_big(&folded_root(&env, &tree, b));
+            let levels = tree_levels(&env, &tree);
+            for (g, leaf) in tree.iter().enumerate() {
+                let siblings = path_in_levels(&levels, g);
+                assert_eq!(
+                    to_big(&root_from_path(
+                        &env,
+                        leaf,
+                        g,
+                        &siblings,
+                        depth_of(capacity)
+                    )),
+                    root,
+                    "leaf {g} of the tree of B={b} K={k}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_path_holds_one_sibling_for_each_level() {
+        let env = new_env();
+        for (b, k) in SHAPES {
+            let capacity = b * k;
+            let tree = leaves(&env, capacity);
+            let levels = tree_levels(&env, &tree);
+            for g in 0..capacity {
+                assert_eq!(path_in_levels(&levels, g).len(), depth_of(capacity));
+            }
+        }
+    }
+
+    /// The first leaf is the left input at every level, and the last leaf is
+    /// the right input at every level. The first sibling is the neighbour leaf
+    /// in both cases.
+    #[test]
+    fn the_first_and_the_last_leaf_sit_at_the_two_edges() {
+        let env = new_env();
+        let (b, capacity) = (4, 16);
+        let tree = leaves(&env, capacity);
+        let first = path_of(&env, &tree, 0);
+        let last = path_of(&env, &tree, capacity - 1);
+        assert_eq!(to_big(&first[0]), to_big(&tree[1]));
+        assert_eq!(to_big(&last[0]), to_big(&tree[capacity - 2]));
+
+        // Every step of the first leaf pairs the node on the left, and every
+        // step of the last leaf pairs it on the right.
+        let mut left = tree[0].clone();
+        let mut right = tree[capacity - 1].clone();
+        for level in 0..depth_of(capacity) {
+            left = node_hash(&env, &left, &first[level]);
+            right = node_hash(&env, &last[level], &right);
+        }
+        let root = to_big(&folded_root(&env, &tree, b));
+        assert_eq!(to_big(&left), root);
+        assert_eq!(to_big(&right), root);
+    }
+
+    /// The index alone states the direction, so the same siblings under
+    /// another index give another value.
+    #[test]
+    fn another_index_over_the_same_path_gives_another_root() {
+        let env = new_env();
+        let (b, capacity) = (4, 16);
+        let tree = leaves(&env, capacity);
+        let root = to_big(&folded_root(&env, &tree, b));
+        let depth = depth_of(capacity);
+        let siblings = path_of(&env, &tree, 5);
+        for wrong in [0, 4, 7, 13, capacity - 1] {
+            assert_ne!(
+                to_big(&root_from_path(&env, &tree[5], wrong, &siblings, depth)),
+                root,
+                "index {wrong} must not reach the root of leaf 5"
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "one sibling for each")]
+    fn a_truncated_path_fails() {
+        let env = new_env();
+        let capacity = 16;
+        let tree = leaves(&env, capacity);
+        let siblings = path_of(&env, &tree, 5);
+        root_from_path(&env, &tree[5], 5, &siblings[..2], depth_of(capacity));
+    }
+
+    #[test]
+    #[should_panic(expected = "outside a tree")]
+    fn an_index_outside_the_tree_fails() {
+        let env = new_env();
+        let tree = leaves(&env, 8);
+        path_of(&env, &tree, 8);
+    }
+
+    /// One changed bit in one sibling breaks the recomputation at every level.
+    #[test]
+    fn a_sibling_that_changed_by_one_bit_gives_another_root() {
+        let env = new_env();
+        let (b, capacity) = (4, 16);
+        let tree = leaves(&env, capacity);
+        let root = to_big(&folded_root(&env, &tree, b));
+        let depth = depth_of(capacity);
+        let siblings = path_of(&env, &tree, 5);
+        for level in 0..depth {
+            let mut changed = siblings.clone();
+            changed[level] = to_fr(&env, &(to_big(&siblings[level]) ^ BigUint::from(1u32)));
+            assert_ne!(
+                to_big(&root_from_path(&env, &tree[5], 5, &changed, depth)),
+                root,
+                "a changed sibling at level {level} must not reach the root"
+            );
+        }
+    }
+
+    #[test]
+    fn the_index_of_a_customer_is_the_row_of_the_identifier() {
+        let rows = rows(4);
+        assert_eq!(index_of_customer(&rows, &BigUint::from(1u32)), 0);
+        assert_eq!(index_of_customer(&rows, &BigUint::from(4u32)), 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "no row with identifier")]
+    fn an_absent_identifier_gets_no_path() {
+        index_of_customer(&rows(4), &BigUint::from(9u32));
+    }
+
+    /// A liability list of three rows. Only the identifier of the last row
+    /// changes, so a rejected list and its control differ in one value.
+    fn list_with_last_identifier(id: &str) -> String {
+        format!("id,balance\n1,10\n2,20\n{id},30\n")
+    }
+
+    /// Reads the list through the same reader that the witness command calls,
+    /// so an invalid list fails before any tree exists.
+    fn read_list(name: &str, id: &str) -> Vec<(BigUint, u64)> {
+        let env = new_env();
+        let path = write_temp(name, &list_with_last_identifier(id));
+        read_customers(&env, &path)
+    }
+
+    /// The control of the three rejections below.
+    #[test]
+    fn the_reader_accepts_distinct_nonzero_identifiers() {
+        let rows = read_list("zkpor_rows_ok.csv", "3");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[2], (BigUint::from(3u32), 30));
+    }
+
+    #[test]
+    #[should_panic(expected = "must not be zero")]
+    fn the_reader_rejects_the_padding_identifier() {
+        read_list("zkpor_rows_zero.csv", "0");
+    }
+
+    #[test]
+    #[should_panic(expected = "repeats identifier")]
+    fn the_reader_rejects_a_repeated_identifier() {
+        read_list("zkpor_rows_repeat.csv", "2");
+    }
+
+    #[test]
+    #[should_panic(expected = "below the field modulus")]
+    fn the_reader_rejects_an_identifier_that_is_not_a_field_element() {
+        let modulus = to_big(&fr_modulus(&new_env()));
+        read_list("zkpor_rows_modulus.csv", &modulus.to_string());
+    }
+
+    #[test]
+    fn the_self_check_reads_the_edges_of_the_tree() {
+        // The batch boundary, the first leaf, the last customer row, and the
+        // leaf that the caller asked for.
+        assert_eq!(
+            self_check_indices(1024, 1000, 499),
+            [0, 499, 999, 1023, 1024]
+        );
+        // A request at an edge adds no position.
+        assert_eq!(self_check_indices(4, 4, 0), [0, 3, 4]);
     }
 
     #[test]
