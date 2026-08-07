@@ -273,7 +273,11 @@ leaf = H_3([id, balance, salt])
 
 - `id` is an opaque customer identifier as an `Fr` element. It must not be
   raw personal data. The authority keeps the mapping from `id` to the customer
-  outside this protocol.
+  outside this protocol. An identifier must not be zero, because section 4.3
+  reserves zero for padding. An identifier must not appear twice in one
+  liability set, because an inclusion package proves one leaf, and a
+  repeated identifier would let the authority split one liability across
+  two leaves that each show a partial balance.
 - `balance` is the customer liability as a `u64`, embedded into `Fr`. The
   inner circuit must range-check it as `u64`. The sum accumulator must be
   `u128`.
@@ -345,6 +349,37 @@ padding leaf. A generator must reject a count above `B*K`. It must not
 truncate the list, because a silent truncation removes liabilities from
 `L`.
 
+A customer row with `id = 0` and `balance = 0` would produce the exact
+padding leaf of its position, because the salt depends only on the
+position. The rule against a zero identifier in section 4.1 removes that
+collision. The padding construction itself must not change to remove it:
+any in-band padding value collides with some possible identifier, and an
+out-of-band padding mark would add a leaf field, which changes the leaf
+hash and both verification keys.
+
+### 4.4 Enforcement of the identifier rules
+
+An implementation that accepts a liability list must reject the list when
+an identifier is zero, when an identifier appears more than once, or when
+an identifier's integer value is not below the field modulus `r`. The
+range rule is a property of the value, not of its encoding: a decimal
+string, a hexadecimal string, and a byte array that name the same integer
+must all reach the same verdict. An implementation must not reduce an
+out-of-range identifier modulo `r`, because a reduced identifier names a
+different leaf than the value the authority wrote. The rejection must
+happen when the list is accepted, before any tree is built.
+A tree built from an invalid list is already wrong: an attestation over it
+can leave a customer without a provable leaf. The circuits cannot enforce
+these rules, because an inner circuit sees only its own batch and cannot
+see a duplicate in another batch. Every implementation that accepts a
+liability list must have a negative test for each of the three
+rejections.
+
+These rules bind the tooling of an honest authority. A malicious
+authority can construct witnesses without any list, so the rejections
+are not a guarantee about the authority. Section 6.1 states what the
+customer inclusion check detects instead.
+
 ## 5. Tree and authentication path
 
 ### 5.1 One uniform tree
@@ -369,6 +404,22 @@ The leaf of batch `k` at batch-local position `j` has the global index:
 ```
 g = k * B + j        with 0 <= g < B*K
 ```
+
+The liability set that the authority freezes is an ordered list of
+`(id, balance)` rows. The global index of a customer is the position of
+the customer's row in that list, counted from zero. The order is part of
+the frozen set. Padding leaves fill the positions from the row count up to
+`B*K`.
+
+The mapping must guarantee determinism: the same frozen list must give
+every customer the same index in every run. The salt of section 4.2
+depends on the index, so a different index gives a different leaf and a
+different root, and the packages and the attestation would then disagree.
+
+The mapping guarantees nothing across snapshots. Each attestation derives
+fresh salts from its own context, and an inclusion package names its
+snapshot ledger, so no consumer may assume that a customer keeps an index
+when the set changes.
 
 ### 5.3 Depth
 
@@ -641,3 +692,57 @@ address, and a new registry deployment. Nothing is mutable after
 deployment, so there is no rotation authority to trust. Clients read the
 current contract addresses from a committed deployments file in the
 repository.
+
+### 8.1 Migration between deployments
+
+A toolchain change retires a deployment generation. The retired verifier
+and the retired registry stay deployed. They remain the record of the
+attestations that they accepted. No authority exists that can alter them,
+and a migration must not create one.
+
+A migration is a fresh deployment: a new verifier and a new registry. The
+deployments file records the deployment generations in order. Each record
+names the network, the registry address, the verifier address, and the
+SHA-256 hash of the verification key.
+
+The authority registers each asset again in the new registry. The
+registration collects new authorization from the authority and from every
+reserve address. A consent that a reserve address gave to an earlier
+registry has no effect in a later one, because the authorization binds to
+the contract address (section 7.2). An implementation must not copy an
+entry from an earlier registry into a later one.
+
+A reader who follows an asset across deployments compares the recorded
+authority of the two entries. The chain attributes each registration to
+the addresses that authorized it, so an equal authority connects the two
+records. A registry address alone proves nothing, because any party can
+deploy a registry.
+
+## 9. The attestation event and history
+
+The entry of an asset holds only the latest attestation. Each accepted
+attestation also emits the `AttestationAccepted` contract event. The event
+stream is the only record of the earlier attestations.
+
+The event carries the asset address as a topic. The event data carries the
+five fields of the attestation record: `final_root`, `total_liabilities`,
+`snapshot_ledger`, `reserve_sum`, and `attested_ledger`. The values equal
+the values that the registry stored for that attestation.
+
+The `getEvents` method answers only from a bounded window of retained
+ledgers. The `history-retention-window` setting controls the window, and
+its stock default is 120960 ledgers, which is about seven days
+(developers.stellar.org/docs/data/apis/rpc/api-reference/methods/getEvents).
+The `getHealth` method reports the window and the oldest retained ledger.
+Since Stellar RPC version 23, a node can serve `getLedgers` from an
+external datastore past its own window, but that integration covers
+`getLedgers` only, so it does not extend `getEvents`
+(stellar-rpc changelog, v23.0.0). A consumer that reports history must
+state the oldest ledger that its query covered. It must not present a
+window-bounded result as the complete history.
+
+History past the window is outside this protocol. The ledger history is
+permanent in the history archives, but `getEvents`, the one method that
+serves the attestation events, does not reach it. A reader who needs the
+complete attestation record uses a data indexer, or captures the events
+continuously inside the window.
