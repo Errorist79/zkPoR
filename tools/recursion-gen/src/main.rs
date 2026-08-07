@@ -1,7 +1,8 @@
 //! Off-circuit driver for the recursive-aggregation circuits (inner + agg).
 //!
-//! Three subcommands split the work around the bb proving step, and a fourth
-//! reads the same tree again for one customer:
+//! Three subcommands split the work around the bb proving step. Two more read
+//! the same tree again for the customers: one prints a single path, and one
+//! writes the customer files after the attestation lands.
 //!
 //!   witness   Reads params.toml, the attestation context, and a customer
 //!             file, pads the customer list to the tree capacity, derives one
@@ -15,6 +16,14 @@
 //!             one sibling hash for each level, from the leaf level upward.
 //!             The direction of each step comes from the index, so the path
 //!             holds no direction bit.
+//!
+//!   packages  Run AFTER the attestation transaction is confirmed. Writes one
+//!             inclusion package for each customer row, and one bookkeeping
+//!             record beside them. This tool has no network access: the caller
+//!             reads the registry entry and passes the attested root and the
+//!             attested snapshot. Nothing reaches the disk until the
+//!             recomputed root equals the attested one, because a package
+//!             holds a balance.
 //!
 //!   assemble  Run AFTER bb has proven every inner batch. Reads the bb field
 //!             outputs (out/vk_fields.json + out/batch_<k>/*_fields.json) and
@@ -50,6 +59,8 @@ use soroban_sdk::{
 use std::{
     collections::{HashMap, HashSet},
     env, fs,
+    io::Write,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::Path,
     path::PathBuf,
     process::Command,
@@ -78,6 +89,25 @@ const MASTER_SECRET_VAR: &str = "ZKPOR_MASTER_SECRET";
 /// Names of the three public inputs of the inner circuit, in the order that
 /// agg/src/params.nr records their positions.
 const INNER_PUBLIC_INPUTS: [&str; 3] = ["batch_slot", "subroot", "subtotal"];
+/// The committed record of the deployment generations, in order. A package
+/// names a registry, and that pointer comes from the file every client trusts.
+const DEPLOYMENTS_FILE: &str = "scripts/deployments.json";
+/// The version gate of the package schema. A reader that does not know this
+/// exact string refuses to read any other field.
+const PACKAGE_FORMAT: &str = "zkpor-inclusion/1";
+/// Extension of a package file.
+const PACKAGE_EXTENSION: &str = "zkpor.json";
+/// Digits of the zero-padded leaf index in a package filename.
+const PACKAGE_INDEX_DIGITS: usize = 6;
+/// The authority-side record of one generation run. It holds the root, so it
+/// is bookkeeping and it reaches no customer.
+const GENERATION_FILE: &str = "generation.json";
+/// Mode of every directory that the generation step creates, and of every file
+/// it writes. A package holds one customer's balance.
+const PACKAGE_DIR_MODE: u32 = 0o700;
+const PACKAGE_FILE_MODE: u32 = 0o600;
+/// Indentation of the package layout, in spaces.
+const JSON_INDENT: usize = 2;
 
 // Resolve a path relative to the repo root. CARGO_MANIFEST_DIR is
 // <repo>/tools/recursion-gen, so ../.. is the repo root and `rel` is taken
@@ -341,9 +371,19 @@ fn address(env: &Env, strkey: &str) -> Address {
     Address::from_string(&SorobanString::from_str(env, strkey))
 }
 
-/// The value that binds the proof to one authority, one asset, one reserve
-/// address set, and one snapshot.
-fn read_context_hash(env: &Env, path: &Path) -> U256 {
+/// The attestation context of one context file.
+///
+/// The hash binds the proof to one authority, one asset, one reserve address
+/// set, and one snapshot. The asset and the snapshot travel with it, because
+/// a package names both and the tree that the snapshot shaped must be the
+/// tree that the chain attested.
+struct AttestationContext {
+    hash: U256,
+    asset: String,
+    snapshot_ledger: u32,
+}
+
+fn read_context(env: &Env, path: &Path) -> AttestationContext {
     let pairs = read_pairs(path);
     let mut reserves = SorobanVec::new(env);
     for strkey in list_value(&pairs, "reserves") {
@@ -352,14 +392,20 @@ fn read_context_hash(env: &Env, path: &Path) -> U256 {
     let set = reserve_set_hash(env, &reserves).expect("the reserve set is not valid");
     let snapshot_ledger = u64_value(&pairs, "snapshot_ledger");
     let snapshot_ledger = u32::try_from(snapshot_ledger).expect("snapshot_ledger is a u32");
-    context_hash(
+    let asset = text_value(&pairs, "asset");
+    let hash = context_hash(
         env,
         &address(env, &text_value(&pairs, "authority")),
-        &address(env, &text_value(&pairs, "asset")),
+        &address(env, &asset),
         &set,
         snapshot_ledger,
     )
-    .expect("the context addresses are not valid")
+    .expect("the context addresses are not valid");
+    AttestationContext {
+        hash,
+        asset,
+        snapshot_ledger,
+    }
 }
 
 /// The master secret that seeds every salt.
@@ -371,19 +417,19 @@ fn read_master_secret(env: &Env) -> U256 {
         .unwrap_or_else(|_| panic!("set {MASTER_SECRET_VAR} to 32 bytes of hex"));
     let raw = raw.trim();
     let raw = raw.strip_prefix("0x").unwrap_or(raw);
-    fr_reduce(env, &hex_bytes(raw))
+    fr_reduce(env, &hex_bytes(MASTER_SECRET_VAR, raw))
 }
 
-fn hex_bytes(text: &str) -> [u8; FR_BYTES] {
+fn hex_bytes(label: &str, text: &str) -> [u8; FR_BYTES] {
     assert_eq!(
         text.len(),
         FR_BYTES * 2,
-        "{MASTER_SECRET_VAR} must be 32 bytes of hex"
+        "{label} must be {FR_BYTES} bytes of hex"
     );
     let mut out = [0u8; FR_BYTES];
     for (i, byte) in out.iter_mut().enumerate() {
         *byte = u8::from_str_radix(&text[2 * i..2 * i + 2], 16)
-            .unwrap_or_else(|_| panic!("{MASTER_SECRET_VAR} is not hex"));
+            .unwrap_or_else(|_| panic!("{label} is not hex"));
     }
     out
 }
@@ -657,7 +703,7 @@ fn leaf_of_row(
 fn cmd_witness(context_file: &Path, customers_file: &Path) {
     let (b, k, capacity) = read_shape();
     let env = new_env();
-    let context = read_context_hash(&env, context_file);
+    let context = read_context(&env, context_file).hash;
     let master_secret = read_master_secret(&env);
     let rows = pad_to_capacity(read_customers(&env, customers_file), capacity);
 
@@ -738,7 +784,7 @@ fn cmd_path(context_file: &Path, customers_file: &Path, customer_id: &str) {
     let (b, _, capacity) = read_shape();
     let depth = capacity.trailing_zeros() as usize;
     let env = new_env();
-    let context = read_context_hash(&env, context_file);
+    let context = read_context(&env, context_file).hash;
     let master_secret = read_master_secret(&env);
 
     let customers = read_customers(&env, customers_file);
@@ -790,6 +836,298 @@ fn cmd_path(context_file: &Path, customers_file: &Path, customer_id: &str) {
     println!("siblings = {}", fmt_field_array(&siblings));
 }
 
+/// A field element as a package holds it: `0x` and exactly 64 lowercase
+/// hexadecimal characters, the 32-byte big-endian serialization.
+fn fr_hex(value: &BigUint) -> String {
+    let body: String = be32(value)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("0x{body}")
+}
+
+/// A field element from its hexadecimal text, with or without the `0x` prefix.
+fn fr_from_hex(env: &Env, label: &str, text: &str) -> BigUint {
+    let text = text.trim();
+    let text = text.strip_prefix("0x").unwrap_or(text);
+    let value = BigUint::from_bytes_be(&hex_bytes(label, text));
+    assert!(
+        value < to_big(&fr_modulus(env)),
+        "{label} is not below the field modulus"
+    );
+    value
+}
+
+/// One deployment generation of the committed deployments file.
+struct Generation {
+    registry: String,
+    tree_depth: usize,
+}
+
+/// The current generation of one network: the last record that names it,
+/// because the file lists the generations in order.
+fn select_generation(text: &str, network: &str) -> Generation {
+    let json: serde_json::Value = serde_json::from_str(text).expect("the deployments file is JSON");
+    let records = json
+        .as_array()
+        .expect("the deployments file is a list of generations");
+    let record = records
+        .iter()
+        .rfind(|record| record["network"] == network)
+        .unwrap_or_else(|| {
+            panic!("{DEPLOYMENTS_FILE} records no deployment generation for network {network}")
+        });
+    let field = |name: &str| -> &serde_json::Value {
+        let value = &record[name];
+        assert!(
+            !value.is_null(),
+            "the {network} generation records no {name}"
+        );
+        value
+    };
+    Generation {
+        registry: field("registry")
+            .as_str()
+            .expect("the registry is a string")
+            .to_string(),
+        tree_depth: field("tree_depth")
+            .as_u64()
+            .expect("the tree depth is a number") as usize,
+    }
+}
+
+/// The fields of one package, in the order that the schema fixes.
+struct Package<'a> {
+    network: &'a str,
+    registry: &'a str,
+    asset: &'a str,
+    snapshot_ledger: u32,
+    leaf_index: usize,
+    id: &'a BigUint,
+    balance: u64,
+    salt: &'a BigUint,
+    siblings: &'a [BigUint],
+}
+
+/// A JSON string value, with the escaping that JSON requires.
+fn json_string(text: &str) -> String {
+    serde_json::Value::String(text.to_string()).to_string()
+}
+
+/// The bytes of one package file.
+///
+/// The layout is part of the format, so two implementations write the same
+/// bytes: the keys in schema order, two-space indentation, LF line ends, and
+/// one LF at the end of the file.
+fn package_json(package: &Package) -> String {
+    let pad = " ".repeat(JSON_INDENT);
+    let mut lines = std::vec![
+        format!("{pad}\"format\": {}", json_string(PACKAGE_FORMAT)),
+        format!("{pad}\"network\": {}", json_string(package.network)),
+        format!("{pad}\"registry\": {}", json_string(package.registry)),
+        format!("{pad}\"asset\": {}", json_string(package.asset)),
+        format!("{pad}\"snapshot_ledger\": {}", package.snapshot_ledger),
+        format!("{pad}\"leaf_index\": {}", package.leaf_index),
+        format!("{pad}\"id\": {}", json_string(&fr_hex(package.id))),
+        format!(
+            "{pad}\"balance\": {}",
+            json_string(&package.balance.to_string())
+        ),
+        format!("{pad}\"salt\": {}", json_string(&fr_hex(package.salt))),
+    ];
+    let siblings: Vec<String> = package
+        .siblings
+        .iter()
+        .map(|sibling| format!("{pad}{pad}{}", json_string(&fr_hex(sibling))))
+        .collect();
+    lines.push(format!(
+        "{pad}\"siblings\": [\n{}\n{pad}]",
+        siblings.join(",\n")
+    ));
+    format!("{{\n{}\n}}\n", lines.join(",\n"))
+}
+
+/// The authority-side record of one generation run. It holds the root, so it
+/// stays with the authority and reaches no customer.
+fn generation_json(count: usize, root: &BigUint, transaction_hash: &str) -> String {
+    let pad = " ".repeat(JSON_INDENT);
+    format!(
+        "{{\n{pad}\"count\": {count},\n{pad}\"format\": {},\n{pad}\"root\": {},\n\
+         {pad}\"transaction_hash\": {}\n}}\n",
+        json_string(PACKAGE_FORMAT),
+        json_string(&fr_hex(root)),
+        json_string(transaction_hash),
+    )
+}
+
+fn package_filename(leaf_index: usize) -> String {
+    format!(
+        "package-{leaf_index:0width$}.{PACKAGE_EXTENSION}",
+        width = PACKAGE_INDEX_DIGITS
+    )
+}
+
+/// Creates one directory that only the owner can enter.
+fn create_dir_private(path: &Path) {
+    if !path.is_dir() {
+        fs::create_dir(path).unwrap_or_else(|_| panic!("create {}", path.display()));
+    }
+    fs::set_permissions(path, fs::Permissions::from_mode(PACKAGE_DIR_MODE))
+        .unwrap_or_else(|_| panic!("set the mode of {}", path.display()));
+}
+
+/// Writes one file that only the owner can read.
+///
+/// The open sets the mode of a new file. An earlier file at the path keeps its
+/// own mode through the open, so the mode is set again on the open file before
+/// any content reaches it. The open truncated that file, so no byte of the new
+/// content ever sits at the earlier mode.
+fn write_private(path: &Path, text: &str) {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(PACKAGE_FILE_MODE)
+        .open(path)
+        .unwrap_or_else(|_| panic!("write {}", path.display()));
+    file.set_permissions(fs::Permissions::from_mode(PACKAGE_FILE_MODE))
+        .unwrap_or_else(|_| panic!("set the mode of {}", path.display()));
+    file.write_all(text.as_bytes())
+        .unwrap_or_else(|_| panic!("write {}", path.display()));
+}
+
+/// The values that a read of the registry entry supplies. No value here comes
+/// from a person: a typed ledger number proves nothing about the chain.
+struct AttestedEntry {
+    root: BigUint,
+    snapshot_ledger: u32,
+    transaction_hash: String,
+}
+
+/// The inputs of one generation run that do not come from the context file.
+struct GenerationRequest<'a> {
+    customers_file: &'a Path,
+    deployments_file: &'a Path,
+    out: &'a Path,
+    network: &'a str,
+    attested: &'a AttestedEntry,
+}
+
+/// Writes one package for each customer row.
+///
+/// The generator has no network access. The caller reads the registry entry
+/// and passes the attested root and the attested snapshot, unaltered. Nothing
+/// reaches the disk before both comparisons pass, because a package holds a
+/// balance and an attestation that never landed must leave no file behind.
+fn write_packages(
+    env: &Env,
+    context: &AttestationContext,
+    master_secret: &U256,
+    request: &GenerationRequest,
+) {
+    let (b, _, capacity) = read_shape();
+    let depth = capacity.trailing_zeros() as usize;
+
+    let deployments = fs::read_to_string(request.deployments_file)
+        .unwrap_or_else(|_| panic!("read {}", request.deployments_file.display()));
+    let generation = select_generation(&deployments, request.network);
+    assert_eq!(
+        generation.tree_depth, depth,
+        "the {} generation holds trees of depth {}, and this tree has depth {depth}",
+        request.network, generation.tree_depth
+    );
+
+    // The first half of the gate. This comparison needs no tree, and it names
+    // a wrong context file directly, so it runs before the fold.
+    assert_eq!(
+        context.snapshot_ledger, request.attested.snapshot_ledger,
+        "the context file names snapshot {}, and the registry attested {}",
+        context.snapshot_ledger, request.attested.snapshot_ledger
+    );
+
+    let customers = read_customers(env, request.customers_file);
+    let customer_count = customers.len();
+    let rows = pad_to_capacity(customers, capacity);
+
+    let mut leaves = Vec::with_capacity(capacity);
+    let mut salts = Vec::with_capacity(customer_count);
+    for (index, row) in rows.iter().enumerate() {
+        let (salt, leaf) = leaf_of_row(env, master_secret, &context.hash, row, index);
+        if index < customer_count {
+            salts.push(to_big(&salt));
+        }
+        leaves.push(leaf);
+    }
+
+    // The load-bearing half of the gate. The snapshot enters the context hash,
+    // the context derives every salt, and every leaf holds its salt, so an
+    // equal root means the chain accepted this exact tree.
+    let root = to_big(&folded_root(env, &leaves, b));
+    assert!(
+        root == request.attested.root,
+        "the recomputed root is {}, and the registry attested {}; \
+         no package may exist for a root that the chain did not accept",
+        fr_hex(&root),
+        fr_hex(&request.attested.root)
+    );
+
+    let directory = request
+        .out
+        .join("packages")
+        .join(&context.asset)
+        .join(context.snapshot_ledger.to_string());
+    // The output directory belongs to the operator, so it keeps its own mode.
+    // Every directory below it holds packages, and the tool owns those.
+    fs::create_dir_all(request.out).unwrap_or_else(|_| panic!("create {}", request.out.display()));
+    for level in [
+        request.out.join("packages"),
+        request.out.join("packages").join(&context.asset),
+        directory.clone(),
+    ] {
+        create_dir_private(&level);
+    }
+
+    let levels = tree_levels(env, &leaves);
+    for (index, salt) in salts.iter().enumerate() {
+        let siblings: Vec<BigUint> = path_in_levels(&levels, index).iter().map(to_big).collect();
+        let package = Package {
+            network: request.network,
+            registry: &generation.registry,
+            asset: &context.asset,
+            snapshot_ledger: context.snapshot_ledger,
+            leaf_index: index,
+            id: &rows[index].0,
+            balance: rows[index].1,
+            salt,
+            siblings: &siblings,
+        };
+        write_private(
+            &directory.join(package_filename(index)),
+            &package_json(&package),
+        );
+    }
+    write_private(
+        &directory.join(GENERATION_FILE),
+        &generation_json(customer_count, &root, &request.attested.transaction_hash),
+    );
+    println!(
+        "packages: {customer_count} files in {}",
+        directory.display()
+    );
+    println!(
+        "NOTICE: {} holds one balance for each customer. Give one file to \
+         one customer, and to nobody else.",
+        directory.display()
+    );
+}
+
+fn cmd_packages(context_file: &Path, request: &GenerationRequest) {
+    let env = new_env();
+    let context = read_context(&env, context_file);
+    let master_secret = read_master_secret(&env);
+    write_packages(&env, &context, &master_secret, request);
+}
+
 /// bb `--output_format fields` emits a JSON array of 0x-prefixed field strings
 /// (proof_fields.json / public_inputs_fields.json / vk_fields.json).
 fn read_field_json(path: &Path) -> Vec<BigUint> {
@@ -819,7 +1157,7 @@ fn cmd_assemble(context_file: &Path, out: &Path) {
         println!("WARNING: this pin is a development artifact of shape B={b} K={k}");
     }
     let env = new_env();
-    let context = read_context_hash(&env, context_file);
+    let context = read_context(&env, context_file).hash;
 
     let layout = public_input_layout(&repo_path(
         "circuits/recursion/inner/target/recursion_inner.json",
@@ -1123,8 +1461,22 @@ fn write_registry_params(key_sha256: &str, inner_key_hash: &BigUint, positions: 
 
 const USAGE: &str = "usage: recursion-gen witness <context.toml> <customers.csv>\n\
                             recursion-gen path <context.toml> <customers.csv> <customer_id>\n\
+                            recursion-gen packages <context.toml> <customers.csv> <out_dir> \
+                            --network <name> --attested-root <hex> \
+                            --attested-snapshot <ledger> --transaction <hash>\n\
                             recursion-gen assemble <context.toml> [out_dir]\n\
                             recursion-gen manifest <inner_out_dir> <agg_target_dir>";
+
+/// The value of one required named argument.
+fn flag_value(args: &[String], name: &str) -> String {
+    let position = args
+        .iter()
+        .position(|arg| arg == name)
+        .unwrap_or_else(|| panic!("missing {name}"));
+    args.get(position + 1)
+        .unwrap_or_else(|| panic!("{name} needs a value"))
+        .clone()
+}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -1136,6 +1488,34 @@ fn main() {
         },
         Some("path") => match (arg(2), arg(3), args.get(4)) {
             (Some(context), Some(customers), Some(id)) => cmd_path(&context, &customers, id),
+            _ => usage(),
+        },
+        Some("packages") => match (arg(2), arg(3), arg(4)) {
+            (Some(context), Some(customers), Some(out)) => {
+                let snapshot = flag_value(&args, "--attested-snapshot");
+                let attested = AttestedEntry {
+                    root: fr_from_hex(
+                        &new_env(),
+                        "the attested root",
+                        &flag_value(&args, "--attested-root"),
+                    ),
+                    snapshot_ledger: snapshot
+                        .trim()
+                        .parse()
+                        .expect("the attested snapshot is a u32"),
+                    transaction_hash: flag_value(&args, "--transaction"),
+                };
+                cmd_packages(
+                    &context,
+                    &GenerationRequest {
+                        customers_file: &customers,
+                        deployments_file: &repo_path(DEPLOYMENTS_FILE),
+                        out: &out,
+                        network: &flag_value(&args, "--network"),
+                        attested: &attested,
+                    },
+                );
+            }
             _ => usage(),
         },
         Some("assemble") => match arg(2) {
@@ -1439,6 +1819,415 @@ mod tests {
         );
         // A request at an edge adds no position.
         assert_eq!(self_check_indices(4, 4, 0), [0, 3, 4]);
+    }
+
+    // ---- the inclusion package ----
+
+    const TEST_NETWORK: &str = "test-only-network";
+    /// A valid contract StrKey. It stands for a registry in these tests only.
+    const TEST_REGISTRY: &str = "CBCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEJ5HZ";
+    const TEST_TRANSACTION: &str =
+        "3a1f0000000000000000000000000000000000000000000000000000000000ff";
+    const CUSTOMERS_FIXTURE: &str = "fixtures/test_only_customers.csv";
+
+    fn fixture_context(env: &Env) -> AttestationContext {
+        read_context(env, &repo_path("fixtures/test_only_context.toml"))
+    }
+
+    /// The master secret of the committed fixture. The tests read the file
+    /// rather than the process environment, so no test changes the process.
+    fn fixture_master_secret(env: &Env) -> U256 {
+        let pairs = read_pairs(&repo_path("fixtures/test_only_master_secret.env"));
+        let raw = pairs
+            .get("TEST_ONLY_MASTER_SECRET")
+            .expect("the fixture holds the test secret")
+            .clone();
+        let raw = raw.trim().trim_start_matches("0x");
+        fr_reduce(env, &hex_bytes("the fixture secret", raw))
+    }
+
+    fn fixture_rows(env: &Env) -> Vec<(BigUint, u64)> {
+        read_customers(env, &repo_path(CUSTOMERS_FIXTURE))
+    }
+
+    fn deployments_with_depth(name: &str, depth: usize) -> PathBuf {
+        write_temp(
+            name,
+            &format!(
+                "[\n  {{\n    \"network\": \"{TEST_NETWORK}\",\n    \
+                 \"registry\": \"{TEST_REGISTRY}\",\n    \
+                 \"verifier\": \"{TEST_REGISTRY}\",\n    \
+                 \"verification_key_sha256\": \"{TEST_TRANSACTION}\",\n    \
+                 \"tree_depth\": {depth}\n  }}\n]\n"
+            ),
+        )
+    }
+
+    /// The attestation that the fixture produces. One process computes it once,
+    /// because the tree of the release shape is expensive to fold.
+    fn fixture_attestation() -> &'static AttestedEntry {
+        static ATTESTED: std::sync::OnceLock<AttestedEntry> = std::sync::OnceLock::new();
+        ATTESTED.get_or_init(|| {
+            let env = new_env();
+            let context = fixture_context(&env);
+            let (b, _, capacity) = read_shape();
+            let master_secret = fixture_master_secret(&env);
+            let rows = pad_to_capacity(fixture_rows(&env), capacity);
+            let leaves: Vec<U256> = rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| leaf_of_row(&env, &master_secret, &context.hash, row, index).1)
+                .collect();
+            AttestedEntry {
+                root: to_big(&folded_root(&env, &leaves, b)),
+                snapshot_ledger: context.snapshot_ledger,
+                transaction_hash: TEST_TRANSACTION.to_string(),
+            }
+        })
+    }
+
+    /// Writes the packages of the fixture into a fresh directory and returns
+    /// the directory that holds them.
+    fn generate_into(out_name: &str, attested: &AttestedEntry, deployments: &Path) -> PathBuf {
+        let env = new_env();
+        let context = fixture_context(&env);
+        let out = env::temp_dir().join(out_name);
+        let _ = fs::remove_dir_all(&out);
+        write_packages(
+            &env,
+            &context,
+            &fixture_master_secret(&env),
+            &GenerationRequest {
+                customers_file: &repo_path(CUSTOMERS_FIXTURE),
+                deployments_file: deployments,
+                out: &out,
+                network: TEST_NETWORK,
+                attested,
+            },
+        );
+        out.join("packages")
+            .join(&context.asset)
+            .join(context.snapshot_ledger.to_string())
+    }
+
+    /// One generation over the fixture, done once for every test that reads it.
+    fn generated() -> &'static PathBuf {
+        static DIRECTORY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        DIRECTORY.get_or_init(|| {
+            let depth = read_shape().2.trailing_zeros() as usize;
+            generate_into(
+                "zkpor_packages",
+                fixture_attestation(),
+                &deployments_with_depth("zkpor_deployments_ok.json", depth),
+            )
+        })
+    }
+
+    fn package_files(directory: &Path) -> Vec<PathBuf> {
+        let mut files: Vec<PathBuf> = fs::read_dir(directory)
+            .expect("read the package directory")
+            .map(|entry| entry.expect("a directory entry").path())
+            .filter(|path| path.to_string_lossy().ends_with(PACKAGE_EXTENSION))
+            .collect();
+        files.sort();
+        files
+    }
+
+    fn mode_of(path: &Path) -> u32 {
+        fs::metadata(path)
+            .expect("the metadata")
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    #[test]
+    fn a_field_element_is_sixty_four_lowercase_hexadecimal_characters() {
+        // The expected text comes from the standard library, not from fr_hex.
+        assert_eq!(fr_hex(&BigUint::from(255u32)), format!("0x{:0>64}", "ff"));
+        assert_eq!(
+            fr_hex(&BigUint::from(0xabcdefu32)),
+            format!("0x{:0>64}", "abcdef")
+        );
+        // Big endian: a value of one byte sits at the end of the text.
+        let high = BigUint::from(1u32) << 248;
+        assert_eq!(fr_hex(&high), format!("0x01{}", "0".repeat(62)));
+    }
+
+    #[test]
+    fn the_filename_pads_the_leaf_index_to_six_digits() {
+        assert_eq!(package_filename(42), "package-000042.zkpor.json");
+        assert_eq!(package_filename(0), "package-000000.zkpor.json");
+        assert_eq!(package_filename(1234567), "package-1234567.zkpor.json");
+    }
+
+    /// The layout is part of the format, so this pins the key order, the
+    /// indentation, and the line ends.
+    #[test]
+    fn the_package_layout_is_fixed() {
+        let package = Package {
+            network: "testnet",
+            registry: "CBCE",
+            asset: "CARC",
+            snapshot_ledger: 1000,
+            leaf_index: 42,
+            id: &BigUint::from(7u32),
+            balance: u64::MAX,
+            salt: &BigUint::from(1u32),
+            siblings: &[BigUint::from(2u32), BigUint::from(3u32)],
+        };
+        // The expected hexadecimal comes from the standard library, so the
+        // test does not restate the padding rule of fr_hex.
+        let id = format!("{:0>64}", "07");
+        let salt = format!("{:0>64}", "01");
+        let first = format!("{:0>64}", "02");
+        let second = format!("{:0>64}", "03");
+        let expected = format!(
+            "{{\n  \"format\": \"zkpor-inclusion/1\",\n  \"network\": \"testnet\",\n  \
+             \"registry\": \"CBCE\",\n  \"asset\": \"CARC\",\n  \"snapshot_ledger\": 1000,\n  \
+             \"leaf_index\": 42,\n  \"id\": \"0x{id}\",\n  \
+             \"balance\": \"18446744073709551615\",\n  \"salt\": \"0x{salt}\",\n  \
+             \"siblings\": [\n    \"0x{first}\",\n    \"0x{second}\"\n  ]\n}}\n"
+        );
+        assert_eq!(package_json(&package), expected);
+    }
+
+    #[test]
+    fn the_generation_is_the_last_record_of_the_network() {
+        let text = r#"[
+          {"network": "a", "registry": "R1", "tree_depth": 4},
+          {"network": "b", "registry": "R2", "tree_depth": 8},
+          {"network": "a", "registry": "R3", "tree_depth": 12}
+        ]"#;
+        let generation = select_generation(text, "a");
+        assert_eq!(generation.registry, "R3");
+        assert_eq!(generation.tree_depth, 12);
+        assert_eq!(select_generation(text, "b").registry, "R2");
+    }
+
+    #[test]
+    #[should_panic(expected = "no deployment generation for network")]
+    fn a_network_without_a_generation_fails() {
+        let text = r#"[{"network": "a", "registry": "R", "tree_depth": 4}]"#;
+        select_generation(text, "b");
+    }
+
+    #[test]
+    fn the_committed_deployments_file_is_an_ordered_list() {
+        let text = fs::read_to_string(repo_path(DEPLOYMENTS_FILE)).expect("the deployments file");
+        let json: serde_json::Value = serde_json::from_str(&text).expect("the file is JSON");
+        assert!(json.is_array(), "the deployments file is a list");
+    }
+
+    #[test]
+    fn one_package_exists_for_each_customer_row_and_none_for_a_padding_leaf() {
+        let directory = generated();
+        let rows = fixture_rows(&new_env());
+        assert_eq!(package_files(directory).len(), rows.len());
+        assert!(directory.join(package_filename(0)).is_file());
+        assert!(directory.join(package_filename(rows.len() - 1)).is_file());
+        // The first padding position holds no package.
+        assert!(!directory.join(package_filename(rows.len())).exists());
+        assert!(directory.join(GENERATION_FILE).is_file());
+    }
+
+    /// The load-bearing test. Every package verifies against the root that the
+    /// fold produced, and every field holds what section 10.2 fixes.
+    #[test]
+    fn every_package_holds_the_fixed_fields_and_verifies_against_the_attested_root() {
+        let env = new_env();
+        let context = fixture_context(&env);
+        let rows = fixture_rows(&env);
+        let depth = read_shape().2.trailing_zeros() as usize;
+        let attested = &fixture_attestation().root;
+        let directory = generated();
+
+        let hex_value = |text: &str| -> BigUint {
+            assert_eq!(text.len(), 2 + FR_BYTES * 2, "an Fr field is 0x and 64 hex");
+            assert!(text.starts_with("0x"));
+            let body = &text[2..];
+            assert_eq!(body, body.to_lowercase(), "an Fr field is lowercase");
+            BigUint::parse_bytes(body.as_bytes(), 16).expect("hexadecimal")
+        };
+
+        for (index, (id, balance)) in rows.iter().enumerate() {
+            let text = fs::read_to_string(directory.join(package_filename(index)))
+                .expect("read the package");
+            assert!(text.ends_with("}\n") && !text.contains('\r'));
+            let json: serde_json::Value = serde_json::from_str(&text).expect("the package is JSON");
+            let object = json.as_object().expect("the package is an object");
+
+            // Presence and absence. The root and the total never appear.
+            assert_eq!(
+                object.keys().collect::<Vec<_>>(),
+                std::vec![
+                    "asset",
+                    "balance",
+                    "format",
+                    "id",
+                    "leaf_index",
+                    "network",
+                    "registry",
+                    "salt",
+                    "siblings",
+                    "snapshot_ledger"
+                ],
+                "the package holds exactly the fields of the schema"
+            );
+
+            assert_eq!(json["format"], PACKAGE_FORMAT);
+            assert_eq!(json["network"], TEST_NETWORK);
+            assert_eq!(json["registry"], TEST_REGISTRY);
+            assert_eq!(json["asset"], context.asset);
+            assert_eq!(json["snapshot_ledger"], context.snapshot_ledger);
+            assert_eq!(json["leaf_index"], index);
+            assert_eq!(json["balance"], balance.to_string());
+            assert_eq!(hex_value(json["id"].as_str().expect("id is a string")), *id);
+
+            let siblings = json["siblings"].as_array().expect("siblings is a list");
+            assert_eq!(siblings.len(), depth);
+            let siblings: Vec<U256> = siblings
+                .iter()
+                .map(|value| to_fr(&env, &hex_value(value.as_str().expect("a sibling"))))
+                .collect();
+            let salt = to_fr(&env, &hex_value(json["salt"].as_str().expect("salt")));
+            let leaf = leaf_hash(&env, &to_fr(&env, id), *balance, &salt);
+            assert_eq!(
+                to_big(&root_from_path(&env, &leaf, index, &siblings, depth)),
+                *attested,
+                "package {index} does not verify against the attested root"
+            );
+        }
+    }
+
+    #[test]
+    fn the_bookkeeping_record_holds_the_count_and_the_root() {
+        let text = fs::read_to_string(generated().join(GENERATION_FILE)).expect("the record");
+        let json: serde_json::Value = serde_json::from_str(&text).expect("the record is JSON");
+        assert_eq!(json["count"], fixture_rows(&new_env()).len());
+        assert_eq!(json["format"], PACKAGE_FORMAT);
+        assert_eq!(json["root"], fr_hex(&fixture_attestation().root));
+        assert_eq!(json["transaction_hash"], TEST_TRANSACTION);
+    }
+
+    #[test]
+    fn the_directory_and_the_files_are_private() {
+        let directory = generated();
+        // Every directory that the tool creates, from `packages` downward.
+        let asset = directory.parent().expect("the asset directory");
+        assert_eq!(mode_of(directory), PACKAGE_DIR_MODE);
+        assert_eq!(mode_of(asset), PACKAGE_DIR_MODE);
+        assert_eq!(
+            mode_of(asset.parent().expect("the packages directory")),
+            PACKAGE_DIR_MODE
+        );
+        assert_eq!(
+            mode_of(&directory.join(package_filename(0))),
+            PACKAGE_FILE_MODE
+        );
+        assert_eq!(mode_of(&directory.join(GENERATION_FILE)), PACKAGE_FILE_MODE);
+    }
+
+    /// A file that already exists takes the private mode before the new
+    /// content reaches it, so no byte ever sits at the earlier mode.
+    #[test]
+    fn a_rewritten_file_is_private_from_the_first_byte() {
+        let path = write_temp("zkpor_rewrite.json", "an earlier file");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("the wide mode");
+        write_private(&path, "the new content\n");
+        assert_eq!(mode_of(&path), PACKAGE_FILE_MODE);
+        assert_eq!(
+            fs::read_to_string(&path).expect("read"),
+            "the new content\n"
+        );
+    }
+
+    /// Two writers must produce the same bytes, so a second run over the same
+    /// inputs reproduces every file exactly.
+    #[test]
+    fn a_second_generation_writes_the_same_bytes() {
+        let depth = read_shape().2.trailing_zeros() as usize;
+        let again = generate_into(
+            "zkpor_packages_again",
+            fixture_attestation(),
+            &deployments_with_depth("zkpor_deployments_again.json", depth),
+        );
+        let first = package_files(generated());
+        let second = package_files(&again);
+        assert_eq!(first.len(), second.len());
+        for (one, two) in first.iter().zip(second.iter()) {
+            assert_eq!(
+                one.file_name(),
+                two.file_name(),
+                "the two runs name their files differently"
+            );
+            assert_eq!(
+                fs::read(one).expect("read"),
+                fs::read(two).expect("read"),
+                "{} differs between two runs",
+                one.display()
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "names snapshot")]
+    fn a_snapshot_that_the_chain_did_not_attest_is_refused() {
+        let depth = read_shape().2.trailing_zeros() as usize;
+        let attested = AttestedEntry {
+            root: fixture_attestation().root.clone(),
+            snapshot_ledger: fixture_attestation().snapshot_ledger + 1,
+            transaction_hash: TEST_TRANSACTION.to_string(),
+        };
+        generate_into(
+            "zkpor_packages_snapshot",
+            &attested,
+            &deployments_with_depth("zkpor_deployments_snapshot.json", depth),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "holds trees of depth")]
+    fn a_generation_of_another_tree_depth_is_refused() {
+        generate_into(
+            "zkpor_packages_depth",
+            fixture_attestation(),
+            &deployments_with_depth("zkpor_deployments_depth.json", 3),
+        );
+    }
+
+    /// A refused generation must leave nothing behind: a package holds a
+    /// balance, and a root the chain did not accept must produce no file.
+    #[test]
+    fn a_root_that_the_chain_did_not_attest_writes_no_file() {
+        let depth = read_shape().2.trailing_zeros() as usize;
+        let deployments = deployments_with_depth("zkpor_deployments_root.json", depth);
+        let out = env::temp_dir().join("zkpor_packages_root");
+        let _ = fs::remove_dir_all(&out);
+
+        let refused = std::panic::catch_unwind(|| {
+            let env = new_env();
+            let context = fixture_context(&env);
+            let attested = AttestedEntry {
+                root: &fixture_attestation().root + BigUint::from(1u32),
+                snapshot_ledger: fixture_attestation().snapshot_ledger,
+                transaction_hash: TEST_TRANSACTION.to_string(),
+            };
+            write_packages(
+                &env,
+                &context,
+                &fixture_master_secret(&env),
+                &GenerationRequest {
+                    customers_file: &repo_path(CUSTOMERS_FIXTURE),
+                    deployments_file: &deployments,
+                    out: &out,
+                    network: TEST_NETWORK,
+                    attested: &attested,
+                },
+            );
+        });
+        assert!(refused.is_err(), "a wrong root must refuse");
+        assert!(!out.exists(), "a refused generation left files behind");
     }
 
     #[test]
