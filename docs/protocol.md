@@ -486,9 +486,31 @@ snapshot_ledger <= e <= snapshot_ledger + ATTESTATION_MAX_AGE_LEDGERS
 ```
 
 The registry must reject an attestation outside this range. After
-acceptance, an attestation older than the same window counts as stale: the
-inclusion claim under its root still holds, but the solvency claim has
-lapsed until a fresher attestation replaces it.
+acceptance, an attestation counts as stale when the current ledger `c`
+satisfies:
+
+```
+c > snapshot_ledger + ATTESTATION_MAX_AGE_LEDGERS
+```
+
+Staleness counts from `snapshot_ledger`, not from `attested_ledger`. The
+oldest data in the solvency claim is the liability set, and the liability
+set is frozen at `snapshot_ledger`. `attested_ledger` can sit up to 720
+ledgers after the snapshot, so an origin at `attested_ledger` would let a
+claim rest on liability data up to 1440 ledgers old while it still reads
+as fresh. One origin and one constant also serve both rules: the
+acceptance bound above and the staleness bound use the same
+`snapshot_ledger` and the same window.
+
+The current ledger `c` is the latest closed ledger sequence of the
+network that holds the registry. A reader obtains it from its own RPC
+configuration. No package, record, or user input supplies it, because a
+supplied value could hide a lapse. Which tool reads the value is an
+implementation choice; what the value is, is not.
+
+A stale attestation keeps its meaning in two parts: the inclusion claim
+under its root still holds, but the solvency claim has lapsed until a
+fresher attestation replaces it.
 
 ### 6.3 The two reserve readings
 
@@ -764,7 +786,12 @@ with parties allowed to see the balance.
 ### 10.2 Schema
 
 The package is a JSON document, UTF-8, with the extension `.zkpor.json`.
-All fields are required, in this order:
+All fields are required, in this order, and no other field is permitted.
+A reader must reject a package that carries a field this table does not
+name. The `format` string is the version gate, so a new field arrives
+only together with a new `format` string; a reader that tolerated unknown
+fields would also tolerate a package that carries a root, which section
+10.3 forbids, and a tolerance rule is very hard to tighten later.
 
 | field | type | content |
 |-------|------|---------|
@@ -781,7 +808,11 @@ All fields are required, in this order:
 
 `Fr` hex is `0x` followed by exactly 64 lowercase hexadecimal characters,
 the 32-byte big-endian serialization of section 1.1. A parser must reject
-a value at or above `r`. `balance` is a decimal string because `u64`
+a value at or above `r`, and it must reject a string that does not match
+this form exactly, including an uppercase digit or a wrong length. One
+field element then has exactly one string, so two implementations
+compare and hash the same bytes. The layout freedom below covers
+whitespace and line structure only, never the form of a value. `balance` is a decimal string because `u64`
 exceeds the exact integer range of a JSON number; a parser must reject a
 value above the `u64` maximum. `siblings` runs from the leaf level to the
 level below the root, per section 5.4. The sibling count must equal the
