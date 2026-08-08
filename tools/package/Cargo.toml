@@ -1,0 +1,18 @@
+[package]
+name = "zkpor-package"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone: detached from the contract workspace so its host build does not
+# inherit the wasm/release profile.
+[workspace]
+
+[dependencies]
+# The same Poseidon2 the on-chain side uses, through zkpor-context. A host-side
+# run of it reproduces the leaf and the node hash of the chain exactly.
+soroban-sdk = { version = "=26.0.1", features = ["testutils"] }
+num-bigint = "0.4"
+serde_json = "1"
+# The one Rust definition of the leaf, the node, the salt, and the context
+# hash. Nothing here holds a second copy of any of them.
+zkpor-context = { path = "../../contracts/context" }

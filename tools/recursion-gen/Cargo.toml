@@ -18,3 +18,7 @@ serde_json = "1"
 # The one Rust definition of the leaf, the node, the salt, and the context
 # hash. The generator must not hold a second copy of any of them.
 zkpor-context = { path = "../../contracts/context" }
+# The one definition of the package format, the deployment records, and the
+# tree walk. The customer side reads what this side writes, so both read the
+# format from one place.
+zkpor-package = { path = "../package" }

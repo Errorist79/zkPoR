@@ -52,10 +52,7 @@
 //! the leaf, the node, the salt, and the context hash.
 
 use num_bigint::BigUint;
-use soroban_poseidon::Field;
-use soroban_sdk::{
-    crypto::BnScalar, Address, Bytes, Env, String as SorobanString, Vec as SorobanVec, U256,
-};
+use soroban_sdk::{Address, Bytes, Env, String as SorobanString, Vec as SorobanVec, U256};
 use std::{
     collections::{HashMap, HashSet},
     env, fs,
@@ -66,8 +63,15 @@ use std::{
     process::Command,
 };
 use zkpor_context::{
-    context_hash, derive_salt, fr_modulus, fr_reduce, leaf_hash, node_hash, reserve_set_hash,
-    FR_BYTES, PADDING_LEAF_BALANCE, PADDING_LEAF_ID,
+    context_hash, derive_salt, fr_modulus, fr_reduce, leaf_hash, reserve_set_hash, FR_BYTES,
+    PADDING_LEAF_BALANCE, PADDING_LEAF_ID,
+};
+use zkpor_package::{
+    deployments,
+    fr::{fr_hex, hex_bytes, parse_fr, to_big, to_fr},
+    new_env,
+    schema::{json_string, package_filename, Package, JSON_INDENT, PACKAGE_FORMAT},
+    tree::{path_in_levels, root_from_path, subtree_root, tree_levels},
 };
 
 /// The generated record of the release artifact.
@@ -92,13 +96,6 @@ const INNER_PUBLIC_INPUTS: [&str; 3] = ["batch_slot", "subroot", "subtotal"];
 /// The committed record of the deployment generations, in order. A package
 /// names a registry, and that pointer comes from the file every client trusts.
 const DEPLOYMENTS_FILE: &str = "scripts/deployments.json";
-/// The version gate of the package schema. A reader that does not know this
-/// exact string refuses to read any other field.
-const PACKAGE_FORMAT: &str = "zkpor-inclusion/1";
-/// Extension of a package file.
-const PACKAGE_EXTENSION: &str = "zkpor.json";
-/// Digits of the zero-padded leaf index in a package filename.
-const PACKAGE_INDEX_DIGITS: usize = 6;
 /// The authority-side record of one generation run. It holds the root, so it
 /// is bookkeeping and it reaches no customer.
 const GENERATION_FILE: &str = "generation.json";
@@ -106,8 +103,6 @@ const GENERATION_FILE: &str = "generation.json";
 /// it writes. A package holds one customer's balance.
 const PACKAGE_DIR_MODE: u32 = 0o700;
 const PACKAGE_FILE_MODE: u32 = 0o600;
-/// Indentation of the package layout, in spaces.
-const JSON_INDENT: usize = 2;
 
 // Resolve a path relative to the repo root. CARGO_MANIFEST_DIR is
 // <repo>/tools/recursion-gen, so ../.. is the repo root and `rel` is taken
@@ -235,49 +230,6 @@ fn pad_to_capacity(mut rows: Vec<(BigUint, u64)>, capacity: usize) -> Vec<(BigUi
     rows
 }
 
-fn be32(x: &BigUint) -> [u8; FR_BYTES] {
-    let be = x.to_bytes_be();
-    assert!(
-        be.len() <= FR_BYTES,
-        "value does not fit in a field element"
-    );
-    let mut out = [0u8; FR_BYTES];
-    out[FR_BYTES - be.len()..].copy_from_slice(&be);
-    out
-}
-
-fn to_fr(env: &Env, x: &BigUint) -> U256 {
-    let value = U256::from_be_bytes(env, &Bytes::from_array(env, &be32(x)));
-    assert!(
-        value < <BnScalar as Field>::modulus(env),
-        "value is not below the field modulus"
-    );
-    value
-}
-
-fn to_big(value: &U256) -> BigUint {
-    let mut bytes = [0u8; FR_BYTES];
-    value.to_be_bytes().copy_into_slice(&mut bytes);
-    BigUint::from_bytes_be(&bytes)
-}
-
-/// One step of the bottom-up fold: each adjacent pair becomes its parent.
-fn fold_level(env: &Env, level: &[U256]) -> Vec<U256> {
-    (0..level.len() / 2)
-        .map(|k| node_hash(env, &level[2 * k], &level[2 * k + 1]))
-        .collect()
-}
-
-/// Root of a full binary tree over `leaves` (len a power of two, >= 2).
-/// Pairwise bottom-up; identical pairing order to common/lib.nr subtree_root.
-fn subtree_root(env: &Env, leaves: &[U256]) -> U256 {
-    let mut level: Vec<U256> = leaves.to_vec();
-    while level.len() > 1 {
-        level = fold_level(env, &level);
-    }
-    level.into_iter().next().expect("non-empty tree")
-}
-
 /// The root that the two circuit stages produce: each inner circuit folds one
 /// batch of `batch_size` leaves, and the aggregator folds the batch subroots
 /// with the same node hash.
@@ -293,78 +245,18 @@ fn folded_root(env: &Env, leaves: &[U256], batch_size: usize) -> U256 {
     subtree_root(env, &subroots)
 }
 
-/// Every level of the tree, from the leaves up to the root. A caller that
-/// needs more than one path folds the tree once and reads each path from here.
-fn tree_levels(env: &Env, leaves: &[U256]) -> Vec<Vec<U256>> {
-    let mut levels = std::vec![leaves.to_vec()];
-    while levels.last().expect("the leaf level").len() > 1 {
-        levels.push(fold_level(env, levels.last().expect("the level below")));
-    }
-    levels
-}
-
-/// The sibling hashes of one leaf, from the leaf level up to the level below
-/// the root.
+/// The root that one leaf and its authentication path reproduce.
 ///
-/// The path holds no direction bit. The bit of the index at each level states
-/// whether the current node is the left input or the right input, so no stored
-/// bit can disagree with the index.
-fn path_in_levels(levels: &[Vec<U256>], global_index: usize) -> Vec<U256> {
-    let leaf_count = levels.first().expect("the leaf level").len();
-    assert!(
-        global_index < leaf_count,
-        "leaf index {global_index} is outside a tree of {leaf_count} leaves"
-    );
-    let mut index = global_index;
-    let mut siblings = Vec::new();
-    for level in &levels[..levels.len() - 1] {
-        siblings.push(level[index ^ 1].clone());
-        index >>= 1;
-    }
-    siblings
-}
-
-/// Recomputes the root from one leaf and its authentication path.
-///
-/// `depth` comes from the tree shape, which is public. A path of another
-/// length fails here, so a short path cannot produce a value that looks like a
-/// root.
-fn root_from_path(
-    env: &Env,
-    leaf: &U256,
-    global_index: usize,
-    siblings: &[U256],
-    depth: usize,
-) -> U256 {
-    assert_eq!(
-        siblings.len(),
-        depth,
-        "the path does not hold one sibling for each of the {depth} levels"
-    );
-    assert!(
-        global_index < (1usize << depth),
-        "leaf index {global_index} is outside a tree of depth {depth}"
-    );
-    let mut node = leaf.clone();
-    for (level, sibling) in siblings.iter().enumerate() {
-        node = if (global_index >> level) & 1 == 0 {
-            node_hash(env, &node, sibling)
-        } else {
-            node_hash(env, sibling, &node)
-        };
-    }
-    node
+/// Every caller here knows the tree it built, so a failure is a defect of this
+/// tool and not an input error.
+fn root_of_path(env: &Env, leaf: &U256, index: usize, siblings: &[U256], depth: usize) -> U256 {
+    root_from_path(env, leaf, index as u64, siblings, depth)
+        .unwrap_or_else(|reason| panic!("{reason}"))
 }
 
 fn fmt_field_array(values: &[BigUint]) -> String {
     let items: Vec<String> = values.iter().map(|v| format!("\"{v}\"")).collect();
     format!("[{}]", items.join(", "))
-}
-
-fn new_env() -> Env {
-    let env = Env::default();
-    env.cost_estimate().budget().reset_unlimited();
-    env
 }
 
 fn address(env: &Env, strkey: &str) -> Address {
@@ -417,21 +309,8 @@ fn read_master_secret(env: &Env) -> U256 {
         .unwrap_or_else(|_| panic!("set {MASTER_SECRET_VAR} to 32 bytes of hex"));
     let raw = raw.trim();
     let raw = raw.strip_prefix("0x").unwrap_or(raw);
-    fr_reduce(env, &hex_bytes(MASTER_SECRET_VAR, raw))
-}
-
-fn hex_bytes(label: &str, text: &str) -> [u8; FR_BYTES] {
-    assert_eq!(
-        text.len(),
-        FR_BYTES * 2,
-        "{label} must be {FR_BYTES} bytes of hex"
-    );
-    let mut out = [0u8; FR_BYTES];
-    for (i, byte) in out.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&text[2 * i..2 * i + 2], 16)
-            .unwrap_or_else(|_| panic!("{label} is not hex"));
-    }
-    out
+    let bytes = hex_bytes(raw).unwrap_or_else(|reason| panic!("{MASTER_SECRET_VAR}: {reason}"));
+    fr_reduce(env, &bytes)
 }
 
 /// The names of the public inputs of a compiled Noir program, in the order
@@ -816,7 +695,7 @@ fn cmd_path(context_file: &Path, customers_file: &Path, customer_id: &str) {
     for index in self_check_indices(b, customer_count, global_index) {
         let path = path_in_levels(&levels, index);
         assert_eq!(
-            to_big(&root_from_path(&env, &leaves[index], index, &path, depth)),
+            to_big(&root_of_path(&env, &leaves[index], index, &path, depth)),
             root,
             "the path of leaf {index} does not recompute the root that the fold produces"
         );
@@ -836,117 +715,6 @@ fn cmd_path(context_file: &Path, customers_file: &Path, customer_id: &str) {
     println!("siblings = {}", fmt_field_array(&siblings));
 }
 
-/// A field element as a package holds it: `0x` and exactly 64 lowercase
-/// hexadecimal characters, the 32-byte big-endian serialization.
-fn fr_hex(value: &BigUint) -> String {
-    let body: String = be32(value)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    format!("0x{body}")
-}
-
-/// A field element from its hexadecimal text, with or without the `0x` prefix.
-fn fr_from_hex(env: &Env, label: &str, text: &str) -> BigUint {
-    let text = text.trim();
-    let text = text.strip_prefix("0x").unwrap_or(text);
-    let value = BigUint::from_bytes_be(&hex_bytes(label, text));
-    assert!(
-        value < to_big(&fr_modulus(env)),
-        "{label} is not below the field modulus"
-    );
-    value
-}
-
-/// One deployment generation of the committed deployments file.
-struct Generation {
-    registry: String,
-    tree_depth: usize,
-}
-
-/// The current generation of one network: the last record that names it,
-/// because the file lists the generations in order.
-fn select_generation(text: &str, network: &str) -> Generation {
-    let json: serde_json::Value = serde_json::from_str(text).expect("the deployments file is JSON");
-    let records = json
-        .as_array()
-        .expect("the deployments file is a list of generations");
-    let record = records
-        .iter()
-        .rfind(|record| record["network"] == network)
-        .unwrap_or_else(|| {
-            panic!("{DEPLOYMENTS_FILE} records no deployment generation for network {network}")
-        });
-    let field = |name: &str| -> &serde_json::Value {
-        let value = &record[name];
-        assert!(
-            !value.is_null(),
-            "the {network} generation records no {name}"
-        );
-        value
-    };
-    Generation {
-        registry: field("registry")
-            .as_str()
-            .expect("the registry is a string")
-            .to_string(),
-        tree_depth: field("tree_depth")
-            .as_u64()
-            .expect("the tree depth is a number") as usize,
-    }
-}
-
-/// The fields of one package, in the order that the schema fixes.
-struct Package<'a> {
-    network: &'a str,
-    registry: &'a str,
-    asset: &'a str,
-    snapshot_ledger: u32,
-    leaf_index: usize,
-    id: &'a BigUint,
-    balance: u64,
-    salt: &'a BigUint,
-    siblings: &'a [BigUint],
-}
-
-/// A JSON string value, with the escaping that JSON requires.
-fn json_string(text: &str) -> String {
-    serde_json::Value::String(text.to_string()).to_string()
-}
-
-/// The bytes of one package file.
-///
-/// The layout is part of the format, so two implementations write the same
-/// bytes: the keys in schema order, two-space indentation, LF line ends, and
-/// one LF at the end of the file.
-fn package_json(package: &Package) -> String {
-    let pad = " ".repeat(JSON_INDENT);
-    let mut lines = std::vec![
-        format!("{pad}\"format\": {}", json_string(PACKAGE_FORMAT)),
-        format!("{pad}\"network\": {}", json_string(package.network)),
-        format!("{pad}\"registry\": {}", json_string(package.registry)),
-        format!("{pad}\"asset\": {}", json_string(package.asset)),
-        format!("{pad}\"snapshot_ledger\": {}", package.snapshot_ledger),
-        format!("{pad}\"leaf_index\": {}", package.leaf_index),
-        format!("{pad}\"id\": {}", json_string(&fr_hex(package.id))),
-        format!(
-            "{pad}\"balance\": {}",
-            json_string(&package.balance.to_string())
-        ),
-        format!("{pad}\"salt\": {}", json_string(&fr_hex(package.salt))),
-    ];
-    let siblings: Vec<String> = package
-        .siblings
-        .iter()
-        .map(|sibling| format!("{pad}{pad}{}", json_string(&fr_hex(sibling))))
-        .collect();
-    lines.push(format!(
-        "{pad}\"siblings\": [\n{}\n{pad}]",
-        siblings.join(",\n")
-    ));
-    format!("{{\n{}\n}}\n", lines.join(",\n"))
-}
-
 /// The authority-side record of one generation run. It holds the root, so it
 /// stays with the authority and reaches no customer.
 fn generation_json(count: usize, root: &BigUint, transaction_hash: &str) -> String {
@@ -957,13 +725,6 @@ fn generation_json(count: usize, root: &BigUint, transaction_hash: &str) -> Stri
         json_string(PACKAGE_FORMAT),
         json_string(&fr_hex(root)),
         json_string(transaction_hash),
-    )
-}
-
-fn package_filename(leaf_index: usize) -> String {
-    format!(
-        "package-{leaf_index:0width$}.{PACKAGE_EXTENSION}",
-        width = PACKAGE_INDEX_DIGITS
     )
 }
 
@@ -1030,7 +791,8 @@ fn write_packages(
 
     let deployments = fs::read_to_string(request.deployments_file)
         .unwrap_or_else(|_| panic!("read {}", request.deployments_file.display()));
-    let generation = select_generation(&deployments, request.network);
+    let generation = deployments::current(&deployments, request.network)
+        .unwrap_or_else(|reason| panic!("{DEPLOYMENTS_FILE}: {reason}"));
     assert_eq!(
         generation.tree_depth, depth,
         "the {} generation holds trees of depth {}, and this tree has depth {depth}",
@@ -1090,20 +852,21 @@ fn write_packages(
     let levels = tree_levels(env, &leaves);
     for (index, salt) in salts.iter().enumerate() {
         let siblings: Vec<BigUint> = path_in_levels(&levels, index).iter().map(to_big).collect();
+        let leaf_index = index as u32;
         let package = Package {
-            network: request.network,
-            registry: &generation.registry,
-            asset: &context.asset,
+            network: request.network.to_string(),
+            registry: generation.registry.clone(),
+            asset: context.asset.clone(),
             snapshot_ledger: context.snapshot_ledger,
-            leaf_index: index,
-            id: &rows[index].0,
+            leaf_index,
+            id: rows[index].0.clone(),
             balance: rows[index].1,
-            salt,
-            siblings: &siblings,
+            salt: salt.clone(),
+            siblings,
         };
         write_private(
-            &directory.join(package_filename(index)),
-            &package_json(&package),
+            &directory.join(package_filename(leaf_index)),
+            &package.to_json(),
         );
     }
     write_private(
@@ -1494,11 +1257,8 @@ fn main() {
             (Some(context), Some(customers), Some(out)) => {
                 let snapshot = flag_value(&args, "--attested-snapshot");
                 let attested = AttestedEntry {
-                    root: fr_from_hex(
-                        &new_env(),
-                        "the attested root",
-                        &flag_value(&args, "--attested-root"),
-                    ),
+                    root: parse_fr(&new_env(), &flag_value(&args, "--attested-root"))
+                        .unwrap_or_else(|reason| panic!("the attested root: {reason}")),
                     snapshot_ledger: snapshot
                         .trim()
                         .parse()
@@ -1541,6 +1301,8 @@ fn usage() -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zkpor_context::node_hash;
+    use zkpor_package::schema::PACKAGE_EXTENSION;
 
     fn rows(count: usize) -> Vec<(BigUint, u64)> {
         (0..count)
@@ -1645,29 +1407,10 @@ mod tests {
             for (g, leaf) in tree.iter().enumerate() {
                 let siblings = path_in_levels(&levels, g);
                 assert_eq!(
-                    to_big(&root_from_path(
-                        &env,
-                        leaf,
-                        g,
-                        &siblings,
-                        depth_of(capacity)
-                    )),
+                    to_big(&root_of_path(&env, leaf, g, &siblings, depth_of(capacity))),
                     root,
                     "leaf {g} of the tree of B={b} K={k}"
                 );
-            }
-        }
-    }
-
-    #[test]
-    fn the_path_holds_one_sibling_for_each_level() {
-        let env = new_env();
-        for (b, k) in SHAPES {
-            let capacity = b * k;
-            let tree = leaves(&env, capacity);
-            let levels = tree_levels(&env, &tree);
-            for g in 0..capacity {
-                assert_eq!(path_in_levels(&levels, g).len(), depth_of(capacity));
             }
         }
     }
@@ -1696,63 +1439,6 @@ mod tests {
         let root = to_big(&folded_root(&env, &tree, b));
         assert_eq!(to_big(&left), root);
         assert_eq!(to_big(&right), root);
-    }
-
-    /// The index alone states the direction, so the same siblings under
-    /// another index give another value.
-    #[test]
-    fn another_index_over_the_same_path_gives_another_root() {
-        let env = new_env();
-        let (b, capacity) = (4, 16);
-        let tree = leaves(&env, capacity);
-        let root = to_big(&folded_root(&env, &tree, b));
-        let depth = depth_of(capacity);
-        let siblings = path_of(&env, &tree, 5);
-        for wrong in [0, 4, 7, 13, capacity - 1] {
-            assert_ne!(
-                to_big(&root_from_path(&env, &tree[5], wrong, &siblings, depth)),
-                root,
-                "index {wrong} must not reach the root of leaf 5"
-            );
-        }
-    }
-
-    #[test]
-    #[should_panic(expected = "one sibling for each")]
-    fn a_truncated_path_fails() {
-        let env = new_env();
-        let capacity = 16;
-        let tree = leaves(&env, capacity);
-        let siblings = path_of(&env, &tree, 5);
-        root_from_path(&env, &tree[5], 5, &siblings[..2], depth_of(capacity));
-    }
-
-    #[test]
-    #[should_panic(expected = "outside a tree")]
-    fn an_index_outside_the_tree_fails() {
-        let env = new_env();
-        let tree = leaves(&env, 8);
-        path_of(&env, &tree, 8);
-    }
-
-    /// One changed bit in one sibling breaks the recomputation at every level.
-    #[test]
-    fn a_sibling_that_changed_by_one_bit_gives_another_root() {
-        let env = new_env();
-        let (b, capacity) = (4, 16);
-        let tree = leaves(&env, capacity);
-        let root = to_big(&folded_root(&env, &tree, b));
-        let depth = depth_of(capacity);
-        let siblings = path_of(&env, &tree, 5);
-        for level in 0..depth {
-            let mut changed = siblings.clone();
-            changed[level] = to_fr(&env, &(to_big(&siblings[level]) ^ BigUint::from(1u32)));
-            assert_ne!(
-                to_big(&root_from_path(&env, &tree[5], 5, &changed, depth)),
-                root,
-                "a changed sibling at level {level} must not reach the root"
-            );
-        }
     }
 
     #[test]
@@ -1843,7 +1529,7 @@ mod tests {
             .expect("the fixture holds the test secret")
             .clone();
         let raw = raw.trim().trim_start_matches("0x");
-        fr_reduce(env, &hex_bytes("the fixture secret", raw))
+        fr_reduce(env, &hex_bytes(raw).expect("the fixture secret"))
     }
 
     fn fixture_rows(env: &Env) -> Vec<(BigUint, u64)> {
@@ -1942,77 +1628,6 @@ mod tests {
     }
 
     #[test]
-    fn a_field_element_is_sixty_four_lowercase_hexadecimal_characters() {
-        // The expected text comes from the standard library, not from fr_hex.
-        assert_eq!(fr_hex(&BigUint::from(255u32)), format!("0x{:0>64}", "ff"));
-        assert_eq!(
-            fr_hex(&BigUint::from(0xabcdefu32)),
-            format!("0x{:0>64}", "abcdef")
-        );
-        // Big endian: a value of one byte sits at the end of the text.
-        let high = BigUint::from(1u32) << 248;
-        assert_eq!(fr_hex(&high), format!("0x01{}", "0".repeat(62)));
-    }
-
-    #[test]
-    fn the_filename_pads_the_leaf_index_to_six_digits() {
-        assert_eq!(package_filename(42), "package-000042.zkpor.json");
-        assert_eq!(package_filename(0), "package-000000.zkpor.json");
-        assert_eq!(package_filename(1234567), "package-1234567.zkpor.json");
-    }
-
-    /// The layout is part of the format, so this pins the key order, the
-    /// indentation, and the line ends.
-    #[test]
-    fn the_package_layout_is_fixed() {
-        let package = Package {
-            network: "testnet",
-            registry: "CBCE",
-            asset: "CARC",
-            snapshot_ledger: 1000,
-            leaf_index: 42,
-            id: &BigUint::from(7u32),
-            balance: u64::MAX,
-            salt: &BigUint::from(1u32),
-            siblings: &[BigUint::from(2u32), BigUint::from(3u32)],
-        };
-        // The expected hexadecimal comes from the standard library, so the
-        // test does not restate the padding rule of fr_hex.
-        let id = format!("{:0>64}", "07");
-        let salt = format!("{:0>64}", "01");
-        let first = format!("{:0>64}", "02");
-        let second = format!("{:0>64}", "03");
-        let expected = format!(
-            "{{\n  \"format\": \"zkpor-inclusion/1\",\n  \"network\": \"testnet\",\n  \
-             \"registry\": \"CBCE\",\n  \"asset\": \"CARC\",\n  \"snapshot_ledger\": 1000,\n  \
-             \"leaf_index\": 42,\n  \"id\": \"0x{id}\",\n  \
-             \"balance\": \"18446744073709551615\",\n  \"salt\": \"0x{salt}\",\n  \
-             \"siblings\": [\n    \"0x{first}\",\n    \"0x{second}\"\n  ]\n}}\n"
-        );
-        assert_eq!(package_json(&package), expected);
-    }
-
-    #[test]
-    fn the_generation_is_the_last_record_of_the_network() {
-        let text = r#"[
-          {"network": "a", "registry": "R1", "tree_depth": 4},
-          {"network": "b", "registry": "R2", "tree_depth": 8},
-          {"network": "a", "registry": "R3", "tree_depth": 12}
-        ]"#;
-        let generation = select_generation(text, "a");
-        assert_eq!(generation.registry, "R3");
-        assert_eq!(generation.tree_depth, 12);
-        assert_eq!(select_generation(text, "b").registry, "R2");
-    }
-
-    #[test]
-    #[should_panic(expected = "no deployment generation for network")]
-    fn a_network_without_a_generation_fails() {
-        let text = r#"[{"network": "a", "registry": "R", "tree_depth": 4}]"#;
-        select_generation(text, "b");
-    }
-
-    #[test]
     fn the_committed_deployments_file_is_an_ordered_list() {
         let text = fs::read_to_string(repo_path(DEPLOYMENTS_FILE)).expect("the deployments file");
         let json: serde_json::Value = serde_json::from_str(&text).expect("the file is JSON");
@@ -2025,9 +1640,11 @@ mod tests {
         let rows = fixture_rows(&new_env());
         assert_eq!(package_files(directory).len(), rows.len());
         assert!(directory.join(package_filename(0)).is_file());
-        assert!(directory.join(package_filename(rows.len() - 1)).is_file());
+        assert!(directory
+            .join(package_filename(rows.len() as u32 - 1))
+            .is_file());
         // The first padding position holds no package.
-        assert!(!directory.join(package_filename(rows.len())).exists());
+        assert!(!directory.join(package_filename(rows.len() as u32)).exists());
         assert!(directory.join(GENERATION_FILE).is_file());
     }
 
@@ -2051,7 +1668,7 @@ mod tests {
         };
 
         for (index, (id, balance)) in rows.iter().enumerate() {
-            let text = fs::read_to_string(directory.join(package_filename(index)))
+            let text = fs::read_to_string(directory.join(package_filename(index as u32)))
                 .expect("read the package");
             assert!(text.ends_with("}\n") && !text.contains('\r'));
             let json: serde_json::Value = serde_json::from_str(&text).expect("the package is JSON");
@@ -2093,7 +1710,7 @@ mod tests {
             let salt = to_fr(&env, &hex_value(json["salt"].as_str().expect("salt")));
             let leaf = leaf_hash(&env, &to_fr(&env, id), *balance, &salt);
             assert_eq!(
-                to_big(&root_from_path(&env, &leaf, index, &siblings, depth)),
+                to_big(&root_of_path(&env, &leaf, index, &siblings, depth)),
                 *attested,
                 "package {index} does not verify against the attested root"
             );
@@ -2239,5 +1856,160 @@ mod tests {
              \"type\": {\"kind\": \"field\"}}, \"visibility\": \"public\"}",
         );
         public_input_layout(&write_temp("zkpor_layout_array.json", &abi));
+    }
+
+    // ---- the round trip: the generator writes, the customer command reads ----
+
+    /// The ledger at which the registry read the reserves, in the answer that
+    /// the stub gives. It is later than the snapshot, as the chain requires.
+    const STUB_ATTESTED_LEDGER: u32 = 1003;
+    /// The identity that the customer command needs for a read-only call.
+    const STUB_SOURCE_ACCOUNT: &str = "round-trip-reader";
+
+    /// The customer command, built from this tree.
+    ///
+    /// The test runs the binary rather than a library function, because the
+    /// binary is what a customer runs, and it holds the reading of the chain,
+    /// the exit status, and the text of the verdict.
+    fn verifier_binary() -> &'static PathBuf {
+        static BINARY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        BINARY.get_or_init(|| {
+            let crate_dir = repo_path("tools/inclusion-verify");
+            let built = Command::new("cargo")
+                .args(["build", "--quiet", "--bin", "verify-inclusion"])
+                .current_dir(&crate_dir)
+                .status()
+                .expect("run cargo");
+            assert!(built.success(), "the customer command did not build");
+            crate_dir.join("target/debug/verify-inclusion")
+        })
+    }
+
+    /// A stand-in for the stellar command line, on the path of the child.
+    ///
+    /// The command reads the chain through that program. The stub answers the
+    /// two read-only calls and records the arguments of each one, so the test
+    /// can state which registry the command asked. It answers no other call.
+    fn stub_stellar(directory: &Path, attested: &AttestedEntry, latest_ledger: u32) -> PathBuf {
+        create_dir_private(directory);
+        let record = directory.join("calls");
+        let _ = fs::remove_file(&record);
+        let entry = format!(
+            "{{\"attestation\": {{\"Filled\": {{\"final_root\": \"{}\", \
+             \"total_liabilities\": \"1290\", \"snapshot_ledger\": {}, \
+             \"attested_ledger\": {STUB_ATTESTED_LEDGER}, \"reserve_sum\": \"2000\"}}}}}}",
+            attested.root, attested.snapshot_ledger
+        );
+        let program = directory.join("stellar");
+        fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {record}\ncase \"$1\" in\n\
+                 ledger) printf '%s\\n' '{{\"sequence\": {latest_ledger}}}' ;;\n\
+                 contract) printf '%s\\n' '{entry}' ;;\n\
+                 *) exit 1 ;;\nesac\n",
+                record = record.display()
+            ),
+        )
+        .expect("write the stub");
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).expect("the stub mode");
+        record
+    }
+
+    /// The status and the output of one run of the customer command.
+    fn run_verifier(package: &Path, deployments: &Path, stub_dir: &Path) -> (i32, String) {
+        let output = Command::new(verifier_binary())
+            .args([package, deployments])
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    stub_dir.display(),
+                    env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env("STELLAR_SOURCE_ACCOUNT", STUB_SOURCE_ACCOUNT)
+            // The endpoint of the customer must not leak in from this process.
+            .env_remove("STELLAR_RPC_URL")
+            .env_remove("STELLAR_NETWORK_PASSPHRASE")
+            .output()
+            .expect("run the customer command");
+        (
+            output.status.code().expect("an exit status"),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )
+    }
+
+    /// The same package with one hexadecimal digit of the first sibling
+    /// changed. The change travels as text, so a reader that drops a digit or
+    /// reorders the bytes fails here.
+    fn with_one_changed_sibling(text: &str) -> String {
+        let list = text.find("\"siblings\": [").expect("the sibling list");
+        let value = list + text[list..].find("\"0x").expect("a sibling") + 3;
+        let last = value + FR_BYTES * 2 - 1;
+        let mut changed = text.to_string();
+        let digit = if &changed[last..=last] == "0" {
+            "1"
+        } else {
+            "0"
+        };
+        changed.replace_range(last..=last, digit);
+        changed
+    }
+
+    /// The round trip. A package that the generator wrote reaches the command
+    /// that a customer runs, as bytes on disk.
+    ///
+    /// Each half has its own tests, and both halves share one schema module. A
+    /// defect inside that module therefore passes both halves, and only this
+    /// test fails.
+    ///
+    /// What this cannot cover: the reading of a real chain. The stub stands
+    /// for the stellar command line, so the test states what a registry
+    /// answers instead of proving that a registry answers it. The registry
+    /// gate covers the real read. The test also runs one deployment
+    /// generation, so it does not cover a package of a retired generation;
+    /// the tests of the customer command cover that with their own file.
+    #[test]
+    fn a_package_that_the_generator_wrote_reaches_the_customer_command() {
+        let depth = read_shape().2.trailing_zeros() as usize;
+        let deployments = deployments_with_depth("zkpor_round_trip_deployments.json", depth);
+        let attested = fixture_attestation();
+        let directory = generate_into("zkpor_round_trip", attested, &deployments);
+        let stub_dir = env::temp_dir().join("zkpor_round_trip_stub");
+        let record = stub_stellar(&stub_dir, attested, STUB_ATTESTED_LEDGER + 1);
+
+        let package = directory.join(package_filename(0));
+        let (status, output) = run_verifier(&package, &deployments, &stub_dir);
+        assert_eq!(status, 0, "the package must verify: {output}");
+        assert!(output.contains("INCLUDED"), "{output}");
+
+        // The command asked the registry of the deployment record, and the
+        // asset of the package.
+        let calls = fs::read_to_string(&record).expect("the recorded calls");
+        assert!(
+            calls.contains(&format!("--id {TEST_REGISTRY}")),
+            "the command read another registry: {calls}"
+        );
+        assert!(calls.contains(&format!("--asset {}", fixture_context(&new_env()).asset)));
+
+        // A rejection that travels through the file. One digit of one sibling
+        // changes, and nothing else does.
+        let tampered = env::temp_dir().join("zkpor_round_trip_tampered.zkpor.json");
+        let original = fs::read_to_string(&package).expect("read the package");
+        let changed = with_one_changed_sibling(&original);
+        assert_ne!(changed, original, "the change must reach the file");
+        assert_eq!(changed.len(), original.len());
+        fs::write(&tampered, &changed).expect("write the changed package");
+        let (status, output) = run_verifier(&tampered, &deployments, &stub_dir);
+        assert_eq!(
+            status, 7,
+            "a changed path must be a root mismatch: {output}"
+        );
+        assert!(output.contains("ROOT MISMATCH"), "{output}");
     }
 }

@@ -1104,18 +1104,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "recursion-gen"
-version = "0.1.0"
-dependencies = [
- "num-bigint",
- "serde_json",
- "soroban-poseidon",
- "soroban-sdk",
- "zkpor-context",
- "zkpor-package",
-]
-
-[[package]]
 name = "ref-cast"
 version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
