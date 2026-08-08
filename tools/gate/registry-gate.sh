@@ -15,13 +15,24 @@
 #                     is refused. The registry derives the context itself, so
 #                     this exercises the binding through the component that
 #                     builds the public inputs
+#   unregistered   -> an attestation for an asset with no registry entry is
+#                     refused with AssetNotRegistered
 #   observation    -> the read-only reading answers the minted amount
 #
 # The failed balance read stays in the unit tests. A reserve address here is a
-# custom account contract, because the pinned command line signs only the
-# transaction envelope and cannot give the Soroban consent of a second
-# account. A contract address that holds no balance entry answers a true zero
-# rather than a failure, so this gate cannot produce a failed read.
+# custom account contract. The pinned command line can sign an authorization
+# entry, but it collects a signer only for a top-level Address argument
+# (stellar-cli 27.0.0, cmd/soroban-cli/src/commands/contract/arg_parsing.rs).
+# A reserve sits inside a Vec<Address>, so no command line invocation signs
+# the entry of a second account. A contract address that holds no balance
+# entry answers a true zero rather than a failure, so this gate cannot
+# produce a failed read.
+#
+# The custom account is a convenience for this localnet harness only. It does
+# not exercise the path of a real reserve, which is an ordinary account that
+# signs its authorization entry. A run on a public network must register an
+# ordinary account as the reserve and must sign its entry with the JavaScript
+# SDK (authorizeEntry). A pass of this gate is not evidence for that path.
 #
 # Environment (all optional):
 #   SOROBAN_RPC      localnet RPC (default http://localhost:8000/soroban/rpc)
@@ -91,8 +102,10 @@ ASSET=$(stellar contract id asset --asset "$ASSET_NAME" --network "$NET") \
 note "asset contract=$ASSET"
 
 # The reserve address is a custom account, because a reserve address must
-# authorize its own registration and the pinned command line signs only the
-# transaction envelope. One signer therefore drives the whole run.
+# authorize its own registration, and the command line collects no signer for
+# an address inside a vector argument. One signer therefore drives the whole
+# run. A real reserve is an ordinary account, so this contract stands in for
+# it only on a localnet.
 cargo build --release --target wasm32v1-none \
   --manifest-path "$GATE_DIR/reserve-account/Cargo.toml" >/dev/null 2>&1 \
   || die "reserve account build"
