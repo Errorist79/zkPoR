@@ -5,6 +5,29 @@
 //! from here, and a package never says where a client looks.
 
 use serde_json::Value;
+use std::fmt;
+
+/// Why the deployment records answer nothing.
+///
+/// The two reasons stay apart. A file that does not read is a fault of the
+/// configuration, and a reader repairs it and runs again. A file that holds
+/// two records for one pair reads correctly and contradicts itself, so it is
+/// the trust root that is wrong.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeploymentsError {
+    /// The text is not a list of deployment records.
+    Unreadable(String),
+    /// Two records name one pair of a network and a registry address.
+    Contradictory(String),
+}
+
+impl fmt::Display for DeploymentsError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unreadable(reason) | Self::Contradictory(reason) => formatter.write_str(reason),
+        }
+    }
+}
 
 /// One deployment generation.
 pub struct Generation {
@@ -17,12 +40,37 @@ pub struct Generation {
 }
 
 /// Every generation of the file, in the order that the file lists them.
-pub fn generations(text: &str) -> Result<Vec<Generation>, String> {
-    let json: Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
+///
+/// The pair of a network and a registry address names exactly one record. A
+/// file that holds two records for one pair is invalid, and this reader
+/// refuses the whole file. It answers from neither record, because a silent
+/// choice between the two lets two readers reach two answers from one file.
+/// The refusal covers every query, and not only the query of the repeated
+/// pair, because a file that contradicts itself carries no trust for the
+/// other records either.
+pub fn generations(text: &str) -> Result<Vec<Generation>, DeploymentsError> {
+    let unreadable = DeploymentsError::Unreadable;
+    let json: Value = serde_json::from_str(text).map_err(|error| unreadable(error.to_string()))?;
     let records = json
         .as_array()
-        .ok_or("the deployments file is not a list of generations")?;
-    records.iter().map(generation).collect()
+        .ok_or_else(|| unreadable("the deployments file is not a list of generations".to_string()))?;
+    let generations: Vec<Generation> = records
+        .iter()
+        .map(generation)
+        .collect::<Result<_, _>>()
+        .map_err(unreadable)?;
+    for (index, one) in generations.iter().enumerate() {
+        if generations[..index]
+            .iter()
+            .any(|earlier| earlier.network == one.network && earlier.registry == one.registry)
+        {
+            return Err(DeploymentsError::Contradictory(format!(
+                "the deployments file holds two records for the registry {} on the network {}",
+                one.registry, one.network
+            )));
+        }
+    }
+    Ok(generations)
 }
 
 fn generation(record: &Value) -> Result<Generation, String> {
@@ -43,11 +91,13 @@ fn generation(record: &Value) -> Result<Generation, String> {
 
 /// The current generation of one network: the last record that names it,
 /// because the file lists the generations in order.
-pub fn current(text: &str, network: &str) -> Result<Generation, String> {
+pub fn current(text: &str, network: &str) -> Result<Generation, DeploymentsError> {
     generations(text)?
         .into_iter()
         .rfind(|generation| generation.network == network)
-        .ok_or_else(|| format!("no deployment generation for network {network}"))
+        .ok_or_else(|| {
+            DeploymentsError::Unreadable(format!("no deployment generation for network {network}"))
+        })
 }
 
 /// The generation that one network name and one registry address name
@@ -56,7 +106,11 @@ pub fn current(text: &str, network: &str) -> Result<Generation, String> {
 /// A retired generation stays deployed and stays the record of the
 /// attestations that it accepted, so a package of an earlier generation stays
 /// verifiable.
-pub fn find(text: &str, network: &str, registry: &str) -> Result<Option<Generation>, String> {
+pub fn find(
+    text: &str,
+    network: &str,
+    registry: &str,
+) -> Result<Option<Generation>, DeploymentsError> {
     Ok(generations(text)?
         .into_iter()
         .find(|generation| generation.network == network && generation.registry == registry))
@@ -110,5 +164,39 @@ mod tests {
     fn a_file_that_is_not_a_list_fails() {
         assert!(generations("{}").is_err());
         assert!(generations("not json").is_err());
+    }
+
+    /// One pair names one record. Two records for one pair make the file
+    /// invalid, and every query of that file fails, not only the query of the
+    /// repeated pair.
+    #[test]
+    fn two_records_for_one_pair_refuse_the_whole_file() {
+        let text = r#"[
+          {"network": "testnet", "registry": "CFIRST", "tree_depth": 10},
+          {"network": "local", "registry": "CLOCAL", "tree_depth": 4},
+          {"network": "testnet", "registry": "CFIRST", "tree_depth": 12}
+        ]"#;
+        assert!(generations(text).is_err());
+        assert!(find(text, "testnet", "CFIRST").is_err());
+        assert!(find(text, "local", "CLOCAL").is_err());
+        assert!(current(text, "local").is_err());
+    }
+
+    /// The refusal covers a repeated pair only. Two records that differ in the
+    /// network, or in the registry, name two generations and both resolve.
+    #[test]
+    fn records_of_different_pairs_both_resolve() {
+        let text = r#"[
+          {"network": "testnet", "registry": "CSAME", "tree_depth": 10},
+          {"network": "local", "registry": "CSAME", "tree_depth": 4},
+          {"network": "testnet", "registry": "COTHER", "tree_depth": 12}
+        ]"#;
+        assert_eq!(find(text, "testnet", "CSAME").unwrap().unwrap().tree_depth, 10);
+        assert_eq!(find(text, "local", "CSAME").unwrap().unwrap().tree_depth, 4);
+        assert_eq!(
+            find(text, "testnet", "COTHER").unwrap().unwrap().tree_depth,
+            12
+        );
+        assert_eq!(current(text, "testnet").unwrap().registry, "COTHER");
     }
 }

@@ -330,6 +330,38 @@ fn a_registry_and_a_network_that_no_record_names_together_are_untrusted() {
     ));
 }
 
+/// The trust root of the verifier contradicts itself. The verifier answers
+/// from neither record, and the outcome stays apart from the untrusted one,
+/// because the fault sits in the file of the verifier and not in the package.
+#[test]
+fn two_records_for_one_pair_refuse_the_file_and_not_the_package() {
+    let env = new_env();
+    let (package, attestation) = fixture(&env);
+    let repeated = format!(
+        r#"[
+          {{"network": "{NETWORK}", "registry": "{RETIRED}", "tree_depth": {DEPTH}}},
+          {{"network": "testnet", "registry": "{OTHER_NETWORK_REGISTRY}", "tree_depth": {DEPTH}}},
+          {{"network": "{NETWORK}", "registry": "{RETIRED}", "tree_depth": 8}}
+        ]"#
+    );
+    let chain = FakeChain::holding(attestation);
+    let verdict = verify(&env, &package.to_json(), &repeated, &chain).expect("a verdict");
+    assert!(
+        matches!(verdict, Verdict::InvalidDeployments(_)),
+        "{verdict:?}"
+    );
+    assert_eq!(exit_code(&verdict), 9);
+    assert_ne!(
+        exit_code(&verdict),
+        exit_code(&Verdict::UntrustedDeployment {
+            network: NETWORK.to_string(),
+            registry: RETIRED.to_string(),
+        })
+    );
+    // The file answers nothing, so the verifier reads no chain.
+    assert!(chain.asked.borrow().is_empty());
+}
+
 /// The current generation builds deeper trees, so a package of this tree does
 /// not belong to it. The pair is trusted and the shape refuses.
 #[test]

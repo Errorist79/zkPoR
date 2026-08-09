@@ -3,9 +3,10 @@
 ZK Proof of Reserves on Stellar (Soroban). An issuer proves that its reserves
 cover the customer liabilities. The proof does not reveal the individual
 balances. The proof is an UltraHonk zero-knowledge proof. A Soroban contract
-verifies the proof on-chain with the CAP-0080 BN254 host functions. An earlier
-artifact validated the recursive path on the real Stellar testnet at Protocol
-27. The Status section separates that evidence from the current work.
+verifies the proof on-chain with the CAP-0080 BN254 host functions. The
+current artifact validated the recursive path on the real Stellar testnet at
+Protocol 27. The Status section separates that evidence from the evidence of
+the earlier artifact.
 
 See [`docs/protocol.md`](docs/protocol.md) for the specification, which is
 authoritative. See [`docs/architecture.md`](docs/architecture.md) for the
@@ -16,8 +17,8 @@ on-chain validation.
 
 Three stages of work meet in this repository, and this section separates
 them. The first stage is superseded, with on-chain evidence that a reader
-can check. The second stage is the current artifact, which no testnet
-transaction covers yet. The third stage is not implemented.
+can check. The second stage is the current artifact, and confirmed testnet
+transactions cover it. The third stage is not implemented.
 
 Superseded (on-chain evidence dated June 27, 2026):
 
@@ -25,16 +26,33 @@ Superseded (on-chain evidence dated June 27, 2026):
   Protocol 27 testnet: the verifier contract
   `CCADPDEROE6OXGODBMAC7SU3Q3VOUZQAKYAQL67YNBMSTROJSSK7ATZ7` accepted the
   honest proofs and rejected the forged and the deflated proofs. The four
-  confirmed transaction hashes are in [`SECURITY.md`](SECURITY.md). The
-  honest verify used 106,670,237 instructions.
+  confirmed transaction hashes are in [`SECURITY.md`](SECURITY.md). No
+  instruction figure stands for that verify, because no public source
+  returns it today.
 - That artifact used two-input leaves, no context binding, and three public
   inputs. The current artifact uses different circuits and different keys.
   The transactions above are evidence for that artifact only, not for the
   current one.
 
-Current artifact (passed its gates on a localnet, not yet validated on
-testnet):
+Current artifact (validated on the Protocol 27 testnet on August 8, 2026):
 
+- The full flow ran on the real testnet: the verifier
+  `CDUEQOM2AQ54ZZ3EZA2Q4D32C7DBVQ5D45TFMBSC2RCE6ZMX32T44JC2` and the registry
+  `CC4MA6FWDBG3Y4YXYGDHYEZ36O3YSP7DREGOLBWKP6ZTQQ6IYFFX3KQK`, one classic
+  asset registered, one reserve account that signed its own
+  authorization entry, two accepted attestations, and one customer package
+  checked against the registry. A second generation followed, with the
+  verifier `CDICJW5B5VYT3GD3VTDWFYCQG6N4ONLUXKHPQSJVAN5QYPGCTOG7PIXE` and the
+  registry `CCHUTDKUPWXVUIX6D26SE5NZ5STP74VV4DY2CNVCMNJYOU5PTROLA7MY`. It
+  registered one asset with 17 reserve accounts, which the first generation
+  refuses, and a package of the first generation still verifies. The confirmed
+  transaction hashes are in
+  [`SECURITY.md`](SECURITY.md), and the addresses are in
+  [`scripts/deployments.json`](scripts/deployments.json). The attestation
+  transaction declared 122,268,806 instructions, about 30.6 percent of the cap
+  of 400,000,000 for each transaction. The network enforces the cap against
+  the declaration, so the declaration bounds the headroom. The transaction
+  consumed 117,524,415 instructions.
 - The circuits with context binding and salted three-input leaves, at the
   release configuration of 1024 leaves for each batch and 4 batches
   (`circuits/recursion/`, `tools/recursion-gen/`).
@@ -55,8 +73,9 @@ testnet):
   accepted and recorded, a proof of another context refused, an asset with no
   entry refused, and the read-only reserve reading. That gate registers a
   custom account contract as the reserve, so it is not evidence for an
-  ordinary account that signs its own authorization. A localnet result is not
-  testnet evidence.
+  ordinary account that signs its own authorization. The testnet run above
+  registers an ordinary account, which signs its authorization entry with
+  `tools/reserve-consent/`.
 - The one Rust definition of the leaf, the node, the salt, the address
   encoding, and the context hash (`contracts/context/`), with 16 tests and the
   committed vectors in `fixtures/context_vectors.json`. Every contract and
@@ -112,8 +131,9 @@ circuits/simple_circuit/ reference circuit for a known-good verify check
 tools/recursion-gen/  off-circuit fold and witness generator
 tools/package/        the inclusion package format, the tree, the deployment records
 tools/inclusion-verify/ the customer check of one inclusion package
+tools/reserve-consent/ the signature of a reserve address on its own authorization entry
 tools/gate/           end-to-end soundness gate and adversarial harness
-scripts/              toolchain setup, localnet, deploy, attest, verify
+scripts/              toolchain setup, localnet, deploy, register, attest, verify
 fixtures/             test vectors and test-only inputs, never production data
 docs/protocol.md      the specification, which is authoritative
 docs/architecture.md  system design

@@ -21,7 +21,8 @@
 //!
 //! The status of the command names the class of the result: 0 included,
 //! 3 unsupported format, 4 malformed package, 5 untrusted registry or
-//! network, 6 no matching attestation, 7 root mismatch, and 8 no verdict.
+//! network, 6 no matching attestation, 7 root mismatch, 8 no verdict, and
+//! 9 deployment records that contradict themselves.
 
 use std::{env, fs, path::PathBuf, process::exit};
 use zkpor_inclusion_verify::{chain::StellarCli, exit_code, verify};

@@ -241,10 +241,18 @@ because the tag and every payload bit survive in the limb pair.
    sort key of an address is 33 bytes: the tag as one byte, then the 32-byte
    payload.
 3. Reject the set if it contains a duplicate address.
-4. Reject the set if it is empty or larger than `MAX_RESERVE_ADDRESSES` (16).
+4. Reject the set if it is empty or larger than `MAX_RESERVE_ADDRESSES` (32).
 5. Encode each address as `(addr_hi, addr_lo)` per section 3.2.
 6. Concatenate the limb pairs in sorted order into one list of `2N` elements.
 7. `reserve_set_hash = H_2N(list)`.
+
+`MAX_RESERVE_ADDRESSES` is a chosen coordination bound, and not a technical
+ceiling. Registration collects the consent of every reserve address, and the
+bound limits that coordination. The instruction budget does not fix it. One
+added reserve address costs one balance read, which measures about 0.10M
+declared instructions for a classic asset on the Protocol 27 testnet. A set
+of 32 classic addresses declares about 125M instructions, against a cap of
+400,000,000 for each transaction.
 
 The steps define the value and the rejection rules. They do not fix an
 execution order. An implementation may evaluate the rejection rules of
@@ -726,7 +734,23 @@ A migration is a fresh deployment: a new verifier and a new registry. The
 deployments file records the deployment generations in order. Each record
 names the network, the registry address, the verifier address, the
 SHA-256 hash of the verification key, and the tree depth of section 5.3,
-which a package verifier needs (section 10.2).
+which a package verifier needs (section 10.2). The last record of a
+network is the current generation of that network. New registrations and
+new attestations go to the current generation only.
+
+The pair of a network and a registry address identifies exactly one
+record. A file that holds two records for one pair is invalid, and an
+implementation must refuse the whole file. It must not answer from either
+record, because a silent choice between two records lets two
+implementations reach two answers from one file.
+
+Package generation runs only against the current generation. The
+generator refuses a run whose attestation sits in a retired registry. An
+authority must therefore deliver the packages of an attestation before it
+migrates. When an authority needs packages that a retired generation
+never delivered, it cannot produce them. It must attest afresh under the
+current generation and deliver the packages of that attestation. The
+retired attestation stays on the chain as a record, without packages.
 
 The authority registers each asset again in the new registry. The
 registration collects new authorization from the authority and from every

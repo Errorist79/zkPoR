@@ -150,6 +150,41 @@ fi
 echo "PATH must include \$HOME/.local/bin \$HOME/.nargo/bin \$HOME/.bb/bin \$HOME/.cargo/bin"
 "$STELLAR_BIN" --version | head -1
 
+echo "### JavaScript SDK ${STELLAR_JS_SDK_VERSION} (the consent of a reserve address) ###"
+# A reserve address signs its authorization entry with this module, because the
+# command line signs no entry of an address inside a vector argument. The
+# version comes from versions.env, so it stands in one place only.
+CONSENT_DIR="$ROOT_DIR/tools/reserve-consent"
+SDK_MANIFEST="$CONSENT_DIR/node_modules/@stellar/stellar-sdk/package.json"
+if ! command -v npm >/dev/null 2>&1; then
+  echo "npm is absent, so this host cannot sign the consent of a reserve address"
+else
+  # A version reaches the install through the manifest of the package, so the
+  # manifest must carry the pin of versions.env. The check runs before the
+  # install, and a difference stops the run instead of installing another
+  # version.
+  declared=$(node -p "require('$CONSENT_DIR/package.json').dependencies['@stellar/stellar-sdk']")
+  [ "$declared" = "$STELLAR_JS_SDK_VERSION" ] || {
+    echo "tools/reserve-consent/package.json asks for @stellar/stellar-sdk ${declared}, and versions.env pins ${STELLAR_JS_SDK_VERSION}"
+    exit 1
+  }
+  # The installed version is read from the disk, because the module publishes
+  # no path to its own manifest.
+  sdk_installed() {
+    node -e "
+      const fs = require('fs');
+      const file = '$SDK_MANIFEST';
+      if (fs.existsSync(file))
+        process.stdout.write(JSON.parse(fs.readFileSync(file, 'utf8')).version);
+    " 2>/dev/null
+  }
+  # `npm ci` installs the tree that the lockfile records, so two machines get
+  # the same bytes.
+  [ "$(sdk_installed)" = "$STELLAR_JS_SDK_VERSION" ] \
+    || npm ci --prefix "$CONSENT_DIR" --no-audit --no-fund
+  check_js_sdk=1
+fi
+
 echo "### Version check against the pins ###"
 version_mismatch=0
 check_pinned() {
@@ -162,7 +197,9 @@ check_pinned rustc   "$RUST_VERSION"         "$(rustc_installed)"
 check_pinned nargo   "$NARGO_VERSION"        "$(nargo_installed)"
 check_pinned bb      "$BB_SEMVER"            "$(bb_installed)"
 check_pinned stellar "$STELLAR_CLI_VERSION"  "$(stellar_installed)"
+[ "${check_js_sdk:-0}" -eq 0 ] \
+  || check_pinned "@stellar/stellar-sdk" "$STELLAR_JS_SDK_VERSION" "$(sdk_installed)"
 [ "$version_mismatch" -eq 0 ] || { echo "the toolchain does not match the pins"; exit 1; }
-echo "rustc, nargo, bb and stellar match the pins"
+echo "the pinned tools match: rustc, nargo, bb, stellar${check_js_sdk:+, @stellar/stellar-sdk}"
 
 echo "### Done. Pinned toolchain ready. ###"

@@ -18,7 +18,7 @@ use chain::{Chain, Entry, NoVerdict};
 use soroban_sdk::Env;
 use zkpor_context::{leaf_hash, ATTESTATION_MAX_AGE_LEDGERS};
 use zkpor_package::{
-    deployments,
+    deployments::{self, DeploymentsError},
     fr::{fr_hex, to_big, to_fr},
     schema::{self, PackageError},
     tree::root_from_path,
@@ -48,6 +48,10 @@ pub enum Verdict {
     /// The network and the registry of the package match no deployment record
     /// of the verifier.
     UntrustedDeployment { network: String, registry: String },
+    /// The deployment records of the verifier contradict themselves, so the
+    /// trust root answers nothing. This is a fault of the verifier's own file,
+    /// and it says nothing about the package.
+    InvalidDeployments(String),
     /// The registry holds no attestation that the package can name.
     NoMatchingAttestation(String),
     /// The walk of the path reaches another value than the attested root.
@@ -134,6 +138,13 @@ impl Verdict {
                  treat it as a check of anything."
                     .to_string(),
             ],
+            Self::InvalidDeployments(reason) => vec![
+                format!("INVALID DEPLOYMENT RECORDS: {reason}"),
+                "The deployment records of this verifier contradict themselves, so it \
+                 checked nothing. This says nothing about the package. Repair the records \
+                 and run the command again."
+                    .to_string(),
+            ],
             Self::NoMatchingAttestation(reason) => vec![
                 format!("NO MATCHING ATTESTATION: {reason}"),
                 "The chain holds no attestation that this package names.".to_string(),
@@ -164,6 +175,7 @@ pub fn exit_code(verdict: &Verdict) -> i32 {
         Verdict::UntrustedDeployment { .. } => 5,
         Verdict::NoMatchingAttestation(_) => 6,
         Verdict::RootMismatch { .. } => 7,
+        Verdict::InvalidDeployments(_) => 9,
     }
 }
 
@@ -190,8 +202,23 @@ pub fn verify(
 
     // The verifier resolves the deployment from its own file. A pair that no
     // record names is a signal, not a failure of the infrastructure.
-    let generation = deployments::find(deployments_text, &package.network, &package.registry)
-        .map_err(|reason| NoVerdict(format!("the deployments file does not read: {reason}")))?;
+    // A file that does not read is a fault of the configuration, and it
+    // reaches no verdict. A file that reads and contradicts itself is a fault
+    // of the trust root, and it takes its own outcome, so a reader never
+    // confuses it with a package that names a generation the file does not
+    // hold.
+    let generation = match deployments::find(deployments_text, &package.network, &package.registry)
+    {
+        Ok(generation) => generation,
+        Err(DeploymentsError::Contradictory(reason)) => {
+            return Ok(Verdict::InvalidDeployments(reason))
+        }
+        Err(error) => {
+            return Err(NoVerdict(format!(
+                "the deployments file does not read: {error}"
+            )))
+        }
+    };
     let generation = match generation {
         Some(generation) => generation,
         None => {

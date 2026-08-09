@@ -771,6 +771,11 @@ struct GenerationRequest<'a> {
     deployments_file: &'a Path,
     out: &'a Path,
     network: &'a str,
+    /// The registry that accepted the attestation. The package carries the
+    /// registry of the deployment record, and a customer reads the root there.
+    /// A record that names another registry would send every customer to a
+    /// chain state that this attestation never reached.
+    registry: &'a str,
     attested: &'a AttestedEntry,
 }
 
@@ -797,6 +802,11 @@ fn write_packages(
         generation.tree_depth, depth,
         "the {} generation holds trees of depth {}, and this tree has depth {depth}",
         request.network, generation.tree_depth
+    );
+    assert_eq!(
+        generation.registry, request.registry,
+        "the {} generation names the registry {}, and the attestation reached {}",
+        request.network, generation.registry, request.registry
     );
 
     // The first half of the gate. This comparison needs no tree, and it names
@@ -1225,10 +1235,21 @@ fn write_registry_params(key_sha256: &str, inner_key_hash: &BigUint, positions: 
 const USAGE: &str = "usage: recursion-gen witness <context.toml> <customers.csv>\n\
                             recursion-gen path <context.toml> <customers.csv> <customer_id>\n\
                             recursion-gen packages <context.toml> <customers.csv> <out_dir> \
-                            --network <name> --attested-root <hex> \
-                            --attested-snapshot <ledger> --transaction <hash>\n\
+                            --network <name> --registry <address> --attested-root <hex> \
+                            --attested-snapshot <ledger> --transaction <hash> \
+                            [--deployments <file>]\n\
                             recursion-gen assemble <context.toml> [out_dir]\n\
                             recursion-gen manifest <inner_out_dir> <agg_target_dir>";
+
+/// The value of one named argument that a run may leave out.
+fn optional_flag_value(args: &[String], name: &str) -> Option<String> {
+    let position = args.iter().position(|arg| arg == name)?;
+    Some(
+        args.get(position + 1)
+            .unwrap_or_else(|| panic!("{name} needs a value"))
+            .clone(),
+    )
+}
 
 /// The value of one required named argument.
 fn flag_value(args: &[String], name: &str) -> String {
@@ -1265,13 +1286,19 @@ fn main() {
                         .expect("the attested snapshot is a u32"),
                     transaction_hash: flag_value(&args, "--transaction"),
                 };
+                // A localnet harness deploys its own registry, so it names its
+                // own record. Every other run reads the committed file.
+                let deployments = optional_flag_value(&args, "--deployments")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| repo_path(DEPLOYMENTS_FILE));
                 cmd_packages(
                     &context,
                     &GenerationRequest {
                         customers_file: &customers,
-                        deployments_file: &repo_path(DEPLOYMENTS_FILE),
+                        deployments_file: &deployments,
                         out: &out,
                         network: &flag_value(&args, "--network"),
+                        registry: &flag_value(&args, "--registry"),
                         attested: &attested,
                     },
                 );
@@ -1575,6 +1602,15 @@ mod tests {
     /// Writes the packages of the fixture into a fresh directory and returns
     /// the directory that holds them.
     fn generate_into(out_name: &str, attested: &AttestedEntry, deployments: &Path) -> PathBuf {
+        generate_for_registry(out_name, attested, deployments, TEST_REGISTRY)
+    }
+
+    fn generate_for_registry(
+        out_name: &str,
+        attested: &AttestedEntry,
+        deployments: &Path,
+        registry: &str,
+    ) -> PathBuf {
         let env = new_env();
         let context = fixture_context(&env);
         let out = env::temp_dir().join(out_name);
@@ -1588,6 +1624,7 @@ mod tests {
                 deployments_file: deployments,
                 out: &out,
                 network: TEST_NETWORK,
+                registry,
                 attested,
             },
         );
@@ -1813,6 +1850,21 @@ mod tests {
         );
     }
 
+    /// The package sends the customer to the registry of the deployment
+    /// record. A record of another registry must stop the generation, because
+    /// the customer would read a root that this attestation never reached.
+    #[test]
+    #[should_panic(expected = "names the registry")]
+    fn a_generation_of_another_registry_is_refused() {
+        let depth = read_shape().2.trailing_zeros() as usize;
+        generate_for_registry(
+            "zkpor_packages_registry",
+            fixture_attestation(),
+            &deployments_with_depth("zkpor_deployments_registry.json", depth),
+            "CANOTHERREGISTRY",
+        );
+    }
+
     /// A refused generation must leave nothing behind: a package holds a
     /// balance, and a root the chain did not accept must produce no file.
     #[test]
@@ -1839,6 +1891,7 @@ mod tests {
                     deployments_file: &deployments,
                     out: &out,
                     network: TEST_NETWORK,
+                    registry: TEST_REGISTRY,
                     attested: &attested,
                 },
             );
