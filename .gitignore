@@ -38,3 +38,7 @@ node_modules
 
 # Scratch directory of a review run. It never reaches a commit.
 tmp-audit/
+
+# Node dependencies and the built client library
+node_modules
+sdk/dist

@@ -1,0 +1,16 @@
+{
+  "name": "zkpor",
+  "private": true,
+  "workspaces": [
+    "sdk"
+  ],
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "check:typescript": "node scripts/check_typescript.mjs"
+  }
+}
