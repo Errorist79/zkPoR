@@ -66,9 +66,10 @@ fn leaf_hash_is_salt_sensitive() {
 
 #[test]
 fn leaf_hash_matches_the_committed_vector() {
-    // The second entry of "leaves" in fixtures/context_vectors.json. The Rust
-    // crate writes that file, so this test pins the two implementations to one
-    // value instead of to a procedure that someone must remember to run.
+    // The "a customer leaf" case of "leaves" in
+    // fixtures/context_vectors.json. The Rust crate writes that file, so this
+    // test pins the two implementations to one value instead of to a
+    // procedure that someone must remember to run.
     let leaf = leaf_hash(7, 100, 2);
     assert(leaf == 0x11ba8698c99aed60de41ec057d268ea087fc9e1bcbebee96502a1bd62959bcde);
 }
