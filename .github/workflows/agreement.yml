@@ -1,0 +1,189 @@
+name: agreement
+
+# The fast agreement check. It proves that the three implementations agree with
+# each other and with the committed artifacts, and that every crate builds,
+# lints, and passes its tests at the pinned toolchain.
+#
+# It proves no soundness. Proving, the BN254 host functions, and a Protocol 27
+# local network stay with the self-hosted soundness gate, which this job does
+# not replace.
+#
+# The vector files are the cross-language guarantee: the shared Rust crate
+# generates them, and a test asserts that each committed file equals what the
+# crate produces. Those tests live in crates outside the root workspace, so the
+# job runs every crate by name and checks that the list of names covers each
+# crate that git tracks.
+
+# The job carries no path filter. A filter decides in advance which change can
+# break agreement, and a wrong filter makes the check pass by not running.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: agreement-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  agreement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Every pinned version comes from the one file that records them. A step
+      # that installed a version of its own would make this job disagree with
+      # every other machine.
+      - name: Read the pinned versions
+        run: |
+          set -euo pipefail
+          . scripts/versions.env
+          {
+            echo "RUST_VERSION=$RUST_VERSION"
+            echo "NARGO_VERSION=$NARGO_VERSION"
+            echo "STELLAR_JS_SDK_VERSION=$STELLAR_JS_SDK_VERSION"
+          } >> "$GITHUB_ENV"
+
+      # The completeness check runs first. A crate that no step reaches is the
+      # failure this job exists to prevent, and it must stop the run before a
+      # long step hides it.
+      #
+      # The check reads the git index, so it needs the work tree that the
+      # checkout above provides. It stops with a message of its own against an
+      # exported copy of the sources, which is what a build host that receives a
+      # file copy holds.
+      - name: Check that every crate has a test run
+        run: bash scripts/ci_targets.sh check
+
+      # rust-toolchain.toml pins the channel and the components, so rustup
+      # installs exactly that toolchain. The assertion below fails when the
+      # toolchain file and the versions file disagree.
+      - name: Install the pinned Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup show active-toolchain
+          installed=$(rustc --version | awk '{print $2}')
+          if [ "$installed" != "$RUST_VERSION" ]; then
+            echo "versions.env pins rustc $RUST_VERSION and the toolchain gives $installed"
+            exit 1
+          fi
+
+      - name: Cache the Cargo directories
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            tools/package/target
+            tools/inclusion-verify/target
+            tools/recursion-gen/target
+            tools/gate/reserve-account/target
+          key: cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-
+
+      # The vendored crate keeps the formatting of its author, so the format
+      # check and the lint check name our own crates instead of the workspace.
+      - name: Check the formatting
+        run: |
+          set -euo pipefail
+          cargo fmt --check $(bash scripts/ci_targets.sh workspace-packages | sed 's/^/-p /')
+          for crate in $(bash scripts/ci_targets.sh standalone-crates); do
+            echo "formatting: $crate"
+            (cd "$crate" && cargo fmt --check)
+          done
+
+      - name: Lint
+        run: |
+          set -euo pipefail
+          cargo clippy --all-targets $(bash scripts/ci_targets.sh workspace-packages | sed 's/^/-p /') -- -D warnings
+          for crate in $(bash scripts/ci_targets.sh standalone-crates); do
+            echo "linting: $crate"
+            (cd "$crate" && cargo clippy --all-targets -- -D warnings)
+          done
+
+      # The root workspace holds the contract crates, and the vendored crate is
+      # a member, so its tests run here too.
+      - name: Test the contract crates
+        run: cargo test --workspace
+
+      # Each crate below declares its own workspace, so the run above reaches
+      # none of them. The vector checks live here.
+      - name: Test the crates outside the root workspace
+        run: |
+          set -euo pipefail
+          for crate in $(bash scripts/ci_targets.sh standalone-crates); do
+            echo "testing: $crate"
+            (cd "$crate" && cargo test)
+          done
+
+      # A committed vector file that drifts from the crate that generates it
+      # fails the step above. This step states the same property against the
+      # working tree, so a file that a run rewrote cannot pass unnoticed.
+      - name: Check that no committed artifact changed
+        run: git diff --exit-code --stat -- fixtures
+
+      - name: Install the pinned Noir toolchain
+        run: |
+          set -euo pipefail
+          curl -L https://raw.githubusercontent.com/noir-lang/noirup/main/install | bash
+          "$HOME/.nargo/bin/noirup" -v "$NARGO_VERSION"
+          echo "$HOME/.nargo/bin" >> "$GITHUB_PATH"
+
+      - name: Check the Noir toolchain against the pin
+        run: |
+          set -euo pipefail
+          installed=$(nargo --version | head -1 | awk '{print $NF}')
+          if [ "$installed" != "$NARGO_VERSION" ]; then
+            echo "versions.env pins nargo $NARGO_VERSION and the toolchain gives $installed"
+            exit 1
+          fi
+
+      - name: Test the Noir packages
+        run: |
+          set -euo pipefail
+          for package in $(bash scripts/ci_targets.sh noir-packages); do
+            echo "testing: $package"
+            (cd "$package" && nargo test)
+          done
+
+      - name: Install Node at the pinned version
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install the client library dependencies
+        run: npm ci
+
+      # The library must depend on the exact Stellar library that the versions
+      # file pins. A test in the package states the same rule, and this check
+      # states it before the tests run.
+      - name: Check the Stellar library against the pin
+        run: |
+          set -euo pipefail
+          declared=$(node -p "require('./sdk/package.json').dependencies['@stellar/stellar-sdk']")
+          if [ "$declared" != "$STELLAR_JS_SDK_VERSION" ]; then
+            echo "versions.env pins @stellar/stellar-sdk $STELLAR_JS_SDK_VERSION and sdk/package.json asks for $declared"
+            exit 1
+          fi
+
+      - name: Typecheck the client library
+        run: npm run typecheck --workspace sdk
+
+      # A type assertion tells the compiler what a value is, and a check
+      # establishes it. The scan walks the syntax tree that the compiler builds,
+      # so it reports the real nodes and never a pattern in a comment. It also
+      # fails when it reaches no file, because a scan of nothing reads as clean.
+      - name: Refuse a type assertion and the any type
+        run: npm run check:typescript
+
+      # The mirror of the vectors and the address type rejections run here.
+      - name: Test the client library
+        run: npm test --workspace sdk
+
+      - name: Build the client library
+        run: npm run build --workspace sdk

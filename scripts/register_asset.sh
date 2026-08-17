@@ -16,8 +16,8 @@
 # vector argument, and the command line collects a signer only for a top-level
 # address argument, so the command line cannot produce that signature. This
 # script builds the transaction, simulates it, and then signs the entry of each
-# reserve address with tools/reserve-consent/sign-entry.mjs. The authority
-# signs the transaction at the end.
+# reserve address with the client library command line. The authority signs the
+# transaction at the end.
 #
 # A reserve argument is the name of an identity of the command line keystore.
 # The script reads the secret with `stellar keys show` at the moment it signs,
@@ -39,12 +39,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/config.sh"
 # failure with its own reason instead, so it turns that off again.
 set +e -uo pipefail
 
-# How long the consent of a reserve address stays valid. The registration takes
-# one round of signing, and a public network closes a ledger every few seconds,
-# so this window covers a run that waits for a second party.
-CONSENT_VALIDITY_LEDGERS=1000
-
-SIGNER="$ROOT_DIR/tools/reserve-consent/sign-entry.mjs"
+ZKPOR_CLI="$ROOT_DIR/sdk/dist/cli.js"
 
 die() { echo -e "\n${RED}register: $*${NC}" >&2; exit 1; }
 note() { echo -e "${BLUE}[register]${NC} $*"; }
@@ -74,7 +69,7 @@ REGISTRY="${ZKPOR_REGISTRY:-}"
 for bin in stellar node python3; do
   command -v "$bin" >/dev/null 2>&1 || die "missing required tool on PATH: $bin"
 done
-[ -f "$SIGNER" ] || die "no signer at $SIGNER"
+[ -f "$ZKPOR_CLI" ] || die "no built command line at $ZKPOR_CLI; run npm run build --workspace sdk"
 
 # The authority is the account that the chain authenticates. The registry
 # records it, and it must equal the issuer of a classic asset.
@@ -96,7 +91,12 @@ LEDGER=$(curl -s -X POST -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getLatestLedger"}' "$STELLAR_RPC_URL" \
   | sed -nE 's/.*"sequence":([0-9]+).*/\1/p')
 [ -n "$LEDGER" ] || die "cannot read the current ledger from $STELLAR_RPC_URL"
-VALID_UNTIL=$((LEDGER + CONSENT_VALIDITY_LEDGERS))
+# How long the consent of a reserve address stays valid. The client library
+# holds the one definition of that margin, so this script reads it instead of
+# repeating the number.
+MARGIN=$(node "$ZKPOR_CLI" consent-validity-ledgers) \
+  || die "cannot read the validity margin of a reserve consent"
+VALID_UNTIL=$((LEDGER + MARGIN))
 
 note "registry=$REGISTRY asset=$ASSET authority=$AUTHORITY reserves=${#RESERVE_ADDRESSES[@]}"
 
@@ -122,9 +122,9 @@ for index in "${!RESERVE_ADDRESSES[@]}"; do
   name="${RESERVES[$index]}"
   secret=$(stellar keys show "$name" 2>"$NOTES") \
     || die "cannot read the secret key of $name:\n$(cat "$NOTES")"
-  TX=$(echo "$TX" | ZKPOR_RESERVE_SECRET="$secret" node "$SIGNER" \
-    "$address" "$VALID_UNTIL" "$STELLAR_NETWORK_PASSPHRASE" 2>"$NOTES") \
-    || die "the reserve $address did not sign:\n$(cat "$NOTES")"
+  TX=$(echo "$TX" | ZKPOR_RESERVE_SECRET="$secret" node "$ZKPOR_CLI" \
+    sign-entry-in-transaction "$address" "$VALID_UNTIL" "$STELLAR_NETWORK_PASSPHRASE" \
+    2>"$NOTES") || die "the reserve $address did not sign:\n$(cat "$NOTES")"
   unset secret
   note "reserve $address signed its entry, valid until ledger $VALID_UNTIL"
 done

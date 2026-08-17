@@ -137,8 +137,36 @@ enforces a reserve bound of 16, because it was built before the bound became
 `CDICJW5B5VYT3GD3VTDWFYCQG6N4ONLUXKHPQSJVAN5QYPGCTOG7PIXE` with the registry
 `CCHUTDKUPWXVUIX6D26SE5NZ5STP74VV4DY2CNVCMNJYOU5PTROLA7MY`, built from the
 current sources. Each registry holds the aggregator key hash of the manifest,
-because its constructor refuses a verifier that stores another key. The steps
-are real confirmed transactions:
+because its constructor refuses a verifier that stores another key.
+
+Each generation registered one asset. The deployments file names the registry
+and the verifier of a generation, and it names no asset, so this document names
+the assets. The first generation registered the asset
+`CCWGBIKQALFIZRZALTITQUASGKSTT2XIE2V4SBPQSWH6XZXIJINGK6HF` with one reserve
+account. The second generation registered the asset
+`CAD6S62UZGQP42MC5C7TOGVP7CUM7HTDPAFRSZSI42WOFMADXUIDAYRD` with 17 reserve
+accounts. Both registered under the classic issuer tier, with the issuer account
+`GAQSAE4ZNHWPERZQICWSSAVV57Z3AE2RNGQXJC6I5MLSRB4GG2473W5K` as the authority.
+
+A reader needs these two addresses to examine the evidence again. The registry
+stores the record of an asset under the address of that asset, and no query
+enumerates the assets of a registry, so a reader who holds only the registry
+address cannot reach the record. The `getEvents` method reaches the attestation
+events only inside the retained window of an endpoint, which is about seven
+days, so it stopped reaching these attestations in the middle of August 2026.
+After that the asset address is the one way back to the record.
+
+On August 17, 2026 the client read the record of both assets back from the
+chain. Every field of the first record equalled the values that the run of
+August 8 recorded: the authority, the tier, the reserve address, the reserve set
+hash, the attested root, the total liabilities, the reserve sum, the snapshot
+ledger, and the attested ledger. For both records the TypeScript mirror
+recomputed the reserve set hash from the reserve addresses of the record and
+reached the value that the registry holds, at one address and at 17 addresses.
+Both solvency claims read as lapsed, which is correct, because the snapshot of
+each one is far outside the window of 720 ledgers.
+
+The steps are real confirmed transactions:
 
 | Step | Tx hash | Ledger | Result |
 |---|---|---|---|
@@ -155,8 +183,9 @@ are real confirmed transactions:
 
 The registration names an ordinary account as the reserve address. That
 account signed its own authorization entry with the JavaScript software
-development kit (`tools/reserve-consent/`), and the issuer signed the
-transaction. The consent is a signed entry, and not a source-account
+development kit, and the issuer signed the transaction. The signing step of that
+run lived in `tools/reserve-consent/`. The client library at `sdk/` now holds it,
+and it reproduces the same call. The consent is a signed entry, and not a source-account
 credential. The first registration ran by hand, and `scripts/register_asset.sh`
 ran the second one. Both declared 6,745,316 instructions, so the script
 reproduces the steps of the hand-driven run.

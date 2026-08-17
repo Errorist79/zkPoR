@@ -51,9 +51,9 @@ pub struct Generation {
 pub fn generations(text: &str) -> Result<Vec<Generation>, DeploymentsError> {
     let unreadable = DeploymentsError::Unreadable;
     let json: Value = serde_json::from_str(text).map_err(|error| unreadable(error.to_string()))?;
-    let records = json
-        .as_array()
-        .ok_or_else(|| unreadable("the deployments file is not a list of generations".to_string()))?;
+    let records = json.as_array().ok_or_else(|| {
+        unreadable("the deployments file is not a list of generations".to_string())
+    })?;
     let generations: Vec<Generation> = records
         .iter()
         .map(generation)
@@ -191,7 +191,10 @@ mod tests {
           {"network": "local", "registry": "CSAME", "tree_depth": 4},
           {"network": "testnet", "registry": "COTHER", "tree_depth": 12}
         ]"#;
-        assert_eq!(find(text, "testnet", "CSAME").unwrap().unwrap().tree_depth, 10);
+        assert_eq!(
+            find(text, "testnet", "CSAME").unwrap().unwrap().tree_depth,
+            10
+        );
         assert_eq!(find(text, "local", "CSAME").unwrap().unwrap().tree_depth, 4);
         assert_eq!(
             find(text, "testnet", "COTHER").unwrap().unwrap().tree_depth,

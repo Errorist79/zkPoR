@@ -10,8 +10,8 @@ use soroban_sdk::{
     testutils::Address as _, Address, Bytes, BytesN, Env, Val, Vec,
 };
 use zkpor_registry::{
-    AssetAuthenticity, Error, Registry, RegistryClient, ASSET_TYPE_ALPHANUM12, ASSET_TYPE_ALPHANUM4,
-    PUBLIC_KEY_TYPE_ED25519,
+    AssetAuthenticity, Error, Registry, RegistryClient, ASSET_TYPE_ALPHANUM12,
+    ASSET_TYPE_ALPHANUM4, PUBLIC_KEY_TYPE_ED25519,
 };
 
 /// The committed aggregator verification key. The registry compiles in the
@@ -62,7 +62,11 @@ impl StubVerifier {
         env.storage().instance().get(&KEY).unwrap()
     }
 
-    pub fn verify_proof(env: Env, public_inputs: Bytes, proof_bytes: Bytes) -> Result<(), StubError> {
+    pub fn verify_proof(
+        env: Env,
+        public_inputs: Bytes,
+        proof_bytes: Bytes,
+    ) -> Result<(), StubError> {
         let _ = proof_bytes;
         env.storage().instance().set(&INPUTS, &public_inputs);
         if env.storage().instance().get(&ACCEPTS).unwrap() {
@@ -174,10 +178,7 @@ pub fn deploy_registry(env: &Env) -> Address {
 
 /// A registry and the verifier behind it, which accepts or refuses on command.
 pub fn deploy_registry_with_verifier(env: &Env, accepts: bool) -> (Address, Address) {
-    let verifier = env.register(
-        StubVerifier,
-        (Bytes::from_slice(env, RELEASE_KEY), accepts),
-    );
+    let verifier = env.register(StubVerifier, (Bytes::from_slice(env, RELEASE_KEY), accepts));
     (env.register(Registry, (verifier.clone(),)), verifier)
 }
 

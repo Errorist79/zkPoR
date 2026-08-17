@@ -21,9 +21,7 @@ use soroban_sdk::{
 use zkpor_context::{
     context_hash, fr_in_range, fr_modulus, reserve_set_hash, ATTESTATION_MAX_AGE_LEDGERS, FR_BYTES,
 };
-use zkpor_registry::{
-    params, AttestationSlot, Error, RegistryClient, ReserveObservation,
-};
+use zkpor_registry::{params, AttestationSlot, Error, RegistryClient, ReserveObservation};
 
 /// The ledger that the attestation tests start from. A test needs a ledger
 /// above the age window, so the sequence cannot start near zero.
