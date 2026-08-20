@@ -9,15 +9,27 @@
 
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { Account, Address, Keypair, xdr } from "@stellar/stellar-sdk";
+import { Account, Address, xdr } from "@stellar/stellar-sdk";
 import {
   CONSENT_VALIDITY_LEDGERS,
-  HISTORY_DEFAULT_LEDGERS,
   MASTER_SECRET_ENV,
   MASTER_SECRET_FILE_ENV,
 } from "./constants.js";
 import { InfrastructureError, latestLedger, openServer } from "./network.js";
 import type { NetworkConfig } from "./network.js";
+import {
+  AUTHORITY_SECRET_ENV,
+  ConfigurationError,
+  DEPLOYMENTS_ENV,
+  RESERVE_SECRET_ENV,
+  NETWORK_ENV,
+  PASSPHRASE_ENV,
+  READ_SOURCE_ENV,
+  RPC_URL_ENV,
+  readDeployments,
+  resolveNetworkConfig,
+  resolveReadOptions,
+} from "./config.js";
 import { currentGeneration } from "./deployments.js";
 import {
   EXIT_NO_VERDICT,
@@ -27,8 +39,8 @@ import {
   verifyInclusion,
 } from "./inclusion.js";
 import {
+  defaultHistoryStart,
   observeReserves,
-  passphraseOfNetwork,
   readAssetRecord,
   readAttestationHistory,
   solvencyLapsed,
@@ -42,28 +54,20 @@ import {
   signEntryInEnvelope,
 } from "./consent.js";
 import { prepareRegistration, readPreparedCall, submitPreparedCall } from "./registration.js";
-import { addressParts } from "./address.js";
-import { bytesFromHex, toHex } from "./fr.js";
-import { prove, windowAllowsProving } from "./proving.js";
-import { readMasterSecret } from "./secret.js";
-import { submitAttestation } from "./attest.js";
-
-/** The environment variable that names the endpoint. */
-const RPC_URL_ENV = "ZKPOR_RPC_URL";
-/** The environment variable that names the network. */
-const NETWORK_ENV = "ZKPOR_NETWORK";
-/** The environment variable that names the network passphrase. */
-const PASSPHRASE_ENV = "ZKPOR_NETWORK_PASSPHRASE";
-/** The environment variable that names the account a read simulates as. */
-const READ_SOURCE_ENV = "ZKPOR_READ_SOURCE";
-/** The environment variable that names the deployments file. */
-const DEPLOYMENTS_ENV = "ZKPOR_DEPLOYMENTS";
-/** The environment variable that carries the secret key of a reserve holder. */
-const RESERVE_SECRET_ENV = "ZKPOR_RESERVE_SECRET";
-/** The environment variable that carries the secret key of the authority. */
-const AUTHORITY_SECRET_ENV = "ZKPOR_AUTHORITY_SECRET";
-/** The default path of the deployments file, relative to the working directory. */
-const DEFAULT_DEPLOYMENTS = "scripts/deployments.json";
+import { isAcceptedAddress } from "./address.js";
+import { bytesFromHex } from "./fr.js";
+import { ProvingError, prove, readContext, windowAllowsProving } from "./proving.js";
+import {
+  carriesAuthoritySecret,
+  carriesReserveSecret,
+  readAuthorityKeypair,
+  readAuthoritySecret,
+  readMasterSecret,
+  readReserveKeypair,
+} from "./secret.js";
+import { attestWithAuthority } from "./attest.js";
+import { attestAndReport, completeCommand, runReport } from "./report.js";
+import type { CommandResult } from "./report.js";
 
 const USAGE = `zkpor <command> [arguments]
 
@@ -127,45 +131,56 @@ function fail(message: string, code: number): never {
   process.exit(code);
 }
 
+// A missing configuration value stops the command line with the usage code.
+// The resolver throws instead, because the dashboard reports the same failure
+// to a reader and must stay running.
 function networkConfig(): NetworkConfig {
-  const network = process.env[NETWORK_ENV];
-  if (network === undefined) {
-    fail(`set ${NETWORK_ENV} to the network name that the deployments file records`, EXIT_USAGE);
+  try {
+    return resolveNetworkConfig(process.env);
+  } catch (cause) {
+    if (cause instanceof ConfigurationError) {
+      fail(cause.message, EXIT_USAGE);
+    }
+    throw cause;
   }
-  const rpcUrl = process.env[RPC_URL_ENV];
-  if (rpcUrl === undefined) {
-    fail(`set ${RPC_URL_ENV} to the address of the endpoint`, EXIT_USAGE);
-  }
-  const passphrase = process.env[PASSPHRASE_ENV] ?? passphraseOfNetwork(network);
-  if (passphrase === undefined) {
-    fail(`set ${PASSPHRASE_ENV}, because this client does not know the network ${network}`, EXIT_USAGE);
-  }
-  return {
-    network,
-    rpcUrl,
-    networkPassphrase: passphrase,
-    allowHttp: rpcUrl.startsWith("http://"),
-  };
 }
 
 function readOptions(): ReadOptions {
-  const source = process.env[READ_SOURCE_ENV];
-  if (source === undefined) {
-    return {};
+  try {
+    return resolveReadOptions(process.env);
+  } catch (cause) {
+    if (cause instanceof ConfigurationError) {
+      fail(cause.message, EXIT_USAGE);
+    }
+    throw cause;
   }
-  return { readSourceAccount: Address.fromString(source).toString() };
 }
 
 async function deploymentsText(path: string | undefined): Promise<string> {
-  const chosen = path ?? process.env[DEPLOYMENTS_ENV] ?? DEFAULT_DEPLOYMENTS;
-  try {
-    return await readFile(chosen, "utf8");
-  } catch {
-    throw new InfrastructureError(`the client cannot read the deployments file ${chosen}`);
+  return await readDeployments(process.env, path);
+}
+
+/**
+ * One address that an argument carries.
+ *
+ * An address that this protocol does not accept is a value the operator can
+ * correct, so it belongs to the usage code. Without this check it reaches the
+ * client library, which refuses it with a message about an unsupported type,
+ * and the command line reports it as a failure of the client or of the
+ * network. That is the same category error as a context file that omits a
+ * field, on a different input.
+ */
+function addressArgument(value: string, what: string): string {
+  if (!isAcceptedAddress(value)) {
+    fail(`${what} is not a Stellar account address and not a contract address: ${value}`, EXIT_USAGE);
   }
+  return value;
 }
 
 function print(lines: readonly string[]): void {
+  if (lines.length === 0) {
+    return;
+  }
   process.stdout.write(`${lines.join("\n")}\n`);
 }
 
@@ -179,7 +194,7 @@ async function registryOf(config: NetworkConfig, path?: string): Promise<string>
   return generation.registry;
 }
 
-async function commandVerifyInclusion(args: readonly string[]): Promise<never> {
+async function commandVerifyInclusion(args: readonly string[]): Promise<CommandResult> {
   const packagePath = args[0];
   if (packagePath === undefined) {
     fail(USAGE, EXIT_USAGE);
@@ -192,22 +207,21 @@ async function commandVerifyInclusion(args: readonly string[]): Promise<never> {
     config,
     readOptions: readOptions(),
   });
-  print(verdictLines(verdict));
-  process.exit(exitCode(verdict));
+  return { lines: verdictLines(verdict), code: exitCode(verdict) };
 }
 
-async function commandEntry(args: readonly string[]): Promise<void> {
-  const asset = args[0];
-  if (asset === undefined) {
+async function commandEntry(args: readonly string[]): Promise<CommandResult> {
+  const named = args[0];
+  if (named === undefined) {
     fail(USAGE, EXIT_USAGE);
   }
+  const asset = addressArgument(named, "the asset");
   const config = networkConfig();
   const server = openServer(config);
   const registry = await registryOf(config);
   const record = await readAssetRecord(server, config, readOptions(), registry, asset);
   if (record === undefined) {
-    print([`The registry ${registry} holds no record of the asset ${asset}.`]);
-    return;
+    return { lines: [`The registry ${registry} holds no record of the asset ${asset}.`] };
   }
   const lines = [
     `The registry is ${registry}.`,
@@ -230,14 +244,15 @@ async function commandEntry(args: readonly string[]): Promise<void> {
         : `The solvency claim is current at ledger ${current}.`,
     );
   }
-  print(lines);
+  return { lines };
 }
 
-async function commandObserveReserves(args: readonly string[]): Promise<void> {
-  const asset = args[0];
-  if (asset === undefined) {
+async function commandObserveReserves(args: readonly string[]): Promise<CommandResult> {
+  const named = args[0];
+  if (named === undefined) {
     fail(USAGE, EXIT_USAGE);
   }
+  const asset = addressArgument(named, "the asset");
   const config = networkConfig();
   const server = openServer(config);
   const observation = await observeReserves(
@@ -247,24 +262,27 @@ async function commandObserveReserves(args: readonly string[]): Promise<void> {
     await registryOf(config),
     asset,
   );
-  print([
-    `The registry read the reserves of ${asset} at ledger ${observation.observedLedger}.`,
-    `The sum of the reserve balances is ${observation.observedSum.toString(10)}.`,
-    "No attestation covers this reading. It is an observation at that ledger.",
-  ]);
+  return {
+    lines: [
+      `The registry read the reserves of ${asset} at ledger ${observation.observedLedger}.`,
+      `The sum of the reserve balances is ${observation.observedSum.toString(10)}.`,
+      "No attestation covers this reading. It is an observation at that ledger.",
+    ],
+  };
 }
 
-async function commandHistory(args: readonly string[]): Promise<void> {
-  const asset = args[0];
-  if (asset === undefined) {
+async function commandHistory(args: readonly string[]): Promise<CommandResult> {
+  const named = args[0];
+  if (named === undefined) {
     fail(USAGE, EXIT_USAGE);
   }
+  const asset = addressArgument(named, "the asset");
   const config = networkConfig();
   const server = openServer(config);
   const registry = await registryOf(config);
   const from =
     args[1] === undefined
-      ? (await latestLedger(server)) - HISTORY_DEFAULT_LEDGERS
+      ? defaultHistoryStart(await latestLedger(server))
       : Number.parseInt(args[1], 10);
   const history = await readAttestationHistory(server, registry, asset, Math.max(from, 0));
   const lines = [
@@ -282,14 +300,15 @@ async function commandHistory(args: readonly string[]): Promise<void> {
       `Ledger ${attestation.ledger}: snapshot ${attestation.snapshotLedger}, liabilities ${attestation.totalLiabilities.toString(10)}, reserves ${attestation.reserveSum.toString(10)}, transaction ${attestation.transactionHash}.`,
     );
   }
-  print(lines);
+  return { lines };
 }
 
-async function commandDiagnoseReserves(args: readonly string[]): Promise<void> {
-  const asset = args[0];
-  if (asset === undefined) {
+async function commandDiagnoseReserves(args: readonly string[]): Promise<CommandResult> {
+  const named = args[0];
+  if (named === undefined) {
     fail(USAGE, EXIT_USAGE);
   }
+  const asset = addressArgument(named, "the asset");
   const config = networkConfig();
   const server = openServer(config);
   const options = readOptions();
@@ -318,28 +337,27 @@ async function commandDiagnoseReserves(args: readonly string[]): Promise<void> {
       `The registry cannot attest while a balance read fails. These addresses failed: ${diagnosis.failed.join(", ")}.`,
     );
   }
-  print(lines);
-  if (diagnosis.failed.length > 0) {
-    process.exit(1);
-  }
+  return diagnosis.failed.length > 0 ? { lines, code: 1 } : { lines };
 }
 
-async function commandPrepareRegistration(args: readonly string[]): Promise<void> {
+async function commandPrepareRegistration(args: readonly string[]): Promise<CommandResult> {
   const [asset, authority, reserveList, serializedAsset] = args;
   if (asset === undefined || authority === undefined || reserveList === undefined) {
     fail(USAGE, EXIT_USAGE);
   }
   const reserves = reserveList.split(",").map((address) => address.trim());
-  for (const address of [asset, authority, ...reserves]) {
-    addressParts(address);
+  addressArgument(asset, "the asset");
+  addressArgument(authority, "the authority");
+  for (const address of reserves) {
+    addressArgument(address, "a reserve address");
   }
   const config = networkConfig();
   const server = openServer(config);
-  const secret = process.env[AUTHORITY_SECRET_ENV];
-  if (secret === undefined) {
+  if (!carriesAuthoritySecret(process.env)) {
     fail(`set ${AUTHORITY_SECRET_ENV} to the secret key of the transaction source`, EXIT_USAGE);
   }
-  const source = Keypair.fromSecret(secret);
+  // The key is read into the signer it makes and reaches no value here.
+  const source = readAuthorityKeypair(process.env);
   const account = await server.getAccount(source.publicKey());
   const prepared = await prepareRegistration(server, config, {
     sourceAccount: new Account(account.accountId(), account.sequenceNumber()),
@@ -353,19 +371,20 @@ async function commandPrepareRegistration(args: readonly string[]): Promise<void
     reserves,
     currentLedger: await latestLedger(server),
   });
-  process.stdout.write(`${JSON.stringify(prepared, null, 2)}\n`);
+  return { lines: [JSON.stringify(prepared, null, 2)] };
 }
 
-async function commandSignEntry(args: readonly string[]): Promise<void> {
-  const address = args[0];
-  if (address === undefined) {
+async function commandSignEntry(args: readonly string[]): Promise<CommandResult> {
+  const named = args[0];
+  if (named === undefined) {
     fail(USAGE, EXIT_USAGE);
   }
-  const secret = process.env[RESERVE_SECRET_ENV];
-  if (secret === undefined) {
+  const address = addressArgument(named, "the reserve address");
+  if (!carriesReserveSecret(process.env)) {
     fail(`set ${RESERVE_SECRET_ENV} to the secret key of ${address}`, EXIT_USAGE);
   }
-  const signer = Keypair.fromSecret(secret);
+  // The key is read into the signer it makes and reaches no value here.
+  const signer = readReserveKeypair(process.env);
   if (signer.publicKey() !== Address.fromString(address).toString()) {
     fail(`the secret key does not belong to ${address}`, EXIT_USAGE);
   }
@@ -383,7 +402,7 @@ async function commandSignEntry(args: readonly string[]): Promise<void> {
     networkPassphrase: config.networkPassphrase,
     expectedAddress: address,
   });
-  process.stdout.write(`${signed.entryXdr}\n`);
+  return { lines: [signed.entryXdr] };
 }
 
 /**
@@ -392,20 +411,21 @@ async function commandSignEntry(args: readonly string[]): Promise<void> {
  * The command takes the network passphrase and the deadline as arguments, so a
  * caller that drives a pipeline needs no endpoint and no other configuration.
  */
-async function commandSignEntryInTransaction(args: readonly string[]): Promise<void> {
-  const [address, validUntil, passphrase] = args;
-  if (address === undefined || validUntil === undefined || passphrase === undefined) {
+async function commandSignEntryInTransaction(args: readonly string[]): Promise<CommandResult> {
+  const [named, validUntil, passphrase] = args;
+  if (named === undefined || validUntil === undefined || passphrase === undefined) {
     fail(USAGE, EXIT_USAGE);
   }
+  const address = addressArgument(named, "the reserve address");
   const deadline = Number.parseInt(validUntil, 10);
   if (!Number.isInteger(deadline) || deadline <= 0) {
     fail("the ledger until which the consent stays valid is a positive integer", EXIT_USAGE);
   }
-  const secret = process.env[RESERVE_SECRET_ENV];
-  if (secret === undefined) {
+  if (!carriesReserveSecret(process.env)) {
     fail(`set ${RESERVE_SECRET_ENV} to the secret key of ${address}`, EXIT_USAGE);
   }
-  const signer = Keypair.fromSecret(secret);
+  // The key is read into the signer it makes and reaches no value here.
+  const signer = readReserveKeypair(process.env);
   if (signer.publicKey() !== Address.fromString(address).toString()) {
     fail(`the secret key does not belong to ${address}`, EXIT_USAGE);
   }
@@ -416,10 +436,10 @@ async function commandSignEntryInTransaction(args: readonly string[]): Promise<v
     expirationLedger: deadline,
     networkPassphrase: passphrase,
   });
-  process.stdout.write(`${signed}\n`);
+  return { lines: [signed] };
 }
 
-async function commandSubmitRegistration(args: readonly string[]): Promise<void> {
+async function commandSubmitRegistration(args: readonly string[]): Promise<CommandResult> {
   const [preparedPath, signedList] = args;
   if (preparedPath === undefined || signedList === undefined) {
     fail(USAGE, EXIT_USAGE);
@@ -445,33 +465,21 @@ async function commandSubmitRegistration(args: readonly string[]): Promise<void>
       );
     }
   }
-  const secret = process.env[AUTHORITY_SECRET_ENV];
-  if (secret === undefined) {
+  if (!carriesAuthoritySecret(process.env)) {
     fail(`set ${AUTHORITY_SECRET_ENV} to the secret key of the transaction source`, EXIT_USAGE);
   }
   const result = await submitPreparedCall(server, config, {
     prepared,
     collected,
-    envelopeSigner: Keypair.fromSecret(secret),
+    // The key is read into the signer it makes and reaches no value here.
+    envelopeSigner: readAuthorityKeypair(process.env),
   });
-  print([
-    `The network accepted the registration at ledger ${result.ledger}.`,
-    `The transaction is ${result.transactionHash}.`,
-  ]);
-}
-
-/** Reads the snapshot ledger and the asset out of the context file. */
-async function contextOf(path: string): Promise<{ asset: string; snapshotLedger: number }> {
-  const text = await readFile(path, "utf8");
-  const asset = /^asset\s*=\s*"([^"]+)"\s*$/m.exec(text);
-  const snapshot = /^snapshot_ledger\s*=\s*(\d+)\s*$/m.exec(text);
-  if (asset?.[1] === undefined) {
-    fail(`the context file ${path} names no asset`, EXIT_USAGE);
-  }
-  if (snapshot?.[1] === undefined) {
-    fail(`the context file ${path} states no snapshot_ledger`, EXIT_USAGE);
-  }
-  return { asset: asset[1], snapshotLedger: Number.parseInt(snapshot[1], 10) };
+  return {
+    lines: [
+      `The network accepted the registration at ledger ${result.ledger}.`,
+      `The transaction is ${result.transactionHash}.`,
+    ],
+  };
 }
 
 async function runProof(args: readonly string[]) {
@@ -481,7 +489,15 @@ async function runProof(args: readonly string[]) {
   }
   const config = networkConfig();
   const server = openServer(config);
-  const context = await contextOf(contextFile);
+  // A context file that cannot be read, and one that omits a field, are both
+  // values the operator can correct. They belong to the usage code and not to
+  // the code that means a failure of the client or of the network.
+  const context = await readContext(contextFile).catch((cause: unknown) => {
+    if (cause instanceof ProvingError) {
+      fail(cause.message, EXIT_USAGE);
+    }
+    throw cause;
+  });
   // The window check reads the ledger from the network, because a typed value
   // could hide a snapshot that can no longer land.
   windowAllowsProving(context.snapshotLedger, await latestLedger(server));
@@ -495,84 +511,90 @@ async function runProof(args: readonly string[]) {
   return { config, server, context, proof };
 }
 
-async function commandProve(args: readonly string[]): Promise<void> {
-  const { proof, context } = await runProof(args);
-  print([
-    `The proof holds ${proof.proof.length} bytes.`,
-    `The snapshot ledger is ${context.snapshotLedger}.`,
-    `The root is ${toHex(proof.values.final_root)}.`,
-    `The total liabilities are ${proof.values.L.toString(10)}.`,
-    `The context hash is ${toHex(proof.values.context_hash)}.`,
-  ]);
+async function commandProve(args: readonly string[]): Promise<CommandResult> {
+  const { server, proof, context } = await runProof(args);
+  return { lines: runReport({ context, proof, currentLedger: await latestLedger(server) }) };
 }
 
-async function commandAttest(args: readonly string[]): Promise<void> {
+async function commandAttest(args: readonly string[]): Promise<CommandResult> {
   const { config, server, context, proof } = await runProof(args);
-  const secret = process.env[AUTHORITY_SECRET_ENV];
-  if (secret === undefined) {
+  // The presence of the key is checked here and its value is not read here. A
+  // key that the environment does not carry is a wrong command line, and the
+  // read below happens inside the call that signs with it.
+  if (!carriesAuthoritySecret(process.env)) {
     fail(`set ${AUTHORITY_SECRET_ENV} to the secret key of the authority`, EXIT_USAGE);
   }
-  const authority = Keypair.fromSecret(secret);
-  const account = await server.getAccount(authority.publicKey());
-  const result = await submitAttestation(server, config, {
-    sourceAccount: new Account(account.accountId(), account.sequenceNumber()),
-    authoritySigner: authority,
-    registry: await registryOf(config),
-    asset: context.asset,
-    snapshotLedger: context.snapshotLedger,
-    finalRoot: proof.values.final_root,
-    totalLiabilities: proof.values.L,
-    proof: proof.proof,
+  const registry = await registryOf(config);
+  const outcome = await attestAndReport({
+    context,
+    proof,
+    readCurrentLedger: async () => await latestLedger(server),
+    submit: async () => {
+      const accepted = await attestWithAuthority(
+        server,
+        config,
+        // The key is read here and passed on in the same expression, so it
+        // reaches no value of this command line.
+        readAuthoritySecret(process.env),
+        {
+          registry,
+          asset: context.asset,
+          snapshotLedger: context.snapshotLedger,
+          finalRoot: proof.values.final_root,
+          totalLiabilities: proof.values.L,
+          proof: proof.proof,
+        },
+      );
+      return { ledger: accepted.ledger, transactionHash: accepted.transactionHash };
+    },
   });
-  print([
-    `The registry accepted the attestation at ledger ${result.ledger}.`,
-    `The transaction is ${result.transactionHash}.`,
-    "Generate the customer packages with the generator, which reads the",
-    "attested root from the registry before it writes any file.",
-  ]);
+  return { lines: outcome.lines, failure: outcome.failure };
+}
+
+/** The command that one name runs, or nothing when the name is not a command. */
+async function run(command: string, args: readonly string[]): Promise<CommandResult> {
+  switch (command) {
+    case "verify-inclusion":
+      return await commandVerifyInclusion(args);
+    case "entry":
+      return await commandEntry(args);
+    case "observe-reserves":
+      return await commandObserveReserves(args);
+    case "history":
+      return await commandHistory(args);
+    case "diagnose-reserves":
+      return await commandDiagnoseReserves(args);
+    case "prepare-registration":
+      return await commandPrepareRegistration(args);
+    case "sign-entry":
+      return await commandSignEntry(args);
+    case "sign-entry-in-transaction":
+      return await commandSignEntryInTransaction(args);
+    case "prove":
+      return await commandProve(args);
+    case "attest":
+      return await commandAttest(args);
+    case "consent-validity-ledgers":
+      return { lines: [String(CONSENT_VALIDITY_LEDGERS)] };
+    case "submit-registration":
+      return await commandSubmitRegistration(args);
+    default:
+      fail(USAGE, EXIT_USAGE);
+  }
 }
 
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
-  switch (command) {
-    case "verify-inclusion":
-      await commandVerifyInclusion(args);
-      return;
-    case "entry":
-      await commandEntry(args);
-      return;
-    case "observe-reserves":
-      await commandObserveReserves(args);
-      return;
-    case "history":
-      await commandHistory(args);
-      return;
-    case "diagnose-reserves":
-      await commandDiagnoseReserves(args);
-      return;
-    case "prepare-registration":
-      await commandPrepareRegistration(args);
-      return;
-    case "sign-entry":
-      await commandSignEntry(args);
-      return;
-    case "sign-entry-in-transaction":
-      await commandSignEntryInTransaction(args);
-      return;
-    case "prove":
-      await commandProve(args);
-      return;
-    case "attest":
-      await commandAttest(args);
-      return;
-    case "consent-validity-ledgers":
-      process.stdout.write(`${CONSENT_VALIDITY_LEDGERS}\n`);
-      return;
-    case "submit-registration":
-      await commandSubmitRegistration(args);
-      return;
-    default:
-      fail(USAGE, EXIT_USAGE);
+  const result = await run(command ?? "", args);
+  // Every command states what it produced through this one call. A command
+  // that printed for itself put that statement on a path only it reached, and
+  // the two that need the pinned toolchain reach nothing a test can drive.
+  // The statement and the raise happen in one place outside this file, so the
+  // order between them can be driven. The one command that returns a failure
+  // cannot be reached without the pinned toolchain.
+  const code = completeCommand(result, print);
+  if (code !== undefined) {
+    process.exit(code);
   }
 }
 

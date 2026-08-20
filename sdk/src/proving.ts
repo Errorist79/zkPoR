@@ -19,19 +19,21 @@
  */
 
 import { spawn } from "node:child_process";
-import { copyFile, mkdir, readFile, readdir, rm } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
   ATTESTATION_MAX_AGE_LEDGERS,
   FIXTURE_DIRECTORY,
   FIXTURE_MASTER_SECRET,
-  GENERATOR_SECRET_ENV,
+  MASTER_SECRET_ENV,
   PROVING_MARGIN_LEDGERS,
   PUBLIC_INPUT_BYTES,
 } from "./constants.js";
 import { parseManifest, readPublicInputs } from "./manifest.js";
 import type { Manifest, PublicInputName } from "./manifest.js";
 import { readPins, requirePinnedTools } from "./versions.js";
+import { forgetChild, watchChild } from "./children.js";
+import { withRunLifecycle } from "./runlifecycle.js";
 import type { Pins } from "./versions.js";
 
 /** The paths of the repository that the driver reads and writes. */
@@ -82,6 +84,42 @@ export interface Proof {
 /** A report of progress, so a caller can show which step runs. */
 export type ProgressReporter = (step: string) => void;
 
+/** The two values that the context file states about one run. */
+export interface RunContext {
+  readonly asset: string;
+  readonly snapshotLedger: number;
+}
+
+/**
+ * Reads the asset and the snapshot ledger from the context file.
+ *
+ * Every front end of this client needs the same two values before it can check
+ * the window or submit an attestation, so the reader lives here and not in one
+ * of them.
+ */
+export function parseContext(text: string, path: string): RunContext {
+  const asset = /^asset\s*=\s*"([^"]+)"\s*$/m.exec(text);
+  if (asset?.[1] === undefined) {
+    throw new ProvingError(`the context file ${path} names no asset`);
+  }
+  const snapshot = /^snapshot_ledger\s*=\s*(\d+)\s*$/m.exec(text);
+  if (snapshot?.[1] === undefined) {
+    throw new ProvingError(`the context file ${path} states no snapshot_ledger`);
+  }
+  return { asset: asset[1], snapshotLedger: Number.parseInt(snapshot[1], 10) };
+}
+
+/** Reads the context file at one path. */
+export async function readContext(path: string): Promise<RunContext> {
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch {
+    throw new ProvingError(`the client cannot read the context file ${path}`);
+  }
+  return parseContext(text, path);
+}
+
 /**
  * Reads the shape from the configuration file that the circuits read.
  *
@@ -105,8 +143,15 @@ export function parseShape(text: string): Shape {
   return { batchB, numBatchesK, capacity: batchB * numBatchesK };
 }
 
-/** Runs one command and fails with its output when it fails. */
-async function run(
+/**
+ * Runs one tool of a proving run and fails with its output when it fails.
+ *
+ * This is the one place that starts a tool, and it is exported so a test can
+ * start one the same way rather than writing its own `spawn`. A test that
+ * hand-rolled the options would leave the two lines that matter untested: the
+ * process group, and the record that lets a run stop what it started.
+ */
+export async function runTool(
   command: string,
   args: readonly string[],
   options: { cwd: string; env?: Record<string, string> },
@@ -116,7 +161,19 @@ async function run(
       cwd: options.cwd,
       env: { ...process.env, ...options.env },
       stdio: ["ignore", "pipe", "pipe"],
+      // The tool leads a process group of its own. `cargo run` starts the
+      // generator as a further process, so a signal aimed at the tool alone
+      // would leave the process that writes the prover inputs. One signal to
+      // the group reaches the whole tree.
+      detached: true,
     });
+    // The record holds the object the runtime returns, not its identifier, so
+    // the stop can ask the runtime whether the tool is still ours before it
+    // signals a whole process group.
+    watchChild(child);
+    const stopWatching = (): void => {
+      forgetChild(child);
+    };
     let out = "";
     let notes = "";
     child.stdout.on("data", (chunk: Buffer) => {
@@ -126,9 +183,11 @@ async function run(
       notes += chunk.toString();
     });
     child.on("error", () => {
+      stopWatching();
       reject(new ProvingError(`the driver cannot run ${command}`));
     });
     child.on("close", (code) => {
+      stopWatching();
       if (code === 0) {
         resolve(out);
         return;
@@ -243,35 +302,6 @@ export function windowAllowsProving(snapshotLedger: number, currentLedger: numbe
 }
 
 /**
- * Removes every file of a run that carries a salt or a witness.
- *
- * The step runs on the failing path too. A failed run that left the prover
- * inputs on disk would leave every salt of the snapshot readable.
- */
-export async function clearWitnesses(repository: string): Promise<void> {
-  const inner = join(repository, PATHS.inner);
-  const aggregator = join(repository, PATHS.aggregator);
-  const paths = [
-    join(inner, "Prover.toml"),
-    join(inner, "target"),
-    join(repository, PATHS.innerOut),
-    join(aggregator, "Prover.toml"),
-    join(aggregator, "target"),
-  ];
-  for (const path of paths) {
-    await rm(path, { recursive: true, force: true });
-  }
-  // The generator writes one prover input per batch, so the sweep reads the
-  // directory instead of guessing how many there are.
-  const names = await readdir(inner).catch((): string[] => []);
-  for (const name of names) {
-    if (/^Prover_\d+\.toml$/.test(name)) {
-      await rm(join(inner, name), { force: true });
-    }
-  }
-}
-
-/**
  * Produces one aggregated proof for one snapshot.
  *
  * The steps are the steps of the pinned pipeline, in order: the generator
@@ -288,21 +318,37 @@ export async function prove(input: {
 }): Promise<Proof> {
   const report = input.report ?? (() => {});
   const repository = input.repository;
+  // This one refuses the run itself rather than the working tree, so it takes
+  // no lock and sweeps nothing. A run with a public secret must not disturb a
+  // run that is legitimately using the repository.
   inputsAreNotFixtures(input);
-  const { pins, manifest, shape } = await readyToProve(repository, report);
 
   // The generator reads the secret from the environment of its own process.
   const secretEnvironment = {
-    [GENERATOR_SECRET_ENV]: `0x${input.masterSecret.toString(16).padStart(64, "0")}`,
+    [MASTER_SECRET_ENV]: `0x${input.masterSecret.toString(16).padStart(64, "0")}`,
   };
   const generator = join(repository, PATHS.generator);
   const inner = join(repository, PATHS.inner);
   const aggregator = join(repository, PATHS.aggregator);
   const innerOut = join(repository, PATHS.innerOut);
 
-  try {
+  // The lock, the guards, and the sweeps are one lifecycle with one order, and
+  // that order is the guarantee.
+  //
+  // The toolchain check sits inside it rather than before it, and that is
+  // deliberate. Before it, a machine without the pinned tools left this
+  // function before the lifecycle began, so nothing that entered here could
+  // observe whether the driver used the lifecycle at all. Inside it, a run
+  // that stops on the pins still takes the lock, still sweeps what an earlier
+  // run left, and still gives everything back. The lock is held for the
+  // length of a version check, which is short, and a refused run sweeps the
+  // working tree, which is the right thing to do with another run's leftovers
+  // in any case.
+  return await withRunLifecycle(repository, report, async () => {
+    const { pins, manifest, shape } = await readyToProve(repository, report);
+
     report("writing the witness of each batch");
-    await run(
+    await runTool(
       "cargo",
       ["run", "--release", "--quiet", "--", "witness", input.contextFile, input.customersFile],
       { cwd: generator, env: secretEnvironment },
@@ -311,15 +357,15 @@ export async function prove(input: {
     report("compiling the inner circuit");
     await rm(join(inner, "target"), { recursive: true, force: true });
     await rm(innerOut, { recursive: true, force: true });
-    await run("nargo", ["compile"], { cwd: inner });
+    await runTool("nargo", ["compile"], { cwd: inner });
 
     for (let batch = 0; batch < shape.numBatchesK; batch += 1) {
       report(`proving the batch ${batch + 1} of ${shape.numBatchesK}`);
       await copyFile(join(inner, `Prover_${batch}.toml`), join(inner, "Prover.toml"));
-      await run("nargo", ["execute", `wit${batch}`], { cwd: inner });
+      await runTool("nargo", ["execute", `wit${batch}`], { cwd: inner });
       const output = join(innerOut, `batch_${batch}`);
       await mkdir(output, { recursive: true });
-      await run(
+      await runTool(
         "bb",
         [
           "prove",
@@ -343,7 +389,7 @@ export async function prove(input: {
     }
 
     report("writing the verification key of the inner circuit");
-    await run(
+    await runTool(
       "bb",
       [
         "write_vk",
@@ -366,17 +412,17 @@ export async function prove(input: {
     );
 
     report("assembling the aggregation input");
-    await run("cargo", ["run", "--release", "--quiet", "--", "assemble", input.contextFile, innerOut], {
+    await runTool("cargo", ["run", "--release", "--quiet", "--", "assemble", input.contextFile, innerOut], {
       cwd: generator,
       env: secretEnvironment,
     });
 
     report("compiling the aggregator");
     await rm(join(aggregator, "target"), { recursive: true, force: true });
-    await run("nargo", ["compile"], { cwd: aggregator });
+    await runTool("nargo", ["compile"], { cwd: aggregator });
     report("proving the aggregation, which is the slowest step");
-    await run("nargo", ["execute", FILES.aggregatorWitness], { cwd: aggregator });
-    await run(
+    await runTool("nargo", ["execute", FILES.aggregatorWitness], { cwd: aggregator });
+    await runTool(
       "bb",
       [
         "prove",
@@ -406,10 +452,5 @@ export async function prove(input: {
     }
     report("the proof is ready");
     return { proof, publicInputs, values: readPublicInputs(manifest, publicInputs) };
-  } finally {
-    // The witness files carry every salt of the snapshot, so they go whether
-    // the run passed or failed.
-    report("removing the witness files");
-    await clearWitnesses(repository);
-  }
+  });
 }

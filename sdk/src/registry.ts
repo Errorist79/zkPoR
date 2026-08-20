@@ -21,7 +21,11 @@ import {
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
-import { ATTESTATION_MAX_AGE_LEDGERS, HISTORY_PAGE_LIMIT } from "./constants.js";
+import {
+  ATTESTATION_MAX_AGE_LEDGERS,
+  HISTORY_DEFAULT_LEDGERS,
+  HISTORY_PAGE_LIMIT,
+} from "./constants.js";
 import { InfrastructureError, retainedLedgers } from "./network.js";
 import { isRecord, isStringList } from "./guards.js";
 import type { NetworkConfig } from "./network.js";
@@ -350,6 +354,16 @@ export async function observeReserves(
     nativeToScVal(Address.fromString(asset)),
   ]);
   return decodeReserveObservation(returned);
+}
+
+/**
+ * The ledger that a history query reaches back to, from the latest one.
+ *
+ * The command line and the dashboard cover the same range for one asset, so the
+ * range has one definition. A ledger sequence never goes below zero.
+ */
+export function defaultHistoryStart(latestLedger: number): number {
+  return Math.max(latestLedger - HISTORY_DEFAULT_LEDGERS, 0);
 }
 
 /** True when the solvency claim of a snapshot has lapsed at the current ledger. */
