@@ -7,7 +7,7 @@
  * each of those decides whether a run can land at all.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { captureOf, valueOf } from "./fixture-guards.js";
@@ -31,6 +31,7 @@ import {
   serializePublicInputs,
 } from "../src/manifest.js";
 import { parseVersions } from "../src/versions.js";
+import { BUILT_INS, namedModulesOf } from "./sources.js";
 import { toBytes } from "../src/fr.js";
 
 const ROOT = join(import.meta.dirname, "..", "..");
@@ -218,5 +219,101 @@ describe("the refusal of the test material", () => {
       throw new Error("the fixture file states no secret");
     }
     expect(BigInt(captureOf(found, 0, "secret of the fixture file"))).toBe(FIXTURE_MASTER_SECRET);
+  });
+});
+
+/**
+ * What a proving run can reach, which is nothing outside this package.
+ *
+ * A run reads the customer file and it derives every salt from the master
+ * secret. It needs no network for any step: it reads the pins, it starts the
+ * pinned tools, and it reads what the tools write. The rule for the modules of
+ * a run is therefore the strict one. They name no module outside this package,
+ * not even the library that the client uses to talk to the registry.
+ *
+ * That is stronger than the rule that holds over the whole package, which
+ * allows the declared dependency that reaches the registry and is checked over
+ * every module in another file. Both are kept, and the reason is measurable
+ * rather than tidy: the wider rule passes for a driver that imports the
+ * library, and a driver that imports the library holds the master secret and a
+ * way out at the same moment.
+ *
+ * The scope here comes from the property. This set is the modules that a run
+ * loads, because the property is about what a run holds. The wider property is
+ * about what this package ships, and it names every module.
+ *
+ * The rule is written as the specifiers that are allowed, in the same shape as
+ * the wider one: a local module, or a built-in that this package uses. A list
+ * of network modules to refuse would be one entry behind the runtime. The forms
+ * come from the parser of the language, so the rule holds every form that names
+ * a module rather than the forms somebody wrote a pattern for.
+ *
+ * The instrument reads source, which is weaker than an observation, so this
+ * states the limit rather than letting the name of the test carry more than it
+ * earns. Two things it cannot see: code that the source does not carry, which
+ * means a string that the runtime evaluates, and a connection that a dependency
+ * opens inside itself. A name that reaches past an import is read by the wider
+ * rule, over every module of this package, so it is not read again here.
+ */
+describe("the modules a proving run loads", () => {
+  /** Every local module the driver reaches, through every local import. */
+  function loadedByProving(): string[] {
+    const directory = join(import.meta.dirname, "..", "src");
+    const seen = new Set<string>();
+    const queue = ["proving.ts"];
+    while (queue.length > 0) {
+      const name = queue.pop();
+      if (name === undefined || seen.has(name)) {
+        continue;
+      }
+      seen.add(name);
+      const path = join(directory, name);
+      if (!existsSync(path)) {
+        continue;
+      }
+      for (const found of readFileSync(path, "utf8").matchAll(/from\s+"\.\/([^"]+)"/g)) {
+        const specifier = found[1];
+        if (specifier !== undefined) {
+          queue.push(specifier.replace(/\.js$/, ".ts"));
+        }
+      }
+    }
+    return [...seen];
+  }
+
+  it("reaches a plausible set, because a walk that reached none checks nothing", () => {
+    const loaded = loadedByProving();
+    expect(loaded.length).toBeGreaterThanOrEqual(8);
+    // The driver itself and the sweep must be in any correct walk. A walk that
+    // returned only its starting point would satisfy a count alone.
+    expect(loaded).toContain("proving.ts");
+    expect(loaded).toContain("witnesses.ts");
+    expect(loaded).toContain("runlifecycle.ts");
+  });
+
+  it("names no module outside this package, so a run reaches no network at all", () => {
+    let counted = 0;
+    for (const name of loadedByProving()) {
+      if (!existsSync(join(import.meta.dirname, "..", "src", name))) {
+        continue;
+      }
+      for (const named of namedModulesOf(name)) {
+        counted += 1;
+        if (named.specifier === undefined) {
+          throw new Error(`${name} names a module with a value rather than with a literal`);
+        }
+        if (named.specifier.startsWith(".")) {
+          continue;
+        }
+        // No dependency at all, which is what makes this stricter than the
+        // rule that holds over the whole package.
+        expect(BUILT_INS.includes(named.specifier), `${name} names ${named.specifier}`).toBe(true);
+      }
+    }
+    // A read that found no module at all would pass the loop above without
+    // looking at anything.
+    expect(counted, "the read found almost no import, so it read almost nothing").toBeGreaterThan(
+      15,
+    );
   });
 });

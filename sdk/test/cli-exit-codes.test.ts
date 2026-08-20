@@ -1,0 +1,605 @@
+/**
+ * The exit code of the command line, read from the built command line.
+ *
+ * The package publishes a contract: the code 2 means the command line is
+ * wrong, and the code 8 means a failure of the client or of the network, which
+ * is not a verdict. A value that an operator can correct is the first kind. A
+ * refactor that moves a case from one kind to the other breaks the contract
+ * without breaking a type, so the test runs the real command line and reads the
+ * real code.
+ *
+ * Every case here spawns the built entry point. A test that called the
+ * functions directly would pass while the shipped command line failed, which is
+ * the failure this file exists to prevent.
+ *
+ * Nothing here imports from the command line module itself, and that rule is
+ * worth stating because breaking it once cost this project a green suite that
+ * failed. The command line is an entry point: its last statement runs it. An
+ * import of one function from it started the command line inside the process
+ * running these tests, which called `process.exit` with the very codes this
+ * file exists to pin. Every test still passed and the suite still returned a
+ * failure, so a reader of the counts saw nothing wrong.
+ *
+ * Anything this file needs from the command line lives in a module that is not
+ * an entry point.
+ */
+
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { beforeAll, describe, expect, it } from "vitest";
+import { EXIT_NO_VERDICT, EXIT_USAGE } from "../src/inclusion.js";
+import { attestAndReport, completeCommand, runReport } from "../src/report.js";
+import { ATTESTATION_MAX_AGE_LEDGERS } from "../src/constants.js";
+import { builtCli } from "./built.js";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+/** The deployments file of this repository, which the client trusts. */
+const DEPLOYMENTS = join(HERE, "..", "..", "scripts", "deployments.json");
+
+/** A registry address that the committed deployments file records. */
+const REGISTRY = "CC4MA6FWDBG3Y4YXYGDHYEZ36O3YSP7DREGOLBWKP6ZTQQ6IYFFX3KQK";
+
+/** An account address. The value is test data. */
+const ACCOUNT = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+
+/**
+ * The built command line, in a directory this test run owns.
+ *
+ * Reaching into `dist` made the verdict depend on a build the test does not
+ * control, and that failed in both directions: a build in progress removed the
+ * file, and a run that skipped the build measured an older artifact. Both
+ * arrive at an assertion looking like the command line returning a wrong code,
+ * which is a false report about the one contract this file guards.
+ */
+let CLI = "";
+
+/** A context file with the fields that a run reads. */
+function contextFile(body: string): string {
+  const directory = mkdtempSync(join(tmpdir(), "zkpor-cli-"));
+  const path = join(directory, "context.toml");
+  writeFileSync(path, body);
+  return path;
+}
+
+/**
+ * Runs the built command line and returns what it did.
+ *
+ * A machine that cannot start a process right now, because it is out of
+ * descriptors or out of process slots, makes `spawnSync` report a failure of
+ * its own with no exit status. An earlier form of this function turned that
+ * into the code -1, which arrived at an assertion looking exactly like the
+ * command line returning the wrong code. That reads as a defect in the contract
+ * this file guards, which is the worst thing a flake can imitate.
+ *
+ * A failure to start is therefore never an outcome. It is retried, and it is
+ * reported as itself if it persists.
+ */
+function runCli(
+  args: readonly string[],
+  environment: Record<string, string> = {},
+): { code: number; stderr: string; stdout: string } {
+  let lastFailure = "the process reported no failure";
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const answer = spawnSync(process.execPath, [CLI, ...args], {
+      encoding: "utf8",
+      timeout: 60_000,
+      env: {
+        PATH: process.env["PATH"] ?? "",
+        HOME: process.env["HOME"] ?? "",
+        ZKPOR_NETWORK: "testnet",
+        ZKPOR_RPC_URL: "http://127.0.0.1:1/",
+        ...environment,
+      },
+    });
+    if (answer.error === undefined && answer.status !== null) {
+      return { code: answer.status, stderr: answer.stderr, stdout: answer.stdout };
+    }
+    lastFailure =
+      answer.error instanceof Error
+        ? answer.error.message
+        : `the command line ended with the signal ${String(answer.signal)}`;
+  }
+  throw new Error(`this machine could not run the command line: ${lastFailure}`);
+}
+
+beforeAll(() => {
+  CLI = builtCli();
+  if (!existsSync(CLI)) {
+    throw new Error(`the build wrote no command line at ${CLI}`);
+  }
+}, 180_000);
+
+describe("the two kinds of failure", () => {
+  it("keeps them apart in the published contract", () => {
+    // The two codes must stay different, because every case below sorts one
+    // failure into one of them.
+    expect(EXIT_USAGE).toBe(2);
+    expect(EXIT_NO_VERDICT).toBe(8);
+  });
+});
+
+describe("a context file that an operator can correct", () => {
+  it("names no asset, and the command line reports a wrong command line", () => {
+    const path = contextFile("snapshot_ledger = 100\n");
+    const answer = runCli(["prove", path, "customers.csv"]);
+    expect(answer.code).toBe(EXIT_USAGE);
+    expect(answer.stderr).toContain("names no asset");
+    // The line below belongs to the other kind of failure. A correctable value
+    // must never carry it.
+    expect(answer.stderr).not.toContain("It is not a verdict.");
+  });
+
+  it("states no snapshot ledger, and the command line reports a wrong command line", () => {
+    const path = contextFile('asset = "CBBB"\n');
+    const answer = runCli(["prove", path, "customers.csv"]);
+    expect(answer.code).toBe(EXIT_USAGE);
+    expect(answer.stderr).toContain("states no snapshot_ledger");
+    expect(answer.stderr).not.toContain("It is not a verdict.");
+  });
+
+  it("does not exist, and the command line reports a wrong command line", () => {
+    const answer = runCli(["prove", "/no/such/context.toml", "customers.csv"]);
+    expect(answer.code).toBe(EXIT_USAGE);
+    expect(answer.stderr).toContain("cannot read the context file");
+    expect(answer.stderr).not.toContain("It is not a verdict.");
+  });
+
+  it("reports the same code for attest as for prove, and for the same reason", () => {
+    // The code alone is not enough here. The attest command checks several
+    // things that all report the usage code, so a case that asserted only the
+    // code would pass on a missing authority key if a later edit checked the
+    // key before it read the context. The message names which one it was.
+    const path = contextFile("snapshot_ledger = 100\n");
+    const answer = runCli(["attest", path, "customers.csv"]);
+    expect(answer.code).toBe(EXIT_USAGE);
+    expect(answer.stderr).toContain("names no asset");
+    expect(answer.stderr).not.toContain("It is not a verdict.");
+  });
+});
+
+describe("a configuration that the environment does not carry", () => {
+  it("reports a wrong command line and names the variable", () => {
+    const answer = runCli(["entry", REGISTRY], { ZKPOR_NETWORK: "" });
+    expect(answer.code).toBe(EXIT_USAGE);
+    expect(answer.stderr).toContain("ZKPOR_NETWORK");
+  });
+
+  it("reports a wrong command line when the endpoint is missing", () => {
+    const answer = runCli(["entry", REGISTRY], { ZKPOR_RPC_URL: "" });
+    expect(answer.code).toBe(EXIT_USAGE);
+    expect(answer.stderr).toContain("ZKPOR_RPC_URL");
+  });
+
+  it("reports a wrong command line when the network has no known passphrase", () => {
+    const answer = runCli(["entry", REGISTRY], { ZKPOR_NETWORK: "a-network-nobody-knows" });
+    expect(answer.code).toBe(EXIT_USAGE);
+    expect(answer.stderr).toContain("ZKPOR_NETWORK_PASSPHRASE");
+  });
+});
+
+describe("a failure of the client or of the network", () => {
+  it("keeps its own code, and says it is not a verdict", () => {
+    // Every part of this case is load-bearing, and an earlier form of it had
+    // none of them. It used an address that does not parse, so the client
+    // refused the value before it opened a connection, and the case tested
+    // malformed-address handling while its comment described a network
+    // failure. It then carried no deployments file, so a well-formed address
+    // failed on the file rather than on the endpoint. Both gave the code 8,
+    // which is why it passed, and neither reached the network.
+    //
+    // The address is well formed, the deployments file is the committed one,
+    // and the endpoint is a port that nothing listens on, so the run reaches
+    // the network and fails there.
+    const answer = runCli(["entry", REGISTRY], { ZKPOR_DEPLOYMENTS: DEPLOYMENTS });
+    expect(answer.code).toBe(EXIT_NO_VERDICT);
+    expect(answer.stderr).toContain("It is not a verdict.");
+    // The message names the call that could not reach the endpoint. Without
+    // this the case passes again on any failure that happens to give 8.
+    expect(answer.stderr).toContain("cannot simulate the call entry");
+  });
+});
+
+describe("an address that this protocol does not accept", () => {
+  // A value an operator typed wrong is a wrong command line, and it belongs to
+  // the same code as a context file that omits a field. Reaching the client
+  // library with it produced a message about an unsupported address type and
+  // the code of a failure that is not a verdict, which is the same category
+  // error on a different input.
+  const MALFORMED = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+  it.each([
+    ["entry", ["entry", MALFORMED]],
+    ["observe-reserves", ["observe-reserves", MALFORMED]],
+    ["history", ["history", MALFORMED]],
+    ["diagnose-reserves", ["diagnose-reserves", MALFORMED]],
+    ["sign-entry", ["sign-entry", MALFORMED]],
+  ])("reports a wrong command line for %s", (_name, args) => {
+    const answer = runCli(args, { ZKPOR_DEPLOYMENTS: DEPLOYMENTS });
+    expect(answer.code).toBe(EXIT_USAGE);
+    expect(answer.stderr).toContain("not a Stellar account address");
+    expect(answer.stderr).not.toContain("It is not a verdict.");
+  });
+
+  it("names the value, so an operator sees what to correct", () => {
+    expect(runCli(["entry", MALFORMED]).stderr).toContain(MALFORMED);
+  });
+
+  it("checks every address of a registration, and not only the first", () => {
+    const answer = runCli([
+      "prepare-registration",
+      REGISTRY,
+      ACCOUNT,
+      `${ACCOUNT},${MALFORMED}`,
+    ]);
+    expect(answer.code).toBe(EXIT_USAGE);
+    expect(answer.stderr).toContain("a reserve address");
+  });
+});
+
+describe("what the command line writes to its output", () => {
+  it("writes the answer through the printer that every command uses", () => {
+    // Nothing else in this file reads standard output, so the shipped binary
+    // could stop writing anything and every case would still pass on its exit
+    // code.
+    //
+    // The command matters. An earlier form of this used the one command that
+    // writes to the output directly, so breaking the printer left it passing.
+    // A malformed package reaches a verdict without a network and without the
+    // toolchain, and it states that verdict through the printer, so this is the
+    // path that exercises it.
+    const directory = mkdtempSync(join(tmpdir(), "zkpor-cli-"));
+    const path = join(directory, "customer.zkpor.json");
+    writeFileSync(path, '{"format":"zkpor-inclusion/1"}\n');
+    const answer = runCli(["verify-inclusion", path], { ZKPOR_DEPLOYMENTS: DEPLOYMENTS });
+    expect(answer.code).toBe(4);
+    expect(answer.stdout).toContain("The package is malformed.");
+  });
+
+  it("writes a refusal to standard error, and keeps it out of standard output", () => {
+    // An operator that pipes the answer somewhere must not receive a refusal
+    // in that pipe.
+    const answer = runCli(["entry", "not-an-address"]);
+    expect(answer.stderr).toContain("not a Stellar account address");
+    expect(answer.stdout).toBe("");
+  });
+});
+
+describe("no command and no argument", () => {
+  it("prints the usage and reports a wrong command line", () => {
+    expect(runCli([]).code).toBe(EXIT_USAGE);
+    expect(runCli(["prove"]).code).toBe(EXIT_USAGE);
+    expect(runCli(["verify-inclusion"]).code).toBe(EXIT_USAGE);
+  });
+});
+
+describe("what a proving run reports", () => {
+  // These read the value that the report returns. The earlier form asserted
+  // that the source held the calls, and a call kept exactly where the
+  // assertion looked and never reached passed it, on the two paths that matter
+  // most: a submission that fails after a correct proof, and a run that says
+  // whether its snapshot can still land.
+
+  /** One proof. Every value is test data. */
+  const PROOF = {
+    proof: new Uint8Array(14_592),
+    publicInputs: new Uint8Array(128),
+    values: { final_root: 0x2ban, L: 1_000n, context_hash: 0x3can, inner_key_hash: 0x4dn },
+  };
+
+  /** One context. The snapshot is the ledger every case below counts from. */
+  const CONTEXT = { asset: "CBBB", snapshotLedger: 5_000 };
+
+  /** The last ledger at which the snapshot can still be attested. */
+  const INSIDE = 5_000 + ATTESTATION_MAX_AGE_LEDGERS;
+
+  function report(changes: { currentLedger?: number; submission?: { ledger: number; transactionHash: string } } = {}) {
+    return runReport({
+      context: CONTEXT,
+      proof: PROOF,
+      currentLedger: changes.currentLedger ?? INSIDE,
+      ...(changes.submission === undefined ? {} : { submission: changes.submission }),
+    });
+  }
+
+  it("states what the proof commits to", () => {
+    const lines = report().join("\n");
+    expect(lines).toContain("The proof holds 14592 bytes.");
+    expect(lines).toContain("The snapshot ledger is 5000.");
+    expect(lines).toContain("The root is ");
+    expect(lines).toContain("The total liabilities are 1000.");
+    expect(lines).toContain("The context hash is ");
+  });
+
+  it("states the same values whether the run submitted or not", () => {
+    // A submission that fails must not take the root away, and the witness
+    // files are gone by then, so these lines are the only copy of it.
+    const withoutSubmission = report();
+    const withSubmission = report({
+      submission: { ledger: 5_100, transactionHash: "a".repeat(64) },
+    });
+    for (const line of withoutSubmission.slice(0, 5)) {
+      expect(withSubmission).toContain(line);
+    }
+  });
+
+  it("says the snapshot can still be attested, at the ledger it read", () => {
+    expect(report({ currentLedger: INSIDE }).join("\n")).toContain(
+      `At ledger ${String(INSIDE)} the snapshot can still be attested.`,
+    );
+  });
+
+  it("says plainly when the snapshot has left its window", () => {
+    const lines = report({ currentLedger: INSIDE + 1 }).join("\n");
+    expect(lines).toContain("has already left its window");
+    expect(lines).toContain("Take a fresh snapshot and prove again.");
+    expect(lines).not.toContain("can still be attested");
+  });
+
+  it("says nothing about the window once the registry accepted the root", () => {
+    // The window is a question about whether a root can still land. It has
+    // landed, so the question is answered.
+    const lines = report({
+      currentLedger: INSIDE + 1,
+      submission: { ledger: 5_100, transactionHash: "b".repeat(64) },
+    }).join("\n");
+    expect(lines).toContain("The registry accepted the attestation at ledger 5100.");
+    expect(lines).not.toContain("left its window");
+  });
+
+  it("is defined outside the command line, which is an entry point", () => {
+    const report = readFileSync(join(HERE, "..", "src", "report.ts"), "utf8");
+    expect([...report.matchAll(/export function runReport\(/g)]).toHaveLength(1);
+    const cli = readFileSync(join(HERE, "..", "src", "cli.ts"), "utf8");
+    expect(cli).not.toContain("function runReport(");
+  });
+});
+
+describe("no test imports the command line", () => {
+  /**
+   * The specifier that no test may name, assembled rather than written.
+   *
+   * A scan that held the specifier as a literal would find it in its own
+   * source and refuse itself.
+   */
+  const ENTRY = ["/src/", "cli", ".js"].join("");
+
+  /** Every test source of this package. */
+  function testSources(): string[] {
+    return readdirSync(HERE).filter((name) => name.endsWith(".ts") || name.endsWith(".tsx"));
+  }
+
+  it("scans a plausible number of files, because a scan of none reads as clean", () => {
+    // This repository codified that once already, in the scan that refuses a
+    // type assertion: a scan reaching no file passes without checking anything
+    // and reads as a clean result. The count is part of the check.
+    expect(testSources().length).toBeGreaterThanOrEqual(5);
+    expect(testSources()).toContain("cli-exit-codes.test.ts");
+  });
+
+  it("because reaching an entry point runs it inside the test process", () => {
+    // This is the general form of a defect that cost this project a suite
+    // which passed every test and returned a failure. The command line runs
+    // itself at the end of its own module, so reaching it from a test starts a
+    // command line inside the process running the tests, against the runner's
+    // arguments, and it calls process.exit. Every test still passes and the
+    // suite still fails.
+    //
+    // The scan looks for the specifier anywhere rather than only after `from`.
+    // A dynamic import names it too, and an earlier form of this check saw
+    // only the static spelling, so an awaited import passed it while
+    // reproducing the defect exactly.
+    for (const name of testSources()) {
+      const source = readFileSync(join(HERE, name), "utf8");
+      expect(source, `${name} reaches the command line module`).not.toContain(ENTRY);
+    }
+  });
+
+  it("and the command line offers nothing worth importing", () => {
+    // The scan reads text, so it cannot see a specifier assembled at run time,
+    // which is what this file itself does two definitions above. This closes
+    // the motive rather than the spelling: the entry point exports nothing, so
+    // no test has a reason to name it. The backstop for both is the exit
+    // status of the suite, which is what the agreement job reads, and which is
+    // non-zero the moment this module runs in a worker.
+    const cli = readFileSync(join(HERE, "..", "src", "cli.ts"), "utf8");
+    expect(cli).not.toMatch(/^export /m);
+  });
+
+  it("and the command line is still the entry point it claims to be", () => {
+    // The rules above are worth nothing if the file stops running itself.
+    const cli = readFileSync(join(HERE, "..", "src", "cli.ts"), "utf8");
+    expect(cli).toContain("main().catch(");
+  });
+});
+
+describe("what an attestation reports when the submission fails", () => {
+  // This is the path the whole day began on, and the one nothing can enter: it
+  // needs a real proving run and therefore the pinned toolchain. Counting the
+  // occurrences of a call in the source stood in for it, and a call kept where
+  // the count looks for it and never reached passed that.
+  //
+  // The decision of whether to report is a value now, so it can be read.
+
+  /** One proof. Every value is test data. */
+  const PROOF = {
+    proof: new Uint8Array(14_592),
+    publicInputs: new Uint8Array(128),
+    values: { final_root: 0x2ban, L: 1_000n, context_hash: 0x3can, inner_key_hash: 0x4dn },
+  };
+
+  /** One context, and a ledger inside the window of its snapshot. */
+  const CONTEXT = { asset: "CBBB", snapshotLedger: 5_000 };
+  const LEDGER = 5_000 + 10;
+
+  it("states what the proof commits to, even though nothing landed", async () => {
+    const outcome = await attestAndReport({
+      context: CONTEXT,
+      proof: PROOF,
+      readCurrentLedger: () => Promise.resolve(LEDGER),
+      submit: () => Promise.reject(new Error("the network refused the attestation")),
+    });
+    const lines = outcome.lines.join("\n");
+    // The witness files are swept by now, so these lines are the only copy of
+    // the root that an issuer has.
+    expect(lines).toContain("The root is ");
+    expect(lines).toContain("The total liabilities are 1000.");
+    expect(lines).toContain("The context hash is ");
+    expect(lines).toContain("The proof holds 14592 bytes.");
+  });
+
+  it("gives back the reason, so the command still fails as it did", async () => {
+    const outcome = await attestAndReport({
+      context: CONTEXT,
+      proof: PROOF,
+      readCurrentLedger: () => Promise.resolve(LEDGER),
+      submit: () => Promise.reject(new Error("the network refused the attestation")),
+    });
+    expect(outcome.failure).toBeInstanceOf(Error);
+    expect(String(outcome.failure)).toContain("the network refused");
+  });
+
+  it("says whether the snapshot can still land, when nothing landed", async () => {
+    const closed = await attestAndReport({
+      context: CONTEXT,
+      proof: PROOF,
+      readCurrentLedger: () => Promise.resolve(5_000 + ATTESTATION_MAX_AGE_LEDGERS + 1),
+      submit: () => Promise.reject(new Error("no")),
+    });
+    expect(closed.lines.join("\n")).toContain("has already left its window");
+  });
+
+  it("states the accepted attestation when the submission lands", async () => {
+    const outcome = await attestAndReport({
+      context: CONTEXT,
+      proof: PROOF,
+      readCurrentLedger: () => Promise.resolve(LEDGER),
+      submit: () => Promise.resolve({ ledger: 5_100, transactionHash: "a".repeat(64) }),
+    });
+    expect(outcome.failure).toBeUndefined();
+    expect(outcome.lines.join("\n")).toContain("The registry accepted the attestation at ledger 5100.");
+  });
+
+  it("reports the same five values whichever way the submission went", async () => {
+    const failed = await attestAndReport({
+      context: CONTEXT,
+      proof: PROOF,
+      readCurrentLedger: () => Promise.resolve(LEDGER),
+      submit: () => Promise.reject(new Error("no")),
+    });
+    const landed = await attestAndReport({
+      context: CONTEXT,
+      proof: PROOF,
+      readCurrentLedger: () => Promise.resolve(LEDGER),
+      submit: () => Promise.resolve({ ledger: 5_100, transactionHash: "a".repeat(64) }),
+    });
+    for (const line of failed.lines.slice(0, 5)) {
+      expect(landed.lines).toContain(line);
+    }
+  });
+
+  it("takes no key of its own, so neither reaches a value here", () => {
+    // The submission is a callable the caller supplies, and the authority key
+    // stays inside it. A signature that took the key would put it in a value
+    // that a later line could log.
+    const report = readFileSync(join(HERE, "..", "src", "report.ts"), "utf8");
+    expect(report).not.toContain("AUTHORITY_SECRET");
+    expect(report).not.toContain("readAuthoritySecret");
+    // And the command line reads it into the call that signs, never into a name.
+    const cli = readFileSync(join(HERE, "..", "src", "cli.ts"), "utf8");
+    expect(cli).toContain("readAuthoritySecret(process.env),");
+    expect(cli).not.toMatch(/const\s+\w+\s*=\s*readAuthoritySecret\(/);
+  });
+});
+
+describe("stating what a command produced", () => {
+  // The order between stating the lines and raising a failure is the property,
+  // and the one command that returns a failure cannot be reached without the
+  // pinned toolchain. It lives outside the command line so it can be driven.
+
+  it("states the lines before it raises the failure", () => {
+    // An issuer whose submission failed after a correct proof has no other copy
+    // of the root: the witness files are swept by then. Raising first would
+    // take it away.
+    const stated: string[][] = [];
+    const failure = new Error("the network refused the attestation");
+    expect(() =>
+      completeCommand({ lines: ["the root is 0x2b"], failure }, (lines) => {
+        stated.push([...lines]);
+      }),
+    ).toThrow(failure);
+    expect(stated, "the failure was raised before anything was stated").toEqual([
+      ["the root is 0x2b"],
+    ]);
+  });
+
+  it("raises exactly what it was given, so the exit code is unchanged", () => {
+    const failure = new Error("the network refused the attestation");
+    let raised: unknown;
+    try {
+      completeCommand({ lines: [], failure }, () => {});
+    } catch (cause) {
+      raised = cause;
+    }
+    expect(raised).toBe(failure);
+  });
+
+  it("returns the exit code a command names, and nothing when it names none", () => {
+    expect(completeCommand({ lines: ["a"], code: 4 }, () => {})).toBe(4);
+    expect(completeCommand({ lines: ["a"] }, () => {})).toBeUndefined();
+    // A code of zero is a code, not an absence.
+    expect(completeCommand({ lines: ["a"], code: 0 }, () => {})).toBe(0);
+  });
+
+  it("states the lines of every command, including one that names a code", () => {
+    const stated: string[][] = [];
+    completeCommand({ lines: ["one", "two"], code: 4 }, (lines) => {
+      stated.push([...lines]);
+    });
+    expect(stated).toEqual([["one", "two"]]);
+  });
+});
+
+describe("no secret is a value of the command line", () => {
+  const cliSource = (): string => readFileSync(join(HERE, "..", "src", "cli.ts"), "utf8");
+
+  it("never binds a secret variable of the environment to a name", () => {
+    // Three secrets, one rule. The dashboard stopped binding the authority key
+    // in the morning and the command line had not, and the key of a reserve
+    // holder was bound in two more places. A key in a name is a key a later
+    // line can log, render, or put in a message.
+    expect(cliSource()).not.toMatch(/const\s+\w+\s*=\s*process\.env\[AUTHORITY_SECRET_ENV\]/);
+    expect(cliSource()).not.toMatch(/const\s+\w+\s*=\s*process\.env\[RESERVE_SECRET_ENV\]/);
+  });
+
+  it("never binds a secret that a reader returns", () => {
+    // The rule is about the secret itself. A signer may be a value here,
+    // because a signer is what the operation needs and it exposes no secret
+    // that this file then holds. Building one takes the secret for the length
+    // of one expression inside the client library, which is the reason the
+    // reader returns a signer rather than a string.
+    expect(cliSource()).not.toMatch(/const\s+\w+\s*=\s*readAuthoritySecret\(/);
+    expect(cliSource()).not.toMatch(/const\s+\w+\s*=\s*await\s+readMasterSecret\(/);
+  });
+
+  it("builds no signer of its own, because that needs the secret in a value", () => {
+    expect(cliSource()).not.toContain("Keypair.fromSecret(");
+  });
+
+  it("holds every reader to one rule, so none drifts from the others", () => {
+    const secret = readFileSync(join(HERE, "..", "src", "secret.ts"), "utf8");
+    for (const reader of [
+      "readMasterSecret",
+      "readAuthoritySecret",
+      "readAuthorityKeypair",
+      "readReserveKeypair",
+    ]) {
+      expect(secret, `${reader} is missing`).toMatch(
+        new RegExp(`export (?:async )?function ${reader}\\(`),
+      );
+    }
+  });
+});

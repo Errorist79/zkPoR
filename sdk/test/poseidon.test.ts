@@ -8,34 +8,26 @@
  * of this package fails here instead of on a network.
  */
 
-import { readFileSync } from "node:fs";
-import { readdirSync } from "node:fs";
-import { join } from "node:path";
 import { poseidon2Hash, poseidon2HashAsync } from "@zkpassport/poseidon2";
 import { describe, expect, it } from "vitest";
 import { captureOf } from "./fixture-guards.js";
+import { sourceFiles, sourceOf } from "./sources.js";
 import { hash } from "../src/poseidon.js";
 import { POSEIDON2_RATE, POSEIDON2_STATE_WIDTH } from "../src/constants.js";
-
-const SOURCE = join(import.meta.dirname, "..", "src");
 
 /** The one file that may import the hash library. */
 const HASH_MODULE = "poseidon.ts";
 
-function sourceFiles(): string[] {
-  return readdirSync(SOURCE).filter((name) => name.endsWith(".ts"));
-}
-
 describe("the hash library has one call site", () => {
   it("is imported by one file only", () => {
     const importers = sourceFiles().filter((name) =>
-      readFileSync(join(SOURCE, name), "utf8").includes("@zkpassport/poseidon2"),
+      sourceOf(name).includes("@zkpassport/poseidon2"),
     );
     expect(importers).toEqual([HASH_MODULE]);
   });
 
   it("is imported for the fixed-length function alone", () => {
-    const text = readFileSync(join(SOURCE, HASH_MODULE), "utf8");
+    const text = sourceOf(HASH_MODULE);
     const found = /import \{([^}]*)\} from "@zkpassport\/poseidon2";/.exec(text);
     if (found === null) {
       throw new Error("the hash module holds no import of the library");
@@ -47,7 +39,7 @@ describe("the hash library has one call site", () => {
   });
 
   it("exports one function, so no caller chooses a mode", () => {
-    const text = readFileSync(join(SOURCE, HASH_MODULE), "utf8");
+    const text = sourceOf(HASH_MODULE);
     const exported = [...text.matchAll(/^export (?:function|const|class) (\w+)/gm)].map(
       (match) => match[1],
     );
