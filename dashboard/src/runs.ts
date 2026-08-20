@@ -1,0 +1,229 @@
+/**
+ * The record of an attestation run, which takes minutes.
+ *
+ * Three properties decide the shape here.
+ *
+ * A run is a resource with an identity. A submission starts the run and then
+ * redirects to that resource, so the page that shows progress is a plain read.
+ * A reload of it repeats a read and starts nothing, and the browser needs no
+ * script to follow a run.
+ *
+ * One process holds at most one open run. Two runs cannot proceed together for
+ * three separate reasons: the prover needs more memory than two copies of it
+ * fit in, the proving driver writes the witness files of a run at fixed paths
+ * that a second run would overwrite, and two attestations of one asset race for
+ * the same window. A second submission therefore starts nothing and joins the
+ * open run.
+ *
+ * The store holds no secret. The master secret and the authority key stay in
+ * the environment of the process, and the work function reads each one at the
+ * moment it needs it.
+ */
+
+import { randomUUID } from "node:crypto";
+import type { ProgressReporter } from "@zkpor/sdk";
+import { MAX_REMEMBERED_RUNS } from "./constants.js";
+
+/** What a run does. A proof stops at the proof, and an attestation submits it. */
+export type RunAction = "prove" | "attest";
+
+/** Where a run stands. */
+export type RunStage = "running" | "finished" | "failed";
+
+/** What one proving run produced. The proof bytes stay out, because no page shows them. */
+export interface ProofSummary {
+  readonly proofBytes: number;
+  readonly finalRoot: bigint;
+  readonly totalLiabilities: bigint;
+  readonly contextHash: bigint;
+}
+
+/** The record that the network accepted one attestation. */
+export interface Submission {
+  readonly ledger: number;
+  readonly transactionHash: string;
+}
+
+/**
+ * Whether the snapshot of a run could still be attested when the run ended.
+ *
+ * A proof takes minutes and the window is finite, so a run that proves
+ * correctly can finish with a snapshot that can no longer land. The statement
+ * names the ledger it read, because it is true at that ledger and at no other.
+ */
+export interface WindowAtEnd {
+  readonly currentLedger: number;
+  readonly stillOpen: boolean;
+}
+
+/** What the work of a run produced. */
+export interface RunOutcome {
+  readonly proof: ProofSummary;
+  readonly submission: Submission | undefined;
+  readonly window: WindowAtEnd | undefined;
+}
+
+/**
+ * The work of one run.
+ *
+ * The work reports its steps, and it records the proof and the reading of the
+ * window as soon as each one exists. The records matter because the submission
+ * can fail after a correct proof, and the issuer must still see what that proof
+ * committed to and whether the snapshot could still land.
+ */
+export type RunWork = (
+  report: ProgressReporter,
+  recordProof: (proof: ProofSummary) => void,
+  recordWindow: (window: WindowAtEnd) => void,
+) => Promise<RunOutcome>;
+
+/** One run, as a page shows it. */
+export interface Run {
+  readonly id: string;
+  readonly action: RunAction;
+  readonly asset: string;
+  readonly snapshotLedger: number;
+  readonly stage: RunStage;
+  readonly steps: readonly string[];
+  /**
+   * What the proof committed to, once the proof exists.
+   *
+   * A failed run keeps this. A run that proved correctly and then missed the
+   * window must still show the root, the total, and the context hash.
+   */
+  readonly proof: ProofSummary | undefined;
+  readonly submission: Submission | undefined;
+  readonly window: WindowAtEnd | undefined;
+  /** The reason the run failed. It never carries a secret, because no message here holds one. */
+  readonly failure: string | undefined;
+}
+
+/** What one submission did. */
+export interface StartResult {
+  readonly run: Run;
+  /** False when a run was already open, so this submission started nothing. */
+  readonly started: boolean;
+}
+
+/** What a caller states about a run before the work begins. */
+export interface RunRequest {
+  readonly action: RunAction;
+  readonly asset: string;
+  readonly snapshotLedger: number;
+  readonly work: RunWork;
+}
+
+/** The runs of one process. */
+export class RunStore {
+  private readonly runs = new Map<string, Run>();
+  private openRunId: string | undefined;
+
+  /** The open run, when one is open. */
+  open(): Run | undefined {
+    if (this.openRunId === undefined) {
+      return undefined;
+    }
+    return this.runs.get(this.openRunId);
+  }
+
+  /** One run by its identity. */
+  get(id: string): Run | undefined {
+    return this.runs.get(id);
+  }
+
+  /**
+   * Starts a run, or joins the run that is already open.
+   *
+   * The check of the open run and the record of the new one both happen before
+   * this function awaits anything, so a second submission that arrives while
+   * the first one is in flight sees the run that the first one recorded. The
+   * work begins after that, and the caller does not wait for it.
+   */
+  startOrJoin(request: RunRequest): StartResult {
+    if (this.openRunId !== undefined) {
+      const already = this.runs.get(this.openRunId);
+      if (already === undefined) {
+        // The store forgets no open run and the work always clears the
+        // identity, so this state is a defect of this module. Starting a
+        // second prover on that guess is the one outcome to avoid, so the
+        // submission stops instead.
+        throw new Error("this process lost the record of the run that is open");
+      }
+      return { run: already, started: false };
+    }
+    const run: Run = {
+      id: randomUUID(),
+      action: request.action,
+      asset: request.asset,
+      snapshotLedger: request.snapshotLedger,
+      stage: "running",
+      steps: [],
+      proof: undefined,
+      submission: undefined,
+      window: undefined,
+      failure: undefined,
+    };
+    this.forget();
+    this.runs.set(run.id, run);
+    this.openRunId = run.id;
+    void this.perform(run.id, request.work);
+    return { run, started: true };
+  }
+
+  private async perform(id: string, work: RunWork): Promise<void> {
+    try {
+      const outcome = await work(
+        (step) => {
+          this.change(id, (run) => ({ ...run, steps: [...run.steps, step] }));
+        },
+        (proof) => {
+          this.change(id, (run) => ({ ...run, proof }));
+        },
+        (window) => {
+          this.change(id, (run) => ({ ...run, window }));
+        },
+      );
+      this.change(id, (run) => ({
+        ...run,
+        stage: "finished",
+        proof: outcome.proof,
+        submission: outcome.submission,
+        window: outcome.window,
+      }));
+    } catch (cause) {
+      const failure =
+        cause instanceof Error ? cause.message : "the run failed for a reason it cannot describe";
+      // The spread keeps the proof that the work already recorded. A submission
+      // that failed after a correct proof must not take the root away.
+      this.change(id, (run) => ({ ...run, stage: "failed", failure }));
+    } finally {
+      if (this.openRunId === id) {
+        this.openRunId = undefined;
+      }
+    }
+  }
+
+  private change(id: string, next: (run: Run) => Run): void {
+    const run = this.runs.get(id);
+    if (run === undefined) {
+      return;
+    }
+    this.runs.set(id, next(run));
+  }
+
+  /**
+   * Drops the oldest run that is no longer open, when the store is full.
+   *
+   * A map keeps the order in which it received its keys, so the first entry
+   * that is not the open run is the oldest one.
+   */
+  private forget(): void {
+    while (this.runs.size >= MAX_REMEMBERED_RUNS) {
+      const oldest = [...this.runs.keys()].find((id) => id !== this.openRunId);
+      if (oldest === undefined) {
+        return;
+      }
+      this.runs.delete(oldest);
+    }
+  }
+}

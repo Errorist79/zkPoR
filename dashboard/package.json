@@ -1,0 +1,34 @@
+{
+  "name": "@zkpor/dashboard",
+  "version": "0.1.0",
+  "description": "The local issuer dashboard for the zkPoR registry. It serves the loopback address only and it holds no cryptographic definition of its own.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "zkpor-dashboard": "./dist/main.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "start": "node dist/main.js",
+    "pretest": "npm run build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@zkpor/sdk": "0.1.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "tsup": "8.5.1",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  },
+  "engines": {
+    "node": ">=22 <23"
+  }
+}
