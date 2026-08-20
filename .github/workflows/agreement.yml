@@ -171,6 +171,20 @@ jobs:
             exit 1
           fi
 
+      # The steps below name each workspace, so a reader sees what runs. A
+      # workspace that no step reaches would pass this job by not running, which
+      # is the failure the crate check above exists to prevent. This step states
+      # the same rule for the Node workspaces.
+      - name: Check that every Node workspace has a test run
+        run: |
+          set -euo pipefail
+          declared=$(node -p "require('./package.json').workspaces.slice().sort().join(' ')")
+          covered="dashboard sdk"
+          if [ "$declared" != "$covered" ]; then
+            echo "package.json declares the workspaces [$declared] and this job runs [$covered]"
+            exit 1
+          fi
+
       - name: Typecheck the client library
         run: npm run typecheck --workspace sdk
 
@@ -185,5 +199,19 @@ jobs:
       - name: Test the client library
         run: npm test --workspace sdk
 
+      # The dashboard reads the built library, so it follows the build above.
       - name: Build the client library
         run: npm run build --workspace sdk
+
+      - name: Typecheck the dashboard
+        run: npm run typecheck --workspace dashboard
+
+      # The dashboard tests state the properties that its design rests on: that
+      # no page reaches a remote host, that the two reserve numbers cannot be
+      # confused, that a stale attestation reads as stale, and that the
+      # inclusion page reaches the verdict the command line reaches.
+      - name: Test the dashboard
+        run: npm test --workspace dashboard
+
+      - name: Build the dashboard
+        run: npm run build --workspace dashboard

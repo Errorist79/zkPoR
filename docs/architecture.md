@@ -151,9 +151,13 @@ Components:
    verifier, which yugocabrio wrote. The deploy step sets the VK.
 4. **Asset Registry contract.** It reads the balances of the reserve addresses of
    the issuer on Stellar and computes the total assets (A).
-5. **Issuer dashboard and customer view.** The issuer uploads the balances,
-   generates a proof, submits it, and sees the status. The customer verifies
-   their own inclusion.
+5. **Issuer dashboard and customer view.** A local process on a machine the
+   issuer controls (`dashboard/`). It serves the loopback address only. The
+   issuer names the path of the balance file, and the process proves and
+   submits in its own process and shows the status. The customer verifies their
+   own inclusion on the same interface. The browser is the display, and the
+   page carries no script. No project-operated service receives a raw balance, a
+   salt, a path, a witness, or a key.
 6. **TypeScript SDK.** A library that wraps the proof generation flow and the
    verification flow, for other teams to integrate.
 
@@ -484,9 +488,14 @@ aggregator, and the project validated it on the real Protocol 27 testnet.
 
 **Inclusion, asset side, and dashboard.** The customer inclusion flow. The Asset
 Registry contract with the reserve total and the ownership check. The issuer
-dashboard: upload the balances, generate a proof, submit it, see the status.
+dashboard: name the balance file, generate a proof, submit it, see the status.
 Output: the dashboard generates and submits a proof, and a customer verifies
-their own inclusion.
+their own inclusion. Status: written and tested, with no testnet run that covers
+it. The dashboard runs the proof in its own process on the issuer's machine, and
+it serves the loopback address only. Its tests and the tests of the client
+library run in the agreement job. A test is not a network run, so neither
+carries testnet evidence today, and `README.md` records that in its status
+section.
 
 **Solvency, packaging, and delivery.** The solvency comparison proof. At least
 two scenarios: a stablecoin issuer and a tokenized fund. Decide and implement the

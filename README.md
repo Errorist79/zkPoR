@@ -18,7 +18,11 @@ on-chain validation.
 Three stages of work meet in this repository, and this section separates
 them. The first stage is superseded, with on-chain evidence that a reader
 can check. The second stage is the current artifact, and confirmed testnet
-transactions cover it. The third stage is not implemented.
+transactions cover it. The third stage is written and tested, and no testnet
+run covers it yet.
+
+Each heading below states the evidence that covers the work under it. Do not
+read the transaction hashes of one heading as evidence for another.
 
 Superseded (on-chain evidence dated June 27, 2026):
 
@@ -93,12 +97,22 @@ Current artifact (validated on the Protocol 27 testnet on August 8, 2026):
   deflated proof, an unsalted-leaf proof, and a foreign context rejected
   (`tools/gate/`). A localnet result is not testnet evidence.
 
-Under construction (specified in [`docs/protocol.md`](docs/protocol.md), not
-implemented):
+Written and tested, with no testnet run that covers it:
 
 - The TypeScript SDK, which writes and checks a package from the same
-  specification.
-- The issuer dashboard.
+  specification ([`sdk/README.md`](sdk/README.md)). A run on August 17, 2026
+  exercised every path of the package that needs a network. That run
+  provisioned its own disposable asset, and `sdk/README.md` states that it is
+  not evidence for the artifact above.
+- The issuer dashboard, a local process that serves the loopback address only
+  ([`dashboard/README.md`](dashboard/README.md)). It shows the solvency result
+  of one asset, it runs the proof and the attestation in its own process, and it
+  checks a customer package. It holds no cryptographic definition of its own.
+  It has never run against the test network.
+
+Both items hold their own tests, and the agreement job runs them. A test is not
+a network run, so neither item carries testnet evidence today. The testnet
+revalidation of the final artifact will cover them.
 
 ## How it works
 
