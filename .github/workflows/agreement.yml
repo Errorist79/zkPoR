@@ -161,6 +161,11 @@ jobs:
             exit 1
           fi
 
+      - name: Check every pinned dependency against versions.env
+        run: |
+          set -euo pipefail
+          python3 scripts/check_pins.py
+
       - name: Test the Noir packages
         run: |
           set -euo pipefail

@@ -168,11 +168,21 @@ docs/architecture.md  system design
 They are not the only place these numbers live. The Cargo manifests, the Nargo
 manifests, and the table below each carry a copy, and every copy agrees today.
 
-The agreement job compares three of them with `scripts/versions.env`: the Rust
-compiler, `nargo`, and the JavaScript client library against
-`sdk/package.json`. It compares no other. A drift in `bb`, in `soroban-sdk`, in
-`soroban-poseidon`, or in either Noir tag fails no job, so a person who changes
-one of those numbers changes it in every file that holds it.
+The agreement job compares them with `scripts/versions.env`. Three are compared
+directly: the Rust compiler, `nargo`, and the JavaScript client library against
+`sdk/package.json`. The dependencies of the Rust and Noir manifests are compared
+by `scripts/check_pins.py`, which reads the git index rather than the directory,
+so a scratch manifest that somebody left in the tree is not read as a rule.
+
+That check carries a list of which manifests may name which dependency. A
+manifest that names one it does not list fails, so a crate cannot start
+depending on the Soroban library without somebody reading the pinned version.
+Absence is not a failure, because most manifests legitimately name most of these
+nowhere.
+
+`bb` is compared by neither job and does not need to be. Every proving run
+compares the installed `bb` with the pin before it proves, and refuses to prove
+on a drift, so the tool is checked wherever it is actually used.
 
 | Component | Version | Notes |
 |---|---|---|
