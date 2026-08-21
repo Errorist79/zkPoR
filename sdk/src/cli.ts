@@ -318,6 +318,7 @@ async function commandHistory(args: readonly string[]): Promise<CommandResult> {
   const lines: string[] = [
     `This answer covers the ${generations.length} recorded generations of ${config.network}, over the ledgers that the endpoint still retains. It is not the whole history of the asset.`,
   ];
+  const silent: string[] = [];
   for (const generation of generations) {
     let history;
     try {
@@ -332,6 +333,18 @@ async function commandHistory(args: readonly string[]): Promise<CommandResult> {
         `the registry ${generation.registry} did not answer the attestation query, so this result would not say whether it holds earlier attestations: ${cause instanceof Error ? cause.message : String(cause)}`,
         EXIT_NO_VERDICT,
       );
+    }
+    // A generation that read its whole range and holds nothing reports a
+    // settled absence, and it goes to one line at the end. A generation that
+    // could not cover its range reports that it does not know, which is not the
+    // same answer and does not get the same room.
+    const settled =
+      history.attestations.length === 0 &&
+      history.coversTheWholeRange &&
+      !history.reachesTheRetentionLimit;
+    if (settled) {
+      silent.push(generation.registry);
+      continue;
     }
     lines.push(
       `The registry ${generation.registry}:`,
@@ -355,6 +368,11 @@ async function commandHistory(args: readonly string[]): Promise<CommandResult> {
         `  Ledger ${attestation.ledger}: snapshot ${attestation.snapshotLedger}, liabilities ${attestation.totalLiabilities.toString(10)}, reserves ${attestation.reserveSum.toString(10)}, transaction ${attestation.transactionHash}.`,
       );
     }
+  }
+  if (silent.length > 0) {
+    lines.push(
+      `These registries were asked and hold no attestation of the asset in that range: ${silent.join(", ")}.`,
+    );
   }
   return { lines };
 }

@@ -141,14 +141,56 @@ function History(input: { history: HistoryView | undefined }) {
         This section covers the {input.history.blocks.length} recorded generations of this network,
         over the ledgers that the endpoint still retains. It is not the whole history of this asset.
       </p>
-      {input.history.blocks.map((block) => (
+      {input.history.blocks.filter(answered).map((block) => (
         <HistoryOfRegistry key={block.registry} block={block} />
       ))}
+      <SilentRegistries blocks={input.history.blocks.filter((block) => !answered(block))} />
       <p className="limit">
         Weigh the record of repeated attestations over any single one. A single attestation proves
         the balances at one ledger that the authority chose.
       </p>
     </section>
+  );
+}
+
+/**
+ * True when a block earns its own place on the page.
+ *
+ * A block with an attestation does. So does an empty block whose emptiness is
+ * not established, because a query that could not cover its range reports that
+ * it does not know rather than that there is nothing, and the two must not look
+ * alike.
+ *
+ * An empty block that read its whole range holds a settled nothing. It goes to
+ * one line with the others, because a heading naming a registry gives an empty
+ * answer the weight of a real one, and a reader can take it for evidence of
+ * some relation between that registry and this asset.
+ */
+function answered(block: HistoryBlock): boolean {
+  return block.entries.length > 0 || !block.coversTheWholeRange || block.reachesTheRetentionLimit;
+}
+
+/**
+ * The generations that were asked and held nothing.
+ *
+ * The line names every one of them, so a reader counts the generations here
+ * against the count in the scope statement above and finds them all.
+ */
+function SilentRegistries(input: { blocks: readonly HistoryBlock[] }) {
+  if (input.blocks.length === 0) {
+    return null;
+  }
+  return (
+    <p>
+      These registries were asked and hold no attestation of this asset in that range:{" "}
+      {input.blocks.map((block, position) => (
+        <span key={block.registry}>
+          {position > 0 ? ", " : ""}
+          <span className="address">{block.registry}</span>
+        </span>
+      ))}
+      .
+    </p>
   );
 }
 
