@@ -40,9 +40,14 @@ failure, including an infrastructure error.
 - `forged` (a foreign inner proof under the pinned VK array): on-chain REJECT.
 - `deflated` (a foreign inner proof without the range check, balance -100):
   on-chain REJECT.
+- `staleleaf` (a batch proof from a circuit that keeps the old two-input leaf
+  and ignores the salt, placed in slot 0 under the pinned VK array): on-chain
+  REJECT. Its total is honest and its proof verifies under its own circuit, so
+  nothing about the numbers gives it away. The pinned inner key hash is what
+  rejects it, which makes this the case that covers the salted leaf.
 
 A green run means that the deployed verifier accepts the honest case and rejects
-all three attacks.
+all four attacks.
 
 ## Running locally
 

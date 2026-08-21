@@ -198,6 +198,61 @@ A green soundness-gate run prints `SOUNDNESS-GATE PASS`. That gate also runs in
 CI on a self-hosted runner. The registry gate runs on demand, and no CI job
 covers it. See [`tools/gate/README.md`](tools/gate/README.md).
 
+## Deploy, and show what was deployed
+
+Two contracts go on a network, in this order. The registry constructor asks the
+verifier for its verification key and refuses unless that key hashes to the
+value the registry build expects, so the verifier goes first.
+
+```bash
+export STELLAR_NETWORK_NAME=testnet
+
+# 1. The verifier, with the release key that the manifest records.
+bash scripts/deploy.sh
+
+# 2. The registry, against that verifier.
+bash scripts/deploy_registry.sh
+
+# 3. Later, from any clone: does the network still run what this tree builds?
+bash scripts/check_deployment.sh
+```
+
+Each deploy reads back the wasm that the network runs and compares it with the
+wasm it just built, so the command states the result rather than assuming it. It
+writes the contract id and that hash side by side, and it prints the record to
+add to [`scripts/deployments.json`](scripts/deployments.json).
+
+Step 3 needs no argument beyond the network. It reads the current generation
+from the deployments file, rebuilds both contracts, and reads back what the
+network runs. A mismatch there says that nobody can rebuild what the network
+runs. It does not say that what the network runs is wrong.
+
+Each record in the deployments file states the wasm hash of both contracts it
+names, so what follows is checkable rather than remembered.
+
+The documented build reproduces both contracts of generation 3, which is the
+first generation deployed through the path above. It reproduces the verifier of
+generations 1 and 2, and the registry of neither of those two.
+
+How those two registries were built is not established. Each is 65,185 bytes
+where the command above produces 33,364, and no candidate accounts for it: the
+documented command, the same command without its optimize pass, a plain cargo
+release build and a debug build produce 33,364, 38,309, 38,224 and 4,332,126
+bytes. Building at the revision where the registry source last changed produces
+the same wasm as building at the tip.
+
+The two are 65,185 bytes each and their contents differ, so whatever produced
+them was a procedure that stayed the same across two deployments rather than a
+single accident. A reader who finds that procedure closes this.
+
+That is a reproducibility gap and not a behaviour gap, and two measurements say
+so. The deployed registry and a fresh build declare the same interface and
+export the same six functions. `overflow-checks` is on in the release profile of
+this workspace and on by default in a debug build, so the arithmetic guards hold
+under every candidate above. Nobody can rebuild what those two contracts run,
+which is the reason to deploy again through the path above rather than a reason
+to distrust the answers they give.
+
 ## Continuous integration
 
 Two jobs run, and they prove different things.

@@ -15,7 +15,7 @@ echo -e "${BLUE}1. Checking the release artifact against the manifest...${NC}"
   echo -e "${RED}no manifest at $MANIFEST_FILE: this tree holds no release artifact${NC}"; exit 1; }
 [ -f "$RELEASE_KEY" ] || {
   echo -e "${RED}no verification key at $RELEASE_KEY${NC}"; exit 1; }
-KEY_SHA256=$(python3 -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$RELEASE_KEY")
+KEY_SHA256=$(file_sha256 "$RELEASE_KEY")
 [ "$KEY_SHA256" = "$(manifest_field aggregator_key_sha256)" ] || {
   echo -e "${RED}the key to deploy is not the key the manifest records${NC}"; exit 1; }
 [ "$(wc -c < "$RELEASE_KEY")" -eq "$(manifest_field aggregator_key_bytes)" ] || {

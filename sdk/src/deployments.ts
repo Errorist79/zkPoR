@@ -18,6 +18,15 @@ export interface Generation {
   readonly registry: string;
   readonly verifier: string;
   readonly aggregatorKeySha256: string;
+  /**
+   * The sha256 of the wasm that each deployed contract runs.
+   *
+   * The network states this hash for a contract, so a reader compares it with a
+   * rebuild and needs nobody's word. A record that carried no hash left a reader
+   * with an address and no way to ask what runs at it.
+   */
+  readonly registryWasmSha256: string;
+  readonly verifierWasmSha256: string;
   readonly treeDepth: number;
 }
 
@@ -83,6 +92,8 @@ export function parseDeployments(text: string): Generation[] {
       registry: stringField(fields, "registry", position),
       verifier: stringField(fields, "verifier", position),
       aggregatorKeySha256: stringField(fields, "aggregator_key_sha256", position),
+      registryWasmSha256: stringField(fields, "registry_wasm_sha256", position),
+      verifierWasmSha256: stringField(fields, "verifier_wasm_sha256", position),
       treeDepth,
     };
   });

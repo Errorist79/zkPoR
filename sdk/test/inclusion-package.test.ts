@@ -177,6 +177,8 @@ describe("the deployments file", () => {
       verifier: "CDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
       aggregator_key_sha256: "e0",
       tree_depth: depth,
+      registry_wasm_sha256: "a1",
+      verifier_wasm_sha256: "b2",
     });
 
   it("reads every record", () => {
@@ -208,6 +210,19 @@ describe("the deployments file", () => {
     expect(() =>
       parseDeployments('[{"network":"testnet","registry":"C","verifier":"C","aggregator_key_sha256":"e0"}]'),
     ).toThrow(UnreadableDeploymentsError);
+  });
+
+  it("refuses a record that states no wasm for what it names", () => {
+    // A record with an address and no hash leaves a reader unable to ask what
+    // runs at that address, which is the state every record was in before.
+    const without = JSON.stringify({
+      network: "testnet",
+      registry: REGISTRY,
+      verifier: "CDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+      aggregator_key_sha256: "e0",
+      tree_depth: 12,
+    });
+    expect(() => parseDeployments(`[${without}]`)).toThrow(UnreadableDeploymentsError);
   });
 
   it("refuses a file that is not a list", () => {

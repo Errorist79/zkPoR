@@ -130,8 +130,24 @@ describe("the page and the command line, on one package", () => {
 
   it("reports a deployments file that contradicts itself as its own outcome", async () => {
     const twice = JSON.stringify([
-      { network: "testnet", registry: REGISTRY, verifier: REGISTRY, aggregator_key_sha256: "aa", tree_depth: 12 },
-      { network: "testnet", registry: REGISTRY, verifier: REGISTRY, aggregator_key_sha256: "bb", tree_depth: 12 },
+      {
+        network: "testnet",
+        registry: REGISTRY,
+        verifier: REGISTRY,
+        aggregator_key_sha256: "aa",
+        tree_depth: 12,
+        registry_wasm_sha256: "a1",
+        verifier_wasm_sha256: "b2",
+      },
+      {
+        network: "testnet",
+        registry: REGISTRY,
+        verifier: REGISTRY,
+        aggregator_key_sha256: "bb",
+        tree_depth: 12,
+        registry_wasm_sha256: "a1",
+        verifier_wasm_sha256: "b2",
+      },
     ]);
     const answered = await check(writePackage({}), twice);
     const verdict = textOf(sectionOf(answered.body, SECTION_IDS.verdict));
