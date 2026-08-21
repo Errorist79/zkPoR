@@ -315,10 +315,12 @@ async function commandHistory(args: readonly string[]): Promise<CommandResult> {
   // The blocks below could read as the whole history of the asset by their
   // arrangement alone, and they are not. They are what these generations hold
   // inside the window the endpoint keeps.
-  const lines: string[] = [
-    `This answer covers the ${generations.length} recorded generations of ${config.network}, over the ledgers that the endpoint still retains. It is not the whole history of the asset.`,
-  ];
+  const lines: string[] = [];
   const silent: string[] = [];
+  // The oldest ledger the endpoint still holds. A reader who cannot see this
+  // boundary cannot tell a history that is empty from one that is out of reach,
+  // and that is the distinction the whole answer rests on.
+  let oldestRetained: number | undefined;
   for (const generation of generations) {
     let history;
     try {
@@ -338,6 +340,7 @@ async function commandHistory(args: readonly string[]): Promise<CommandResult> {
     // settled absence, and it goes to one line at the end. A generation that
     // could not cover its range reports that it does not know, which is not the
     // same answer and does not get the same room.
+    oldestRetained = history.oldestLedgerRetained;
     const settled =
       history.attestations.length === 0 &&
       history.coversTheWholeRange &&
@@ -374,6 +377,12 @@ async function commandHistory(args: readonly string[]): Promise<CommandResult> {
       `These registries were asked and hold no attestation of the asset in that range: ${silent.join(", ")}.`,
     );
   }
+  // The count comes from the recorded generations and not from the blocks that
+  // printed, because a generation that held nothing is still a generation this
+  // answer covered.
+  lines.unshift(
+    `This answer covers the ${generations.length} recorded generations of ${config.network}. The endpoint retains the ledgers from ${oldestRetained === undefined ? "an unknown ledger" : String(oldestRetained)}, and it holds nothing before that, so this is not the whole history of the asset.`,
+  );
   return { lines };
 }
 

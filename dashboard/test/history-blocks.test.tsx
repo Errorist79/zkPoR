@@ -78,6 +78,14 @@ describe("the room that an empty answer takes", () => {
     expect(hasBlock(markup, UNSURE)).toBe(true);
   });
 
+  it("names the oldest ledger the endpoint still holds", () => {
+    // Without the boundary a reader cannot tell a history that is empty from
+    // one that is out of reach, which is the distinction the whole answer rests
+    // on.
+    const markup = pageOf([historyBlock({ registry: HOLDER, oldestLedgerRetained: 4_144_112 })]);
+    expect(markup).toContain("retains the ledgers from 4144112");
+  });
+
   it("names every collapsed generation, so the count still adds up", () => {
     // The scope line above states how many generations the section covers. A
     // reader counts the blocks and this line together and finds all of them.

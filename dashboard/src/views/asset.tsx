@@ -138,8 +138,9 @@ function History(input: { history: HistoryView | undefined }) {
     <section id={SECTION_IDS.history}>
       <h2>Earlier attestations</h2>
       <p className="limit">
-        This section covers the {input.history.blocks.length} recorded generations of this network,
-        over the ledgers that the endpoint still retains. It is not the whole history of this asset.
+        This section covers the {input.history.blocks.length} recorded generations of this network.
+        The endpoint retains the ledgers from {retainedFrom(input.history.blocks)}, and it holds
+        nothing before that, so this is not the whole history of this asset.
       </p>
       {input.history.blocks.filter(answered).map((block) => (
         <HistoryOfRegistry key={block.registry} block={block} />
@@ -151,6 +152,18 @@ function History(input: { history: HistoryView | undefined }) {
       </p>
     </section>
   );
+}
+
+/**
+ * The oldest ledger the endpoint still holds, as the blocks report it.
+ *
+ * A reader who cannot see this boundary cannot tell a history that is empty
+ * from one that is out of reach, and every block of one answer reads the same
+ * endpoint.
+ */
+function retainedFrom(blocks: readonly HistoryBlock[]): string {
+  const first = blocks[0];
+  return first === undefined ? "an unknown ledger" : String(first.oldestLedgerRetained);
 }
 
 /**
