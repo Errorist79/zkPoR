@@ -1,0 +1,42 @@
+Captured on 2026-08-22, from the client at commit 40c6037, against testnet.
+This file shows what that client printed. A client at another commit may
+print something else, so a reader who finds this file behind the current
+sources should run the commands again rather than trust the lines below.
+
+The customer inclusion check, when it holds and when it fails
+
+A customer package names one balance, the salt of that leaf, and the path from
+the leaf to the root. The check recomputes the root from those values and
+compares it with the root that the registry attests.
+
+The first check reads a package that the attestation run produced. The second
+reads a copy of the same package with one digit changed in the balance. The
+recomputed root then differs from the attested root, and the check answers
+root-mismatch with the exit code 7.
+
+The exit code is the verdict. 0 is included and 7 is a root that does not match.
+Both commands read. Neither one sends a transaction.
+
+How to read this file. A line that starts with `$` is a command, and every line
+under it is what that command printed. A line that starts with `note:` is this
+file speaking and no command printed it.
+
+$ zkpor verify-inclusion <package> scripts/deployments.json
+The leaf is under the attested root.
+The asset is CBSQOEUZDBCKO4NYNRJJSPOLEIXVWZZ66CZXWRSVUNZTNZK7IKHNNRY3.
+The package names the registry CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG, and this check read that registry.
+The leaf index is 0, and the balance is 25000000.
+The snapshot ledger is 4265529, and the registry read the reserves at ledger 4265537.
+The total liabilities under the root are 100000000000.
+The reserves at the attestation, at ledger 4265537, were 150000000000.
+The solvency claim is current at ledger 4265544.
+exit 0
+note: the copy raises the balance by one unit, from 25000000 to 25000001.
+
+$ zkpor verify-inclusion <the altered copy> scripts/deployments.json
+The recomputed root does not equal the attested root.
+The recomputed root is 0x0c345420242378ec073552eed90dc2ee04751b074e5373c2f311b4465c8fbf3a.
+The attested root is 0x1b4466b9c18a252d56de710d81ec101716e1e1e7e09c05456ef289a85ee48886.
+A wrong balance, a wrong salt, and a tampered path are the same result from here.
+Obtain the package again from the authority before you conclude anything.
+exit 7

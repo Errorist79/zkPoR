@@ -1,0 +1,41 @@
+Captured on 2026-08-22, from the client at commit 40c6037, against testnet.
+This file shows what that client printed. A client at another commit may
+print something else, so a reader who finds this file behind the current
+sources should run the commands again rather than trust the lines below.
+
+A refusal that a reader with no account and no key can run
+
+This project publishes commands rather than transaction hashes for the checks a
+reader makes. That only holds when a reader can run one. Neither command below
+needs an account, funding, or a key. Both are simulations, so neither sends a
+transaction.
+
+The asset is the contract of the native asset, which nobody registered.
+
+The first command asks one registry directly, with a bare address as the source.
+The registry answers error 7, AssetNotRegistered. The line that matters is the
+diagnostic event: it names the contract that answered, so a reader sees that the
+refusal came from the registry on the network and not from a check inside a
+client.
+
+The second command asks through the client of this project. The client does not
+stop at one registry. It asks every generation that the deployments file
+records, newest first, and reports that none of them holds the asset, naming the
+ones it asked.
+
+How to read this file. A line that starts with `$` is a command, and every line
+under it is what that command printed. A line that starts with `note:` is this
+file speaking and no command printed it.
+
+$ stellar contract invoke --id CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG --source-account GDV6PLWPYPPTB2HLCI5TAJPEXD6UY3NTLGI5R3GHOQ4ZYMZ4VCSFL5WI \
+    --network testnet --send=no -- observe_reserves --asset CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC
+❌ error: transaction simulation failed: HostError: Error(Contract, #7)
+
+Event log (newest first):
+   0: [Diagnostic Event] contract:CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG, topics:[error, Error(Contract, #7)], data:"escalating Ok(ScErrorType::Contract) frame-exit to Err"
+   1: [Diagnostic Event] topics:[fn_call, CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG, observe_reserves], data:CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC
+
+
+$ ZKPOR_READ_SOURCE=GDV6PLWPYPPTB2HLCI5TAJPEXD6UY3NTLGI5R3GHOQ4ZYMZ4VCSFL5WI zkpor observe-reserves CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC
+No recorded generation holds the asset CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC. This client asked CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG, CCHUTDKUPWXVUIX6D26SE5NZ5STP74VV4DY2CNVCMNJYOU5PTROLA7MY, CC4MA6FWDBG3Y4YXYGDHYEZ36O3YSP7DREGOLBWKP6ZTQQ6IYFFX3KQK.
+exit 8

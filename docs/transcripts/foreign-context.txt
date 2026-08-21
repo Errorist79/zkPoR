@@ -1,0 +1,48 @@
+Written on 2026-08-22, against testnet, beside the client at commit 40c6037.
+This file records what the chain holds. It shows no command output, so the
+commit names the client that was current when it was written and not a
+program that produced these lines.
+
+A proof under a foreign context, and the same proof under its own
+
+The two results below come from the same proof bytes. Only the snapshot ledger
+under which the proof was submitted differs. The first submission names a
+snapshot the proof does not commit to, and the registry refuses it. The second
+names the snapshot the proof was made for, and the registry accepts it.
+
+The pair is the evidence that the registry binds a proof to its context. A
+verifier that checked the proof alone would accept both.
+
+This file shows no command and no command output. It records what two runs
+produced, and a reader checks it against the network with the transaction hash
+below.
+
+  The refusal
+    proven at snapshot      4262018
+    submitted under         4262017
+    the two are one ledger apart
+    the foreign snapshot was inside its window, which closed at ledger 4262737
+    the network stood at    4262032
+    result                  Error(Contract, #16), ProofRejected
+    transactions signed     0
+    transaction hash        none, and the reason follows
+
+  The control
+    proven at snapshot      4262018
+    submitted under         4262018
+    result                  accepted
+    accepted at ledger      4262033
+    transaction hash        c3145c1cb9c183f797f2ab046f09ecbf17919db0c00f92dc8624aadc63182e7d
+
+The refusal carries no transaction hash, and that is not a gap in the record. A
+registry refusal fails while the client simulates the call, so the client sends
+nothing and the network writes nothing. This holds for every refusal that this
+project records. A reader who wants a hash for a refusal is asking for a
+transaction that a correct client never sends.
+
+The refusal was not reproduced for this file. It stands on the run that produced
+it, and reproducing it would add a second refusal that no reader can check any
+better than the first, because it too would leave no hash.
+
+The control was confirmed on the network for this file. The endpoint answers
+SUCCESS for that transaction at ledger 4262033.
