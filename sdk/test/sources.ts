@@ -79,6 +79,7 @@ export const BUILT_INS: readonly string[] = [
   "node:child_process",
   "node:fs",
   "node:fs/promises",
+  "node:os",
   "node:path",
   "node:util",
 ];

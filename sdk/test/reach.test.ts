@@ -97,6 +97,7 @@ const PERMITTED: readonly { module: string; why: string }[] = [
   { module: "node:child_process", why: "starts the pinned tools of a proving run" },
   { module: "node:fs", why: "reads and removes the files of a run without waiting" },
   { module: "node:fs/promises", why: "reads and writes the files of a run" },
+  { module: "node:os", why: "names the directory that holds a scratch file of a run" },
   { module: "node:path", why: "builds the paths of the repository" },
   { module: "node:util", why: "gives the version check a promise to await" },
 ];
@@ -214,6 +215,11 @@ const FILE_SYSTEM: readonly { entry: string; modules: readonly string[]; why: st
     why: "puts the prover input of one batch where the prover reads it",
   },
   { entry: "mkdir", modules: ["proving.ts"], why: "makes the output directory of a batch" },
+  {
+    entry: "mkdtemp",
+    modules: ["proving.ts"],
+    why: "makes the scratch directory that the generator writes its answer into",
+  },
   { entry: "rm", modules: ["proving.ts", "witnesses.ts"], why: "removes what a run leaves" },
   { entry: "rmSync", modules: ["witnesses.ts"], why: "removes what a run leaves, on the way out" },
   { entry: "unlinkSync", modules: ["runlock.ts"], why: "gives the lock back" },

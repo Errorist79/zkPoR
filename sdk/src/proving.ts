@@ -19,7 +19,8 @@
  */
 
 import { spawn } from "node:child_process";
-import { copyFile, mkdir, readFile, rm } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   ATTESTATION_MAX_AGE_LEDGERS,
@@ -472,6 +473,10 @@ export async function prove(input: {
  * Each file carries one balance in clear text. The files are the copy of the
  * customer and not the working material of a run, so they land outside the
  * repository and the sweep of the run lifecycle never reaches them.
+ *
+ * Returns the directory that holds the files. The generator adds the asset and
+ * the snapshot below the directory this call names, so the answer is not the
+ * directory the caller asked for, and only the generator knows those levels.
  */
 export async function writeCustomerPackages(input: {
   repository: string;
@@ -486,7 +491,13 @@ export async function writeCustomerPackages(input: {
   transactionHash: string;
   deploymentsFile: string;
 }): Promise<string> {
-  return await runTool(
+  // The generator names the directory it filled, and it names it in a file that
+  // this process chooses. It also prints the directory for an operator who
+  // watches a run, and a caller that read that sentence would turn it into an
+  // interface that neither side could change.
+  const scratch = await mkdtemp(join(tmpdir(), "zkpor-packages-"));
+  const reportFile = join(scratch, "directory");
+  await runTool(
     "cargo",
     [
       "run",
@@ -511,6 +522,8 @@ export async function writeCustomerPackages(input: {
       input.transactionHash,
       "--deployments",
       resolve(input.deploymentsFile),
+      "--report-file",
+      reportFile,
     ],
     {
       cwd: join(input.repository, PATHS.generator),
@@ -519,4 +532,10 @@ export async function writeCustomerPackages(input: {
       },
     },
   );
+  const reported = (await readFile(reportFile, "utf8")).trimEnd();
+  await rm(scratch, { recursive: true, force: true });
+  if (reported.length === 0) {
+    throw new ProvingError("the generator wrote the packages and reported no directory for them");
+  }
+  return reported;
 }

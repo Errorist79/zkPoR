@@ -356,10 +356,15 @@ run_tool env -C "$GEN" cargo run --release --quiet -- packages \
   --network "$STELLAR_NETWORK_NAME" --registry "$REGISTRY" \
   --attested-root "$ATTESTED_ROOT" --attested-snapshot "$SNAPSHOT" \
   --transaction "$TRANSACTION" --deployments "$DEPLOYMENTS" \
+  --report-file "$WORK/packages.path" \
   > "$WORK/packages.out" 2>&1 \
   || die "the packages of the customers did not reach $PACKAGES_OUT, so the salts stay on disk:\n$(cat "$WORK/packages.out")"
-PACKAGES=$(cat "$WORK/packages.out")
-echo "$PACKAGES"
+cat "$WORK/packages.out"
+# The generator names the directory it filled in a file this script chose. It
+# also prints that directory for a reader, and a script that read the printed
+# line would turn a sentence into an interface.
+PACKAGES=$(cat "$WORK/packages.path" 2>/dev/null)
+[ -n "$PACKAGES" ] || die "the generator wrote the packages and named no directory for them"
 
 # The balances, the salts, and the witnesses have no use after the packages
 # exist. The trap above removes them on every ending, and the call here removes
@@ -368,3 +373,4 @@ clear_witnesses
 note "the balances, the salts, and the witnesses are removed"
 
 echo -e "\n${GREEN}The registry accepted the attestation of snapshot $SNAPSHOT.${NC}"
+echo "the packages of the customers are under $PACKAGES"

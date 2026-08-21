@@ -21,7 +21,6 @@ import { MAX_REMEMBERED_RUNS, ROUTES } from "../src/constants.js";
 import {
   RunRefusedError,
   afterTheProof,
-  directoryOfPackages,
   submitRun,
 } from "../src/attestation.js";
 import { route } from "../src/routes.js";
@@ -596,38 +595,6 @@ describe("a prove-only run and the window", () => {
   });
 });
 
-describe("the directory that the generator reports", () => {
-  it("keeps a path that holds a space", () => {
-    // An operator chooses where the packages go. An expression that stopped at
-    // the first space turned this into "/run/my".
-    expect(
-      directoryOfPackages("packages: 4000 files in /run/my packages/CBSQ/4263061"),
-    ).toBe("/run/my packages/CBSQ/4263061");
-  });
-
-  it("takes the last line that names a directory, not the first", () => {
-    // Anything printed earlier can carry the same words, and the first match is
-    // then an older answer.
-    expect(
-      directoryOfPackages(
-        ["packages: 1 files in /old/place", "packages: 4000 files in /new/place"].join("\n"),
-      ),
-    ).toBe("/new/place");
-  });
-
-  it("takes the directory out of the answer of the generator", () => {
-    // The generator names the directory it wrote, and that directory carries
-    // the asset and the snapshot. The inclusion check needs a file inside it.
-    expect(
-      directoryOfPackages("packages: 4000 files in /run/packages/packages/CBSQ/4263061"),
-    ).toBe("/run/packages/packages/CBSQ/4263061");
-  });
-
-  it("answers nothing when the generator names no directory, so the caller falls back", () => {
-    expect(directoryOfPackages("the generator said something else")).toBeUndefined();
-    expect(directoryOfPackages("")).toBeUndefined();
-  });
-});
 
 describe("what one run does once the proof exists", () => {
   /** What one call recorded and did. */

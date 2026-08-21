@@ -777,6 +777,10 @@ struct GenerationRequest<'a> {
     /// chain state that this attestation never reached.
     registry: &'a str,
     attested: &'a AttestedEntry,
+    /// Where to write the directory that this run filled, when the caller asks
+    /// for it. The caller names the file, so it reads back a path it can use
+    /// without reading anything this tool prints.
+    report_file: Option<&'a Path>,
 }
 
 /// Writes one package for each customer row.
@@ -897,6 +901,13 @@ fn write_packages(
         &directory.join(GENERATION_FILE),
         &generation_json(customer_count, &root, &request.attested.transaction_hash),
     );
+    // The sentence below is for an operator who watches a run. A caller that
+    // needs the path asks for the report file instead, because a sentence that
+    // a program reads becomes an interface that neither side can change.
+    if let Some(report) = request.report_file {
+        fs::write(report, format!("{}\n", directory.display()))
+            .unwrap_or_else(|_| panic!("write {}", report.display()));
+    }
     println!(
         "packages: {customer_count} files in {}",
         directory.display()
@@ -1251,7 +1262,7 @@ const USAGE: &str = "usage: recursion-gen witness <context.toml> <customers.csv>
                             recursion-gen packages <context.toml> <customers.csv> <out_dir> \
                             --network <name> --registry <address> --attested-root <hex> \
                             --attested-snapshot <ledger> --transaction <hash> \
-                            [--deployments <file>]\n\
+                            [--deployments <file>] [--report-file <file>]\n\
                             recursion-gen assemble <context.toml> [out_dir]\n\
                             recursion-gen manifest <inner_out_dir> <agg_target_dir>";
 
@@ -1302,6 +1313,7 @@ fn main() {
                 };
                 // A localnet harness deploys its own registry, so it names its
                 // own record. Every other run reads the committed file.
+                let report_file = optional_flag_value(&args, "--report-file").map(PathBuf::from);
                 let deployments = optional_flag_value(&args, "--deployments")
                     .map(PathBuf::from)
                     .unwrap_or_else(|| repo_path(DEPLOYMENTS_FILE));
@@ -1314,6 +1326,7 @@ fn main() {
                         network: &flag_value(&args, "--network"),
                         registry: &flag_value(&args, "--registry"),
                         attested: &attested,
+                        report_file: report_file.as_deref(),
                     },
                 );
             }
@@ -1640,6 +1653,7 @@ mod tests {
                 network: TEST_NETWORK,
                 registry,
                 attested,
+                report_file: None,
             },
         );
         out.join("packages")
@@ -1658,6 +1672,49 @@ mod tests {
                 &deployments_with_depth("zkpor_deployments_ok.json", depth),
             )
         })
+    }
+
+    /// The report file names the directory that this run filled.
+    ///
+    /// A caller that needs the path must not read the sentence this tool
+    /// prints. The path holds the asset and the snapshot below the directory
+    /// the caller asked for, and a caller that rebuilt those levels itself
+    /// would hold a second copy of a layout that belongs here.
+    #[test]
+    fn the_report_file_holds_the_directory_that_the_run_filled() {
+        let env = new_env();
+        let context = fixture_context(&env);
+        let out = env::temp_dir().join("zkpor_packages_report");
+        let _ = fs::remove_dir_all(&out);
+        let report = env::temp_dir().join("zkpor_packages_report.path");
+        let _ = fs::remove_file(&report);
+        let depth = read_shape().2.trailing_zeros() as usize;
+        write_packages(
+            &env,
+            &context,
+            &fixture_master_secret(&env),
+            &GenerationRequest {
+                customers_file: &repo_path(CUSTOMERS_FIXTURE),
+                deployments_file: &deployments_with_depth("zkpor_deployments_report.json", depth),
+                out: &out,
+                network: TEST_NETWORK,
+                registry: TEST_REGISTRY,
+                attested: fixture_attestation(),
+                report_file: Some(&report),
+            },
+        );
+        let reported = fs::read_to_string(&report).expect("the report file");
+        let directory = PathBuf::from(reported.trim_end());
+        assert_eq!(
+            directory,
+            out.join("packages")
+                .join(&context.asset)
+                .join(context.snapshot_ledger.to_string())
+        );
+        assert!(
+            !package_files(&directory).is_empty(),
+            "the reported directory holds no package"
+        );
     }
 
     fn package_files(directory: &Path) -> Vec<PathBuf> {
@@ -1939,6 +1996,7 @@ mod tests {
                     network: TEST_NETWORK,
                     registry: TEST_REGISTRY,
                     attested: &attested,
+                    report_file: None,
                 },
             );
         });
