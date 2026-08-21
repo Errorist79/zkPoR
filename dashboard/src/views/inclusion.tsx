@@ -42,7 +42,9 @@ export function InclusionForm(input: { reason?: string }) {
         <p className="limit">
           One file, and not the directory that a run reports. A run writes one file for each
           customer into that directory, named <code>package-000000.zkpor.json</code> upward, so a
-          path here ends with a file name of that shape.
+          path here ends with a file name of that shape. This page will not take the directory and
+          choose a file inside it: each file holds the balance of one customer, so choosing one
+          would be this page deciding whose balance to show.
         </p>
         <button type="submit">Check the package</button>
       </form>
@@ -71,6 +73,13 @@ export function InclusionVerdictPage(input: { verdict: Verdict }) {
         ))}
         <p className="limit">
           The command line reports this outcome as the exit code {exitCode(input.verdict)}.
+        </p>
+        <p className="limit">
+          The registry above is the one the package names. The solvency page of an asset names the
+          generation that holds the asset today, and the two are the same address until the asset is
+          registered again on a newer generation. After that they differ, and both are right: this
+          check answers about the attestation the package was written for, and that page answers
+          about the record the asset has now.
         </p>
       </section>
       <p>

@@ -25,6 +25,20 @@ describe("what a page tells a reader to do", () => {
     expect(markup).not.toContain("registered with this registry");
   });
 
+  it("defines a generation before a page uses the word", () => {
+    // The word carries the whole point of the release and appeared first on the
+    // page that answers, with no page defining it.
+    const markup = framed(<Home />);
+    expect(markup).toContain("A generation is one deployment of the registry");
+  });
+
+  it("says why the inclusion field will not take a directory", () => {
+    // The refusal is a rule and not a limitation: each file holds one
+    // customer's balance, so choosing one would be the page deciding whose.
+    const markup = framed(<InclusionForm />);
+    expect(markup).toContain("deciding whose balance to show");
+  });
+
   it("says the inclusion field wants a file, and names the shape of the name", () => {
     // A run reports a directory. A reader who pastes it reaches a directory and
     // is told the file is unreadable, with nothing on either page naming the

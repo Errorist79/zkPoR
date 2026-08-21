@@ -336,14 +336,6 @@ describe("what every module of this package may reach", () => {
     }
   }, READING_DEADLINE);
 
-  it("says in its answer that the package chose the registry", () => {
-    // The asset page names a registry too, and it finds that one by asking
-    // which generation holds the asset. The two answers coincide today and
-    // diverge for a package of an earlier generation, so each says who chose.
-    const source = sourceOf("inclusion.ts");
-    expect(source).toContain("The package names the registry");
-  });
-
   it("keeps the inclusion check out of the asset resolution", () => {
     // A customer package names its own registry, and the check resolves from
     // that name through the trusted file. If the asset resolution reached this

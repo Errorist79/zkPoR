@@ -33,10 +33,14 @@ export function Home(input: { reason?: string }) {
     <Layout title="zkPoR dashboard">
       <h1>Open an asset</h1>
       <p>
-        Give the address of an asset that somebody registered. This dashboard asks each recorded
-        generation of the network above, newest first, and answers from the one that holds the
-        asset. A registry answers about one asset at a time and keeps no list, so this page cannot
-        offer one.
+        Give the address of an asset that somebody registered. A registry answers about one asset
+        at a time and keeps no list, so this page cannot offer one.
+      </p>
+      <p className="limit">
+        A generation is one deployment of the registry and its verifier. A network carries several
+        over time, and each one keeps the assets that registered under it, so an asset lives on the
+        generation it registered with rather than on the newest. This dashboard asks each recorded
+        generation, newest first, and answers from the one that holds the asset you name.
       </p>
       {input.reason === undefined ? null : <p className="failure">{input.reason}</p>}
       <form method="get" action={ROUTES.asset}>
