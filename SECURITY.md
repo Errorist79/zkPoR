@@ -44,9 +44,22 @@ The system does not guarantee the following:
   no other leaf. The verifier cannot close this gap. A social mitigation applies:
   each customer checks the inclusion of their own leaf against the published
   root, so an omission becomes visible if enough customers check.
+- That the balances belong to the ledger the attestation names. The context hash
+  covers the authority, the asset, the reserve set and the snapshot ledger. It
+  does not cover the customer balances, which reach the chain as the root and
+  the total. So the snapshot ledger is a label on a balance set, and no part of
+  this system checks that the set belongs to that ledger. An issuer who labels
+  an old balance set with a fresh ledger passes every check the registry makes.
+  The same social mitigation applies as for completeness: a customer whose
+  balance changed sees the old figure when they check their own leaf.
 - The real existence of the off-chain reserves. This is out of scope. It needs an
   auditor attestation or an oracle attestation. The system commits the
   liabilities and leaves an attestation interface.
+
+The two sides of the comparison are not bound in the same way, and the
+difference is worth stating. The registry reads the reserves on chain inside the
+attestation transaction, so the reserve figure belongs to a ledger. The issuer
+asserts the liabilities for a ledger, and nothing binds them to it.
 
 ## Trust assumptions
 

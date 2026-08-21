@@ -36,7 +36,10 @@ export function AttestedReservesSection(input: { solvency: SolvencyResult }) {
       </p>
       <p className="limit">
         The registry records the two numbers and compares neither against the other. This dashboard
-        makes the comparison, over one attestation record.
+        makes the comparison, over one attestation record. The two are not bound to their ledger in
+        the same way: the registry read the reserves on chain inside the attestation, and the issuer
+        asserted the liabilities for that ledger with nothing on chain checking that the balances
+        belong to it.
       </p>
     </section>
   );

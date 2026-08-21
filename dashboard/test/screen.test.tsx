@@ -17,6 +17,16 @@ import type { Run } from "../src/runs.js";
 const HOLDER = "CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG";
 const OTHER = "CCHUTDKUPWXVUIX6D26SE5NZ5STP74VV4DY2CNVCMNJYOU5PTROLA7MY";
 
+describe("what the page says about the two figures", () => {
+  it("says only one of the two is bound to its ledger", () => {
+    // The registry read the reserves on chain inside the attestation. The
+    // issuer asserted the liabilities for that ledger and nothing checks that
+    // the balances belong to it. The page puts them side by side.
+    const markup = framed(<AssetPage view={assetView()} history={undefined} />);
+    expect(markup).toContain("not bound to their ledger in the same way");
+  });
+});
+
 describe("a sentence that points at a value the page carries", () => {
   /** Every verdict kind, with the one that names a registry first. */
   const VERDICTS = [
