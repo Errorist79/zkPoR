@@ -40,16 +40,23 @@ Superseded (on-chain evidence dated June 27, 2026):
 
 Current artifact (validated on the Protocol 27 testnet on August 8, 2026):
 
-- The full flow ran on the real testnet: the verifier
+- The full flow ran on the real testnet on August 8 and 9, 2026: the verifier
   `CDUEQOM2AQ54ZZ3EZA2Q4D32C7DBVQ5D45TFMBSC2RCE6ZMX32T44JC2` and the registry
   `CC4MA6FWDBG3Y4YXYGDHYEZ36O3YSP7DREGOLBWKP6ZTQQ6IYFFX3KQK`, one classic
   asset registered, one reserve account that signed its own
-  authorization entry, two accepted attestations, and one customer package
+  authorization entry, three accepted attestations, and one customer package
   checked against the registry. A second generation followed, with the
   verifier `CDICJW5B5VYT3GD3VTDWFYCQG6N4ONLUXKHPQSJVAN5QYPGCTOG7PIXE` and the
   registry `CCHUTDKUPWXVUIX6D26SE5NZ5STP74VV4DY2CNVCMNJYOU5PTROLA7MY`. It
   registered one asset with 17 reserve accounts, which the first generation
-  refuses, and a package of the first generation still verifies. The confirmed
+  refuses, and a package of the first generation still verifies. A third
+  generation followed, with the verifier
+  `CDNUAFLJPLFM4DSHHQF5SVX2HESQR5GICSKQKZDHXP5NAGG4G2C2QMMM` and the registry
+  `CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG`, which is the
+  first generation that the documented deploy path produced. Its registry holds
+  accepted attestations, among them the transaction
+  `7ed11c70f2911fc9bf46bf815ab11d193a34372d16c72b6bdda58029327ebf5c` at ledger
+  4263070. The confirmed
   transaction hashes are in
   [`SECURITY.md`](SECURITY.md), and the addresses are in
   [`scripts/deployments.json`](scripts/deployments.json). The attestation
@@ -71,7 +78,7 @@ Current artifact (validated on the Protocol 27 testnet on August 8, 2026):
 - The asset registry contract (`contracts/registry/`). It registers an asset
   against the authority that the chain authenticates, it collects the consent
   of every reserve address, it builds the public inputs from its own state,
-  and it records one attestation for each asset. It holds 41 tests, and the
+  and it records one attestation for each asset. It holds 43 tests, and the
   registry gate passed on a Protocol 27 localnet
   (`tools/gate/registry-gate.sh`) with four cases: an honest attestation
   accepted and recorded, a proof of another context refused, an asset with no
@@ -94,10 +101,10 @@ Current artifact (validated on the Protocol 27 testnet on August 8, 2026):
   deployments file, and never from the package.
 - The soundness gate passed at the release configuration on a Protocol 27
   localnet, with five verdicts: an honest proof accepted; a forged proof, a
-  deflated proof, an unsalted-leaf proof, and a foreign context rejected
+  deflated proof, a stale-leaf proof, and a foreign context rejected
   (`tools/gate/`). A localnet result is not testnet evidence.
 
-Written and tested, with no testnet run that covers it:
+Written and tested:
 
 - The TypeScript SDK, which writes and checks a package from the same
   specification ([`sdk/README.md`](sdk/README.md)). A run on August 17, 2026
@@ -108,10 +115,10 @@ Written and tested, with no testnet run that covers it:
   ([`dashboard/README.md`](dashboard/README.md)). It shows the solvency result
   of one asset, it runs the proof and the attestation in its own process, and it
   checks a customer package. It holds no cryptographic definition of its own.
-  It has never run against the test network.
 
 Both items hold their own tests, and the agreement job runs them. A test is not
-a network run, so neither item carries testnet evidence today. The testnet
+a network run. The run of the software development kit provisioned its own
+disposable asset, so it is not evidence for the artifact above. The testnet
 revalidation of the final artifact will cover them.
 
 ## How it works
@@ -155,8 +162,17 @@ docs/architecture.md  system design
 
 ## Pinned versions
 
-Single source of truth: [`scripts/versions.env`](scripts/versions.env) and
-[`rust-toolchain.toml`](rust-toolchain.toml).
+[`scripts/versions.env`](scripts/versions.env) and
+[`rust-toolchain.toml`](rust-toolchain.toml) are the files that
+`scripts/setup.sh` and the agreement job read when they install a toolchain.
+They are not the only place these numbers live. The Cargo manifests, the Nargo
+manifests, and the table below each carry a copy, and every copy agrees today.
+
+The agreement job compares three of them with `scripts/versions.env`: the Rust
+compiler, `nargo`, and the JavaScript client library against
+`sdk/package.json`. It compares no other. A drift in `bb`, in `soroban-sdk`, in
+`soroban-poseidon`, or in either Noir tag fails no job, so a person who changes
+one of those numbers changes it in every file that holds it.
 
 | Component | Version | Notes |
 |---|---|---|

@@ -337,16 +337,27 @@ settings of the testnet and of the mainnet, read on 2026-08-09, both set
 400,000,000 instructions for each transaction and 580,000,000 instructions
 for each ledger. One ledger budget
 therefore holds 4 such declarations. The reserve count moves the cost very
-little. Simulations against the live registry measured one added balance read.
-The read costs about 0.10M declared instructions for a classic asset. It costs
-about 0.36M for a contract token with 101,195 bytes of code, near the size
-limit of 131,072 bytes. At the limit of 32
-reserve addresses the declaration rises to about 125M for a classic asset, and
-to about 137M for such a contract token. The token figure carries the parse of
-the token code once, and the marginal cost of the read for each address after
-that. Proof of Reserves submits one
-attestation for each epoch, so this is headroom and not a binding limit. It
-still forces a specific design:
+little for a classic asset. Two entries of one registry, read with
+`observe_reserves` on 2026-08-21, give the cost of one added balance read. The
+entry with one reserve address declared 2,039,526 instructions, and the entry
+with five declared 2,450,555, so one added read declares about 0.10M. The
+attestation of one reserve address declared 122,268,806, so at the limit of 32
+addresses the declaration rises to about 125M, which stays under the cap.
+
+A contract token costs more to read than a classic asset. On the same registry
+and the same day, three token balances declared 3,237,192 instructions and
+consumed 3,069,931, while five classic balances declared 2,450,555 and consumed
+2,250,490. Three reads of the dearer kind cost more than five of the cheaper
+kind.
+
+The cost of one added token read is not measured. One entry gives one point, and
+one point does not separate the fixed cost of the call from the cost of each
+read. A figure for a token needs two token entries of one code size with
+different reserve counts, and this project holds none. This document therefore
+gives no projection to 32 token addresses.
+
+Proof of Reserves submits one attestation for each epoch, so this is headroom
+and not a binding limit. It still forces a specific design:
 
 - One root and one batch attestation for each reporting period. Not one
   verification for each customer.

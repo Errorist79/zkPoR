@@ -107,10 +107,12 @@ honest proofs. All four cases are real confirmed transactions:
 | honest (post-attacks) | `b88c7c2b5fb8fa0a20d7b436c3b4657f8109279ab1a75f7d398bc9ddfd93c1a7` | 3313107 | SUCCESS |
 
 This document quoted an instruction figure for that verify. The figure is
-gone, because a reader can no longer check it. Horizon serves no Soroban
-transaction meta, and the retention window of the remote procedure call has
-passed, so no public source returns the number today. The four transactions
-stay, because they still resolve.
+gone, because a reader can no longer check it. The instruction count lives in
+the diagnostic events of the applied transaction, and the endpoint that serves
+those keeps a fixed window of ledgers. These transactions left that window, and
+a lookup of the first one answers NOT_FOUND. Horizon still resolves the four
+transactions and serves no Soroban transaction meta, so it shows that they
+happened and not what they cost.
 
 The two honest accepts bracket the two rejects in ledger order on the same
 contract. This order shows a real gate, and not a deployment that rejects
@@ -126,48 +128,104 @@ values, the inner key hash, the SHA-256 of the committed aggregator key
 `circuits/recursion/agg/vk`, the public input count and positions, and the
 toolchain versions.
 
-The flow ran end to end on the real Stellar testnet (Protocol 27) on
-August 8, 2026, under the real limit of 400,000,000 instructions for each
-transaction. `scripts/deployments.json` records two deployment generations of
-this network, in order. The first generation is the verifier
+The flow ran end to end on the real Stellar testnet (Protocol 27) on August 8
+and 9, 2026, under the real limit of 400,000,000 instructions for each
+transaction. It began at 20:45 UTC on August 8 and the last four steps of the
+table below closed after midnight UTC on August 9.
+
+`scripts/deployments.json` records three deployment generations of this network,
+in order. The first generation is the verifier
 `CDUEQOM2AQ54ZZ3EZA2Q4D32C7DBVQ5D45TFMBSC2RCE6ZMX32T44JC2` with the registry
 `CC4MA6FWDBG3Y4YXYGDHYEZ36O3YSP7DREGOLBWKP6ZTQQ6IYFFX3KQK`. Its registry
 enforces a reserve bound of 16, because it was built before the bound became
 32. The second generation is the verifier
 `CDICJW5B5VYT3GD3VTDWFYCQG6N4ONLUXKHPQSJVAN5QYPGCTOG7PIXE` with the registry
-`CCHUTDKUPWXVUIX6D26SE5NZ5STP74VV4DY2CNVCMNJYOU5PTROLA7MY`, built from the
-current sources. Each registry holds the aggregator key hash of the manifest,
-because its constructor refuses a verifier that stores another key.
+`CCHUTDKUPWXVUIX6D26SE5NZ5STP74VV4DY2CNVCMNJYOU5PTROLA7MY`. The third
+generation is the verifier
+`CDNUAFLJPLFM4DSHHQF5SVX2HESQR5GICSKQKZDHXP5NAGG4G2C2QMMM` with the registry
+`CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG`, and it is the
+newest. Each registry holds the aggregator key hash of the manifest, because its
+constructor refuses a verifier that stores another key.
 
-Each generation registered one asset. The deployments file names the registry
-and the verifier of a generation, and it names no asset, so this document names
-the assets. The first generation registered the asset
+Two of the three registries cannot be traced to a source state of this
+repository. The documented build reproduces the verifier of every generation,
+and it reproduces the registry of the third generation byte for byte. It
+reproduces the registry of neither the first nor the second. Every commit that
+can change that contract builds a registry of 33,364 bytes, and the two recorded
+registries hold 65,185 bytes. The second generation went on chain forty-one
+minutes before the commit that raises its reserve bound, and that commit
+produces the registry of the third generation rather than its own.
+
+One candidate cause was tested and refused. A build without the optimize step
+gives the same size and the same hash, so that step accounts for none of the
+difference. The cause is not established. `scripts/deploy_registry.sh` and
+`scripts/check_deployment.sh` exist for this reason, and the third generation is
+the first that either one produced.
+
+This document carries the evidence of the first two generations. It carries no
+evidence of the third, and a reader must not read the sections below as
+statements about it.
+
+The deployments file names the registry and the verifier of a generation, and it
+names no asset. No query enumerates the assets of a registry, so this document
+names the assets that it knows, and it does not claim to name every asset that a
+generation holds.
+
+The first generation registered the asset
 `CCWGBIKQALFIZRZALTITQUASGKSTT2XIE2V4SBPQSWH6XZXIJINGK6HF` with one reserve
+account, and the asset
+`CBSEPZ3RWTZHCM3O45EGHZW7WPUP6G2E3ZZE33XJNGFIKQ7HLGXLI6TV` with one reserve
 account. The second generation registered the asset
 `CAD6S62UZGQP42MC5C7TOGVP7CUM7HTDPAFRSZSI42WOFMADXUIDAYRD` with 17 reserve
-accounts. Both registered under the classic issuer tier, with the issuer account
-`GAQSAE4ZNHWPERZQICWSSAVV57Z3AE2RNGQXJC6I5MLSRB4GG2473W5K` as the authority.
+accounts. All three registered under the classic issuer tier, with the issuer
+account `GAQSAE4ZNHWPERZQICWSSAVV57Z3AE2RNGQXJC6I5MLSRB4GG2473W5K` as the
+authority.
 
-A reader needs these two addresses to examine the evidence again. The registry
+A reader needs these asset addresses to examine the evidence again. The registry
 stores the record of an asset under the address of that asset, and no query
 enumerates the assets of a registry, so a reader who holds only the registry
-address cannot reach the record. The `getEvents` method reaches the attestation
-events only inside the retained window of an endpoint, which is about seven
-days, so it stopped reaching these attestations in the middle of August 2026.
-A query that starts before the retained window does not return an empty answer.
-It returns an error that names the ledger range the endpoint holds, so a reader
-sees a refusal and knows that the window, and not the absence of an attestation,
-produced it. On August 21, 2026 the endpoint held the ledgers from 4141385 to
-4262344, and the attestations of August 8 landed at the ledgers 4040321, 4042618
-and 4043038. After that the asset address is the one way back to the record.
+address cannot reach the record.
 
-On August 17, 2026 the client read the record of both assets back from the
-chain. Every field of the first record equalled the values that the run of
-August 8 recorded: the authority, the tier, the reserve address, the reserve set
-hash, the attested root, the total liabilities, the reserve sum, the snapshot
-ledger, and the attested ledger. For both records the TypeScript mirror
-recomputed the reserve set hash from the reserve addresses of the record and
-reached the value that the registry holds, at one address and at 17 addresses.
+Two limits govern what the `getEvents` method answers, and they are different
+quantities. The first is the window of ledgers that an endpoint keeps. The
+public test endpoint keeps 120,960 ledgers, and the measured close interval is
+5.009 seconds, so the window is about seven days. The window moves with every
+ledger, so a reader takes its present bounds from the endpoint rather than from
+this document: `getHealth` answers with `oldestLedger` and `latestLedger`, and
+`ledgerRetentionWindow` states the count. The attestations of August 8 and 9
+landed at the ledgers 4040298, 4040321, 4042618 and 4043038, and the window
+passed them long ago, so no query reaches them now. The table below names all
+four. A query that
+starts before the window does not answer with an empty result. It returns an
+error that names the ledger range the endpoint holds, so a reader sees a refusal
+and knows that the window, and not the absence of an attestation, produced it.
+
+The second limit applies inside the window. One request reads a bounded count of
+ledgers, which measured 10,000 on the same day, or about fourteen hours. A
+request that asks for a wider range answers with the events of the part it read,
+and with a cursor at the ledger where it stopped. An empty page therefore means
+that the request found no event before it stopped. It does not mean that the
+range holds none. A caller reaches the rest of the range by asking again from
+that cursor, until the cursor reaches the latest ledger.
+
+The two limits answer different questions, and the numbers differ by more than a
+factor of ten. The window says whether an event still exists. The count of
+ledgers in one request says how much of the window a caller sees before asking
+again. A reader who wants an old attestation asks the first question. A reader
+who gets an empty answer for a recent one asks the second.
+
+After the window passes, the asset address is the one way back to the record.
+
+On August 17, 2026 the client read two records back from the chain. They are
+the asset `CCWGBIKQALFIZRZALTITQUASGKSTT2XIE2V4SBPQSWH6XZXIJINGK6HF` of the
+first generation, and the asset
+`CAD6S62UZGQP42MC5C7TOGVP7CUM7HTDPAFRSZSI42WOFMADXUIDAYRD` of the second. Every
+field of the first record equalled the values that the run of August 8 recorded:
+the authority, the tier, the reserve address, the reserve set hash, the attested
+root, the total liabilities, the reserve sum, the snapshot ledger, and the
+attested ledger. For each of the two records the TypeScript mirror recomputed
+the reserve set hash from the reserve addresses of the record and reached the
+value that the registry holds, at one address and at 17 addresses.
 Both solvency claims read as lapsed, which is correct, because the snapshot of
 each one is far outside the window of 720 ledgers.
 
@@ -195,13 +253,25 @@ credential. The first registration ran by hand, and `scripts/register_asset.sh`
 ran the second one. Both declared 6,745,316 instructions, so the script
 reproduces the steps of the hand-driven run.
 
-Attestation 3 followed the third registration. It declared 122,229,204
+Attestation 3 followed the second registration, at ledger 4042603, and the
+third registration came after it. Its asset is
+`CBSEPZ3RWTZHCM3O45EGHZW7WPUP6G2E3ZZE33XJNGFIKQ7HLGXLI6TV`, which that
+registration wrote on the first generation. A reader needs that address,
+because it is the one route back to the record and this is the one step of the
+table that produced the packages of the customers. It declared 122,229,204
 instructions and consumed 117,486,336, and it wrote the package of every
 customer before the flow removed the salts.
 
 The attestation transaction carries the whole cost: the cross-contract call
 to the verifier, the reserve balance read, and the hashes that the registry
 computes. Two numbers describe that cost, and they mean different things.
+
+No reader can check the instruction figures of this section today. The
+consumption comes from the diagnostic events of the applied transaction, the
+endpoint keeps a window of ledgers, and these transactions left it. Horizon
+resolves the transactions and serves no Soroban meta. The figures stand as this
+project measured them, and a reader takes them on that basis rather than on a
+check of their own.
 
 The declared instruction resource bounds the headroom. It stands in the
 applied transaction, the network enforces the cap against it, and the fee
@@ -245,7 +315,7 @@ INCLUDED for one of them. The tool read the registry address from
 builds the production artifacts from the committed sources, deploys them to
 a Protocol 27 localnet, and gates on the on-chain verdict. It passed at the
 release configuration with five verdicts: an honest proof accepted; a
-forged proof, a deflated proof, an unsalted-leaf proof, and a foreign
+forged proof, a deflated proof, a stale-leaf proof, and a foreign
 context rejected. It fails loud on any other outcome, so an infrastructure
 failure never reads as a soundness REJECT. It runs in CI
 (`.github/workflows/soundness-gate.yml`) on a self-hosted runner, and CI
