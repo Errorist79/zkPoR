@@ -278,7 +278,9 @@ export function AssetPage(input: { view: AssetView; history: HistoryView | undef
     <Layout title={`zkPoR: ${view.asset}`}>
       <h1 className="address">{view.asset}</h1>
       <p>
-        The network is {view.network}. The registry is <span className="address">{view.registry}</span>.
+        The network is {view.network}. This record comes from the registry{" "}
+        <span className="address">{view.registry}</span>, which is the generation that holds this
+        asset.
       </p>
       <Headline solvency={view.solvency} />
       {view.solvency === undefined ? null : (

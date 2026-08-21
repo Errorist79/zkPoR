@@ -32,6 +32,18 @@ function hasBlock(markup: string, registry: string): boolean {
   return markup.includes(`<h3>The registry <span class="address">${registry}</span></h3>`);
 }
 
+describe("who chose the registry that an answer names", () => {
+  it("says the asset page reads the generation that holds the asset", () => {
+    // The inclusion answer names a registry too, and it gets there another way:
+    // the package names it. Identical wording on the two pages would tell a
+    // reader there is nothing to ask, and the two addresses differ exactly when
+    // a package of an earlier generation is checked while the asset has moved.
+    const markup = framed(<AssetPage view={assetView()} history={undefined} />);
+    expect(markup).toContain("This record comes from the registry");
+    expect(markup).toContain("the generation that holds this");
+  });
+});
+
 describe("the room that an empty answer takes", () => {
   it("gives a block to the generation that holds the asset", () => {
     const markup = pageOf([historyBlock({ registry: HOLDER })]);

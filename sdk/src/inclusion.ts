@@ -223,7 +223,8 @@ export function verdictLines(verdict: Verdict): string[] {
     case "included": {
       const lines = [
         "The leaf is under the attested root.",
-        `The asset is ${verdict.asset}, and the registry is ${verdict.registry}.`,
+        `The asset is ${verdict.asset}.`,
+        `The package names the registry ${verdict.registry}, and this check read that registry.`,
         `The leaf index is ${verdict.leafIndex}, and the balance is ${verdict.balance.toString(10)}.`,
         `The snapshot ledger is ${verdict.snapshotLedger}, and the registry read the reserves at ledger ${verdict.attestedLedger}.`,
         `The total liabilities under the root are ${verdict.totalLiabilities.toString(10)}.`,
