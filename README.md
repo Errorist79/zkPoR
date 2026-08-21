@@ -290,6 +290,18 @@ that holds the word `any` never fails it, and `as const` stays allowed:
 npm run check:typescript
 ```
 
+A test result is evidence about the build that the run read, and about no other
+build. Cargo and npm decide for themselves whether their output is current. The
+bundler does not: it builds when a caller asks it, and never on its own. So a
+build directory that moves between machines, or that survives a copy of the
+sources, can make a run answer from code that the tree no longer holds. That
+result looks exactly like a verdict.
+
+The remedy is to remove the built directories and to let the caller build again.
+A missing file stops a run, and an old answer does not. The test script of the
+dashboard builds the client library before it runs, because the dashboard tests
+import that library and nothing else in the dashboard package builds it.
+
 The `soundness-gate` job runs on a self-hosted runner, because it needs the
 BN254 host functions, the real proving toolchain, and a Protocol 27 local
 network. The hosted job cannot replace it.

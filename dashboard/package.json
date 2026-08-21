@@ -11,7 +11,7 @@
   "scripts": {
     "build": "tsup",
     "prepare": "npm run build",
-    "pretest": "npm run build",
+    "pretest": "npm --prefix ../sdk run build && npm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
