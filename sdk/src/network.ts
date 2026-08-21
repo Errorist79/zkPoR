@@ -37,8 +37,12 @@ export function openServer(config: NetworkConfig): rpc.Server {
 /** The latest closed ledger sequence of the network. */
 export async function latestLedger(server: rpc.Server): Promise<number> {
   try {
-    const answer = await server.getLatestLedger();
-    return answer.sequence;
+    // The health call carries this number, and the ledger call carries it
+    // inside a whole ledger close meta that the client library decodes on the
+    // way past. That is the transactions of one ledger decoded to read one
+    // integer. Both numbers come from one view of the node.
+    const answer = await server.getHealth();
+    return answer.latestLedger;
   } catch (cause) {
     throw new InfrastructureError("the client cannot read the latest ledger", { cause });
   }

@@ -98,7 +98,10 @@ export async function locateAsset(input: {
       );
     } catch (cause) {
       throw new InfrastructureError(
-        `the registry ${generation.registry} did not answer whether it holds the asset ${input.asset}, so this client cannot tell a registry that holds nothing from one that failed: ${messageOf(cause)}`,
+        `the registry ${generation.registry} did not answer whether it holds the asset ${input.asset}. ` +
+          `This client asked ${asked.map((each) => each.registry).join(", ")} and stopped there, because it cannot tell a registry that holds nothing from one that failed. ` +
+          `The record of this asset is unknown rather than absent, and a later attempt may answer. ` +
+          `The registry said: ${messageOf(cause)}`,
         { cause },
       );
     }

@@ -49,7 +49,7 @@ export interface Reader {
 export async function readAssetView(
   reader: Reader,
   asset: string,
-): Promise<AssetView | undefined> {
+): Promise<{ view: AssetView | undefined; asked: readonly string[] }> {
   // One resolution for this request. Every read below uses the generation it
   // found, so a page cannot answer about two of them and say nothing about it.
   const located = await locateAsset({
@@ -59,8 +59,9 @@ export async function readAssetView(
     deploymentsText: reader.deploymentsText,
     asset,
   });
+  const asked = located.asked.map((generation) => generation.registry);
   if (located.holder === undefined) {
-    return undefined;
+    return { view: undefined, asked };
   }
   const registry = located.holder.generation.registry;
   const record = located.holder.record;
@@ -84,7 +85,7 @@ export async function readAssetView(
     });
   }
 
-  return {
+  const view: AssetView = {
     asset,
     network: reader.config.network,
     registry,
@@ -98,6 +99,7 @@ export async function readAssetView(
     diagnosis,
     currentLedger,
   };
+  return { view, asked };
 }
 
 /**

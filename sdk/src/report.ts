@@ -174,8 +174,28 @@ export function completeCommand(
  * inclusion check, and the codes of that check belong to it alone.
  */
 export function failureNote(cause: unknown): string {
-  if (cause instanceof RegistryRefusedError) {
+  if (registryAnswered(cause)) {
     return "The registry answered this. It is the answer of the contract about the request, and not a verdict of the inclusion check.";
   }
   return "This is a failure of the client or of the network. It is not a verdict.";
+}
+
+/**
+ * True when a registry answered somewhere under this failure.
+ *
+ * A refusal does not always arrive as itself. The walk that finds the
+ * generation holding an asset wraps what a registry answered, so that its
+ * message can name the generation, and the refusal then travels as the cause of
+ * that wrapper. A check of the outermost value alone would call the answer of a
+ * contract a failure of the network, which is the sentence this function exists
+ * to keep honest.
+ */
+export function registryAnswered(cause: unknown): boolean {
+  for (let step = cause, depth = 0; step instanceof Error && depth < 8; depth += 1) {
+    if (step instanceof RegistryRefusedError) {
+      return true;
+    }
+    step = step.cause;
+  }
+  return false;
 }

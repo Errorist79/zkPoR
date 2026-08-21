@@ -71,8 +71,13 @@ the codes of the Rust reference of the same checks.
 | 5 | the package points at a registry this verifier does not trust |
 | 6 | the registry holds no attestation that matches the package |
 | 7 | the recomputed root does not equal the attested root |
-| 8 | a failure of the client or of the network, which is not a verdict |
+| 8 | no verdict of this check |
 | 9 | the deployments file of this verifier contradicts itself |
+
+The code 8 covers two answers, and neither is a verdict of this check. One is a
+failure of the client or of the network. The other is an answer of a registry
+about the request, such as a refusal to say whether it holds an asset. The last
+line of the command says which of the two it met.
 
 ## Configuration
 
@@ -80,6 +85,22 @@ The client takes its endpoint and its registry addresses from its own
 configuration and from its own copy of the deployments file, never from a
 package. A package value may select a record inside data that the client already
 trusts. It must never select where the trusted data comes from.
+
+No setting names a registry. A network carries more than one registry over
+time, and the asset decides which one answers about it: the client asks the
+recorded generations, newest first, and stops at the first that holds the
+asset. The inclusion check is the one command that resolves another way,
+because a package names its own registry and the check reads that one.
+
+A generation that answers neither a record nor `AssetNotRegistered` stops the
+command. The client cannot tell a registry that holds nothing from one that
+failed, and stepping past the failure would let an older generation answer
+while the newer one also held the asset. **This makes the cost positional.** A
+read about an asset succeeds only when every generation newer than the one
+holding it answers, so an asset on the oldest of several generations depends on
+all the newer registries for every read, and for the attestation, which
+resolves before it proves. Adding a generation adds one such dependency for
+every asset older than it.
 
 | variable | content |
 |----------|---------|

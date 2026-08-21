@@ -87,12 +87,16 @@ export function Layout(input: {
 }
 
 /** A statement that the page could not complete a read. This is not a verdict. */
-export function Failure(input: { title: string; reason: string }) {
+export function Failure(input: { title: string; reason: string; answered?: boolean }) {
   return (
     <Layout title={input.title}>
       <h1>{input.title}</h1>
       <p className="failure">{input.reason}</p>
-      <p>This is a failure of the client or of the network. It is not a result.</p>
+      <p>
+        {input.answered === true
+          ? "The registry answered this. It is the answer of the contract about the request, and not a failure of this dashboard or of the network."
+          : "This is a failure of the client or of the network. It is not a result."}
+      </p>
     </Layout>
   );
 }

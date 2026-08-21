@@ -32,6 +32,7 @@ import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { EXIT_NO_VERDICT, EXIT_USAGE } from "../src/inclusion.js";
 import { RegistryRefusedError } from "../src/registry.js";
+import { InfrastructureError } from "../src/network.js";
 import { attestAndReport, completeCommand, failureNote, runReport } from "../src/report.js";
 import { ATTESTATION_MAX_AGE_LEDGERS } from "../src/constants.js";
 import { builtCli } from "./built.js";
@@ -772,6 +773,18 @@ describe("the sentence that follows a failure", () => {
     const note = failureNote(new RegistryRefusedError(7));
     expect(note).toContain("The registry answered this");
     expect(note).not.toContain("failure of the client");
+  });
+
+  it("says the registry answered even when the walk wrapped the refusal", () => {
+    // The walk that finds the generation holding an asset wraps what a registry
+    // answered, so its message can name the generation. A check of the
+    // outermost value alone would call the answer of a contract a failure of
+    // the network, in the one line a reader consults to learn who answered.
+    const wrapped = new InfrastructureError("the registry CB6C did not answer", {
+      cause: new RegistryRefusedError(7),
+    });
+    expect(failureNote(wrapped)).toContain("The registry answered this");
+    expect(failureNote(wrapped)).not.toContain("failure of the client");
   });
 
   it("keeps the other sentence for a failure that is not an answer", () => {

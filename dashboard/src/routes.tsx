@@ -33,7 +33,7 @@ import type { RunAction, RunStore } from "./runs.js";
 import { renderPage } from "./render.js";
 import type { Frame } from "./render.js";
 import { STYLESHEET } from "./style.js";
-import { generationsNewestFirst } from "@zkpor/sdk";
+import { registryAnswered } from "@zkpor/sdk";
 import { AssetPage, Home, UnregisteredAssetPage } from "./views/asset.js";
 import { InclusionForm, InclusionVerdictPage } from "./views/inclusion.js";
 import { Failure } from "./views/layout.js";
@@ -269,22 +269,21 @@ async function assetPage(asset: string | null, dashboard: Dashboard): Promise<Da
   if (!isAcceptedAddress(address)) {
     return chooseAgain(`${address} is not a Stellar account address and not a contract address.`);
   }
-  let view;
+  let read;
   try {
-    view = await readAssetView(reader, address);
+    read = await readAssetView(reader, address);
   } catch (cause) {
     return failure("The dashboard cannot read the asset", cause, frameOf(dashboard, ROUTES.home));
   }
+  const view = read.view;
   if (view === undefined) {
+    // The list comes from the walk that just ran, and not from a second reading
+    // of the file. The two agree only while the walk always finishes, and a page
+    // that named registries it had not asked would be stating somebody's guess.
     return html(
       404,
       renderPage(
-        <UnregisteredAssetPage
-          asset={address}
-          asked={generationsNewestFirst(reader.deploymentsText, reader.config.network).map(
-            (generation): string => generation.registry,
-          )}
-        />,
+        <UnregisteredAssetPage asset={address} asked={read.asked} />,
         frameOf(dashboard, ROUTES.home),
       ),
     );
@@ -422,5 +421,8 @@ async function startRun(
 function failure(title: string, cause: unknown, frame: Frame): DashboardResponse {
   const reason =
     cause instanceof Error ? cause.message : "the client failed for a reason it cannot describe";
-  return html(502, renderPage(<Failure title={title} reason={reason} />, frame));
+  return html(
+    502,
+    renderPage(<Failure title={title} reason={reason} answered={registryAnswered(cause)} />, frame),
+  );
 }
