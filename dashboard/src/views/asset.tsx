@@ -137,6 +137,10 @@ function History(input: { history: HistoryView | undefined }) {
   return (
     <section id={SECTION_IDS.history}>
       <h2>Earlier attestations</h2>
+      <p className="limit">
+        This section covers the {input.history.blocks.length} recorded generations of this network,
+        over the ledgers that the endpoint still retains. It is not the whole history of this asset.
+      </p>
       {input.history.blocks.map((block) => (
         <HistoryOfRegistry key={block.registry} block={block} />
       ))}

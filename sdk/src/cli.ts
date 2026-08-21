@@ -312,7 +312,12 @@ async function commandHistory(args: readonly string[]): Promise<CommandResult> {
   if (generations.length === 0) {
     fail(`the deployments file records no generation on the network ${config.network}`, EXIT_NO_VERDICT);
   }
-  const lines: string[] = [];
+  // The blocks below could read as the whole history of the asset by their
+  // arrangement alone, and they are not. They are what these generations hold
+  // inside the window the endpoint keeps.
+  const lines: string[] = [
+    `This answer covers the ${generations.length} recorded generations of ${config.network}, over the ledgers that the endpoint still retains. It is not the whole history of the asset.`,
+  ];
   for (const generation of generations) {
     let history;
     try {
