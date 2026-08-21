@@ -237,11 +237,19 @@ export async function route(
 
   if (request.method === "POST") {
     if (!isOwnSubmission(request.fetchSite)) {
-      return {
-        status: 403,
-        contentType: TEXT,
-        body: "This dashboard accepts a form only from its own pages.\n",
-      };
+      // A page, like every other answer. A browser never reaches this, because
+      // a browser sends the header, so the reader here is a client somebody
+      // wrote. It still gets the same kind of answer as everyone else.
+      return html(
+        403,
+        renderPage(
+          <Failure
+            title="This dashboard accepts a form only from its own pages"
+            reason="The request carried no sign that it came from a page of this process."
+          />,
+          frameOf(dashboard, ROUTES.home),
+        ),
+      );
     }
     const fields = new URLSearchParams(request.body);
     if (path === ROUTES.inclusion) {

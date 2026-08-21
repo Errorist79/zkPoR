@@ -49,8 +49,8 @@ describe("the answer of the inclusion check", () => {
     // obedience and hides the guard. A reader would be right to wonder whether
     // a package can point this client anywhere, and the answer is no.
     const lines = verdictLines(INCLUDED).join("\n");
-    expect(lines).toContain("cannot select the file");
-    expect(lines).toContain("is refused rather than followed");
+    expect(lines).toContain("reads only the registries its own deployments file records");
+    expect(lines).toContain("is refused");
   });
 
   it("names the asset on a line of its own", () => {

@@ -60,6 +60,41 @@ export function InclusionForm(input: { reason?: string }) {
  * it. The page keeps that order, so the page and the command line say the same
  * words in the same order.
  */
+/**
+ * The registry that a verdict names, or nothing when it names none.
+ *
+ * Only the successful verdict carries one. The six that refuse name two roots,
+ * a reason, or nothing at all, so any sentence about "the registry above"
+ * points at something those pages do not show. On the untrusted-deployment
+ * verdict it was worse than dangling: the page refuses to read an address and
+ * the sentence then claimed a relationship with it.
+ */
+function registryNamed(verdict: Verdict): string | undefined {
+  return verdict.kind === "included" ? verdict.registry : undefined;
+}
+
+/**
+ * Why this page and the solvency page of an asset can name different
+ * registries.
+ *
+ * It takes the registry rather than reading it from the page above, so it
+ * cannot render beside a verdict that names none. The dependency is in the
+ * argument instead of in two places that have to agree.
+ */
+function Divergence(input: { registry: string | undefined }) {
+  if (input.registry === undefined) {
+    return null;
+  }
+  return (
+    <p className="limit">
+      The registry <span className="address">{input.registry}</span> is the one this package names.
+      The solvency page of an asset names the generation that holds it today. They are the same
+      address until an issuer registers that asset again on a newer generation, and after that they
+      differ and both are right.
+    </p>
+  );
+}
+
 export function InclusionVerdictPage(input: { verdict: Verdict }) {
   const lines = verdictLines(input.verdict);
   const [outcome, ...rest] = lines;
@@ -74,13 +109,7 @@ export function InclusionVerdictPage(input: { verdict: Verdict }) {
         <p className="limit">
           The command line reports this outcome as the exit code {exitCode(input.verdict)}.
         </p>
-        <p className="limit">
-          The registry above is the one the package names. The solvency page of an asset names the
-          generation that holds the asset today, and the two are the same address until the asset is
-          registered again on a newer generation. After that they differ, and both are right: this
-          check answers about the attestation the package was written for, and that page answers
-          about the record the asset has now.
-        </p>
+        <Divergence registry={registryNamed(input.verdict)} />
       </section>
       <p>
         <a href={ROUTES.inclusion}>Check another package</a>

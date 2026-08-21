@@ -225,7 +225,7 @@ export function verdictLines(verdict: Verdict): string[] {
         "The leaf is under the attested root.",
         `The asset is ${verdict.asset}.`,
         `The package names the registry ${verdict.registry}, and this check read that registry.`,
-        "A package selects a record inside the deployments file of this client. It cannot select the file, and a package naming a registry that the file does not record is refused rather than followed.",
+        "This client reads only the registries its own deployments file records. A package chooses among those, and one naming any other registry is refused.",
         `The leaf index is ${verdict.leafIndex}, and the balance is ${verdict.balance.toString(10)}.`,
         `The snapshot ledger is ${verdict.snapshotLedger}, and the registry read the reserves at ledger ${verdict.attestedLedger}.`,
         `The total liabilities under the root are ${verdict.totalLiabilities.toString(10)}.`,

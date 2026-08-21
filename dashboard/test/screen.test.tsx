@@ -9,13 +9,57 @@
 
 import { describe, expect, it } from "vitest";
 import { AssetPage, Home } from "../src/views/asset.js";
-import { InclusionForm } from "../src/views/inclusion.js";
+import { InclusionForm, InclusionVerdictPage } from "../src/views/inclusion.js";
 import { RunPage } from "../src/views/run.js";
 import { ASSET, assetView, framed, historyBlock } from "./support.js";
 import type { Run } from "../src/runs.js";
 
 const HOLDER = "CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG";
 const OTHER = "CCHUTDKUPWXVUIX6D26SE5NZ5STP74VV4DY2CNVCMNJYOU5PTROLA7MY";
+
+describe("a sentence that points at a value the page carries", () => {
+  /** Every verdict kind, with the one that names a registry first. */
+  const VERDICTS = [
+    {
+      kind: "included" as const,
+      asset: "CBSQOEUZDBCKO4NYNRJJSPOLEIXVWZZ66CZXWRSVUNZTNZK7IKHNNRY3",
+      registry: HOLDER,
+      leafIndex: 0,
+      balance: 1n,
+      snapshotLedger: 1,
+      attestedLedger: 2,
+      totalLiabilities: 1n,
+      reserveSum: 2n,
+      currentLedger: 3,
+      solvencyLapsed: false,
+    },
+    { kind: "unsupported-format" as const, reason: "a reason" },
+    { kind: "malformed" as const, reason: "a reason" },
+    {
+      kind: "untrusted-deployment" as const,
+      reason: "a reason",
+      network: "testnet",
+      registry: OTHER,
+    },
+    { kind: "invalid-deployments" as const, reason: "a reason" },
+    { kind: "no-matching-attestation" as const, reason: "a reason" },
+    { kind: "root-mismatch" as const, recomputed: 1n, attested: 2n },
+  ];
+
+  it("explains the two registries only where the page names one", () => {
+    // Six of the seven verdicts name no registry, and the paragraph pointed at
+    // one on all of them. On the untrusted verdict it was worse than dangling:
+    // the page refuses to read an address and the sentence then claimed a
+    // relationship with it.
+    for (const verdict of VERDICTS) {
+      const markup = framed(<InclusionVerdictPage verdict={verdict} />);
+      const explains = markup.includes("is the one this package names");
+      expect(explains, `${verdict.kind} explains the two registries`).toBe(
+        verdict.kind === "included",
+      );
+    }
+  });
+});
 
 describe("what a page tells a reader to do", () => {
   it("does not send the reader to a registry address in the frame", () => {

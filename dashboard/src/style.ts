@@ -66,7 +66,11 @@ section h2 {
   font-size: 1.15rem;
 }
 
-#solvency-headline h2 {
+/* The two answers of this product carry the same weight. One says whether the
+   reserves reach the liabilities, the other says whether a leaf is under the
+   attested root, and both answer a question the reader came with. */
+#solvency-headline h2,
+#verdict h2 {
   font-size: 1.4rem;
 }
 

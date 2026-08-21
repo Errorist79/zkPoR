@@ -59,7 +59,8 @@ export function AttestationForm(input: { open: Run | undefined; reason?: string 
           </label>
           <label className="choice">
             <input type="radio" name={RUN_FIELDS.action} value="attest" />
-            Prove and attest. The run submits the attestation to the registry.
+            Prove and attest. The run sends the attestation to the generation that holds this
+            asset.
           </label>
         </fieldset>
         <button type="submit">Start the run</button>
