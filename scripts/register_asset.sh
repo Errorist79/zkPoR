@@ -139,7 +139,14 @@ TRANSACTION=$(sed -nE 's/.*Signing transaction: ([0-9a-f]{64}).*/\1/p' "$NOTES" 
 
 RESULT=$(echo "$TX" | stellar tx send --network "$STELLAR_NETWORK_NAME" 2>"$NOTES") \
   || die "the registration failed:\n$(cat "$NOTES")\n$RESULT"
-[ -n "$TRANSACTION" ] && note "transaction $TRANSACTION"
+if [ -n "$TRANSACTION" ]; then
+  note "transaction $TRANSACTION"
+else
+  # The hash is a convenience for a reader and no input to the
+  # registration, so a parse that finds none must not stop a run that the
+  # chain accepted. It must also not look like a run that printed nothing.
+  note "the signing step named no transaction hash, so this run reports none"
+fi
 
 # The registry answers with its own record, so this reads the result from the
 # chain and never from the output of the submission.
