@@ -532,10 +532,36 @@ export async function writeCustomerPackages(input: {
       },
     },
   );
-  const reported = (await readFile(reportFile, "utf8")).trimEnd();
-  await rm(scratch, { recursive: true, force: true });
-  if (reported.length === 0) {
-    throw new ProvingError("the generator wrote the packages and reported no directory for them");
+  try {
+    return await packagesDirectoryOf(reportFile);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
   }
-  return reported;
+}
+
+/**
+ * The directory that the generator named in its report file.
+ *
+ * The path runs to the end of the file rather than to the first space, because
+ * an operator chooses where the packages go and that choice can hold a space.
+ * Only the final newline goes.
+ *
+ * A file that names nothing stops the caller. The packages exist at that point,
+ * so a run that returned an empty path would send a reader to the root of the
+ * file system and would look like a run that wrote nothing.
+ */
+export async function packagesDirectoryOf(reportFile: string): Promise<string> {
+  let reported: string;
+  try {
+    reported = await readFile(reportFile, "utf8");
+  } catch {
+    throw new ProvingError(
+      "the generator wrote the packages and left no report of the directory that holds them",
+    );
+  }
+  const directory = reported.replace(/\n$/, "");
+  if (directory.length === 0) {
+    throw new ProvingError("the generator wrote the packages and named no directory for them");
+  }
+  return directory;
 }

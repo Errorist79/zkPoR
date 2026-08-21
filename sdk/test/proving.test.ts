@@ -8,6 +8,8 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { captureOf, valueOf } from "./fixture-guards.js";
@@ -19,6 +21,7 @@ import {
 import {
   ProvingError,
   inputsAreNotFixtures,
+  packagesDirectoryOf,
   parseShape,
   windowAllowsProving,
 } from "../src/proving.js";
@@ -314,6 +317,58 @@ describe("the modules a proving run loads", () => {
     // looking at anything.
     expect(counted, "the read found almost no import, so it read almost nothing").toBeGreaterThan(
       15,
+    );
+  });
+});
+
+/**
+ * What the generator reports, read as a value.
+ *
+ * The report file exists because the printed sentence used to be the interface,
+ * and a reader of that sentence lost a path that held a space and took an older
+ * line when the run printed two. The cases below hold the answer to each, and
+ * they read a file rather than a process, so the decision is testable and the
+ * start of the generator stays where it is.
+ */
+describe("the directory that the generator reports", () => {
+  async function reportOf(content: string): Promise<string> {
+    const directory = await mkdtemp(join(tmpdir(), "zkpor-report-"));
+    const file = join(directory, "directory");
+    await writeFile(file, content);
+    return file;
+  }
+
+  it("names the directory that the file holds", async () => {
+    await expect(packagesDirectoryOf(await reportOf("/run/out/packages/CBSQ/4263061\n"))).resolves.toBe(
+      "/run/out/packages/CBSQ/4263061",
+    );
+  });
+
+  it("keeps a path that holds a space", async () => {
+    // An operator chooses where the packages go. The reader this replaced
+    // stopped at the first space and turned this into "/run/my".
+    await expect(packagesDirectoryOf(await reportOf("/run/my packages/CBSQ/4263061\n"))).resolves.toBe(
+      "/run/my packages/CBSQ/4263061",
+    );
+  });
+
+  it("drops the final newline and no other space", async () => {
+    await expect(packagesDirectoryOf(await reportOf("/run/out/trailing \n"))).resolves.toBe(
+      "/run/out/trailing ",
+    );
+  });
+
+  it("refuses a report that names nothing", async () => {
+    // The packages exist by now. An empty answer would send a reader to the
+    // root of the file system and would read as a run that wrote nothing.
+    await expect(packagesDirectoryOf(await reportOf(""))).rejects.toBeInstanceOf(ProvingError);
+    await expect(packagesDirectoryOf(await reportOf("\n"))).rejects.toBeInstanceOf(ProvingError);
+  });
+
+  it("refuses a report that the generator never wrote", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "zkpor-report-"));
+    await expect(packagesDirectoryOf(join(directory, "absent"))).rejects.toBeInstanceOf(
+      ProvingError,
     );
   });
 });
