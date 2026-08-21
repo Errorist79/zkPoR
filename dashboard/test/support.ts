@@ -5,6 +5,9 @@
  * chosen to make a confusion visible rather than to look plausible.
  */
 
+import type { ReactElement } from "react";
+import { ROUTES } from "../src/constants.js";
+import { renderPage } from "../src/render.js";
 import { readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -249,4 +252,16 @@ export function sources(directory: string = join(PACKAGE_ROOT, "src")): string[]
 /** The text of the markup, with every tag removed. */
 export function textOf(markup: string): string {
   return markup.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * One page, rendered inside a frame.
+ *
+ * The frame states the network, the registry and the navigation entry, and the
+ * layout refuses to render without one. A case that renders a page states which
+ * entry it is on when that is what it reads, and takes the asset entry
+ * otherwise, because most pages here sit under it.
+ */
+export function framed(element: ReactElement, current: string = ROUTES.home): string {
+  return renderPage(element, { network: NETWORK, registry: REGISTRY, current });
 }

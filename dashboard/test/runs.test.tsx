@@ -19,7 +19,6 @@ import { describe, expect, it } from "vitest";
 import { ATTESTATION_MAX_AGE_LEDGERS, MASTER_SECRET_ENV, AUTHORITY_SECRET_ENV } from "@zkpor/sdk";
 import { MAX_REMEMBERED_RUNS, ROUTES } from "../src/constants.js";
 import { RunRefusedError, afterTheProof, submitRun } from "../src/attestation.js";
-import { renderPage } from "../src/render.js";
 import { route } from "../src/routes.js";
 import { RunStore } from "../src/runs.js";
 import type { ProofSummary, Run, RunOutcome, WindowAtEnd } from "../src/runs.js";
@@ -31,6 +30,7 @@ import {
   dashboard,
   reader,
   request,
+  framed,
   sources,
 } from "./support.js";
 
@@ -242,21 +242,21 @@ function runIn(stage: Run["stage"]): Run {
 
 describe("the page of an open run", () => {
   it("reloads itself, and needs no script to do it", () => {
-    const markup = renderPage(<RunPage run={runIn("running")} joined={false} />);
+    const markup = framed(<RunPage run={runIn("running")} joined={false} />);
     expect(markup).toContain('http-equiv="refresh"');
     expect(markup).not.toMatch(/<script/i);
   });
 
   it("stops reloading itself once the run ends", () => {
     for (const stage of ["finished", "failed"] as const) {
-      expect(renderPage(<RunPage run={runIn(stage)} joined={false} />)).not.toContain(
+      expect(framed(<RunPage run={runIn(stage)} joined={false} />)).not.toContain(
         'http-equiv="refresh"',
       );
     }
   });
 
   it("says plainly when a submission started nothing", () => {
-    const markup = renderPage(<RunPage run={runIn("running")} joined={true} />);
+    const markup = framed(<RunPage run={runIn("running")} joined={true} />);
     expect(markup).toContain("your submission started nothing");
   });
 });
@@ -305,12 +305,12 @@ describe("the pages of a run and the environment", () => {
     withSecretsInTheEnvironment(() => {
       for (const stage of ["running", "finished", "failed"] as const) {
         for (const joined of [false, true]) {
-          const markup = renderPage(<RunPage run={runIn(stage)} joined={joined} />);
+          const markup = framed(<RunPage run={runIn(stage)} joined={joined} />);
           expect(markup).not.toContain(SENTINEL);
           expect(markup).not.toContain(AUTHORITY_SENTINEL);
         }
       }
-      const withProof = renderPage(
+      const withProof = framed(
         <RunPage run={{ ...runIn("finished"), proof: PROOF }} joined={false} />,
       );
       expect(withProof).not.toContain(SENTINEL);
@@ -492,7 +492,7 @@ describe("a submission that fails after a correct proof", () => {
       proof: PROOF,
       failure: "the snapshot ledger 5000 is outside the window at the current ledger 5800",
     };
-    const markup = renderPage(<RunPage run={run} joined={false} />);
+    const markup = framed(<RunPage run={run} joined={false} />);
     expect(markup).toContain("The run failed.");
     expect(markup).toContain("The proof finished and the run failed after it.");
     expect(markup).toContain(PROOF.totalLiabilities.toString(10));
@@ -535,7 +535,7 @@ describe("a prove-only run and the window", () => {
       proof: PROOF,
       window: { currentLedger: 5_100, stillOpen: true },
     };
-    const markup = renderPage(<RunPage run={run} joined={false} />);
+    const markup = framed(<RunPage run={run} joined={false} />);
     expect(markup).toContain("At ledger 5100 the snapshot could still be attested.");
     // The window closes at the snapshot plus the constant of the kit.
     expect(markup).toContain(String(5_000 + ATTESTATION_MAX_AGE_LEDGERS));
@@ -548,7 +548,7 @@ describe("a prove-only run and the window", () => {
       proof: PROOF,
       window: { currentLedger: 9_999, stillOpen: false },
     };
-    const markup = renderPage(<RunPage run={run} joined={false} />);
+    const markup = framed(<RunPage run={run} joined={false} />);
     expect(markup).toContain("had already left its window");
     expect(markup).toContain("The registry refuses this root now.");
     expect(markup).not.toContain("could still be attested");

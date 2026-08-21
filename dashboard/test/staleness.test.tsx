@@ -15,9 +15,8 @@ import { describe, expect, it } from "vitest";
 import { ATTESTATION_MAX_AGE_LEDGERS, solvencyLapsed } from "@zkpor/sdk";
 import { SECTION_IDS } from "../src/constants.js";
 import { solvencyResult } from "../src/model.js";
-import { renderPage } from "../src/render.js";
 import { AssetPage } from "../src/views/asset.js";
-import { assetView, attestation, assetRecord, sectionOf, textOf } from "./support.js";
+import { assetView, attestation, assetRecord, framed, sectionOf, textOf } from "./support.js";
 
 /** The snapshot of every case below. */
 const SNAPSHOT = 5_000;
@@ -26,7 +25,7 @@ const SNAPSHOT = 5_000;
 const LAST_CURRENT = SNAPSHOT + ATTESTATION_MAX_AGE_LEDGERS;
 
 function headlineAt(currentLedger: number): string {
-  const markup = renderPage(
+  const markup = framed(
     <AssetPage
       view={assetView({
         record: assetRecord({ attestation: attestation({ snapshotLedger: SNAPSHOT }) }),
@@ -84,7 +83,7 @@ describe("a page whose window has lapsed", () => {
   });
 
   it("marks the section, so a reader sees the state and not only the words", () => {
-    const markup = renderPage(
+    const markup = framed(
       <AssetPage
         view={assetView({
           record: assetRecord({ attestation: attestation({ snapshotLedger: SNAPSHOT }) }),
@@ -107,7 +106,7 @@ describe("a page whose window still stands", () => {
 
 describe("an asset with no attestation", () => {
   it("is a third outcome, and not a lapse and not a failure", () => {
-    const markup = renderPage(
+    const markup = framed(
       <AssetPage
         view={assetView({ record: assetRecord({ attestation: undefined }), observedSum: 42n })}
         history={undefined}

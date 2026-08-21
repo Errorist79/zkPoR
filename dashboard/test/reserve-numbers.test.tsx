@@ -11,7 +11,6 @@
 import { describe, expect, it } from "vitest";
 import { SECTION_IDS } from "../src/constants.js";
 import { coverageOf } from "../src/model.js";
-import { renderPage } from "../src/render.js";
 import { AssetPage } from "../src/views/asset.js";
 import {
   assetView,
@@ -20,6 +19,7 @@ import {
   diagnosis,
   historyView,
   sectionOf,
+  framed,
   textOf,
 } from "./support.js";
 
@@ -27,7 +27,7 @@ import {
 const SAME = 4_242_424_242n;
 
 function pageWithEqualSums(): string {
-  return renderPage(
+  return framed(
     <AssetPage
       view={assetView({
         record: assetRecord({ attestation: attestation({ reserveSum: SAME, totalLiabilities: 100n }) }),
@@ -109,7 +109,7 @@ describe("the comparison", () => {
   it("never takes the observed sum, even when the attested sum falls short", () => {
     // The attested reserves fall short and the observation is large. A page
     // that compared the observation would call this covered.
-    const markup = renderPage(
+    const markup = framed(
       <AssetPage
         view={assetView({
           record: assetRecord({
@@ -149,7 +149,7 @@ describe("the boundary of the comparison", () => {
   });
 
   it("says so on the page at the exact boundary", () => {
-    const markup = renderPage(
+    const markup = framed(
       <AssetPage
         view={assetView({
           record: assetRecord({
@@ -190,7 +190,7 @@ describe("the history, which is a third place that shows a reserve number", () =
     // Every earlier attestation carries the same digits as the observation.
     // The history states attested numbers, so it must use the attested name
     // and must never let a reader take one of its rows for the observation.
-    const markup = renderPage(
+    const markup = framed(
       <AssetPage
         view={assetView({ observedSum: SAME, observedLedger: 5_200 })}
         history={{
@@ -222,7 +222,7 @@ describe("the history, which is a third place that shows a reserve number", () =
   });
 
   it("states that it is not the complete record when it reached the retention limit", () => {
-    const markup = renderPage(
+    const markup = framed(
       <AssetPage view={assetView({ observedSum: 1n })} history={historyView()} />,
     );
     expect(textOf(sectionOf(markup, SECTION_IDS.history))).toContain(
@@ -233,7 +233,7 @@ describe("the history, which is a third place that shows a reserve number", () =
 
 describe("an observation that gave no sum", () => {
   it("names the address that the registry cannot read, and states no sum", () => {
-    const markup = renderPage(
+    const markup = framed(
       <AssetPage
         view={assetView({
           observationFailure: "the registry cannot read one reserve balance",

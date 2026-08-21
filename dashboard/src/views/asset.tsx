@@ -13,23 +13,33 @@ import type { AssetView, HistoryView, SolvencyResult } from "../model.js";
 import { Layout } from "./layout.js";
 import { AttestedReservesSection, ObservedReservesSection } from "./reserves.js";
 
-/** The form that asks for an asset address. */
-export function Home(input: { network: string; registry: string; reason?: string }) {
+/**
+ * The form that asks for an asset address.
+ *
+ * The page offers no list and it states why. The registry answers about one
+ * asset at a time: every one of its reads takes an asset address, and it holds
+ * no index that a reader could walk. So the address is something the reader
+ * brings, and a page that presented an empty field as a choice would ask for
+ * something it never had.
+ */
+export function Home(input: { reason?: string }) {
   return (
     <Layout title="zkPoR dashboard">
-      <h1>Choose an asset</h1>
+      <h1>Open an asset</h1>
+      <p>
+        Give the address of an asset that somebody registered with this registry. The registry
+        answers about one asset at a time and it keeps no list, so this page cannot offer one.
+      </p>
       {input.reason === undefined ? null : <p className="failure">{input.reason}</p>}
       <form method="get" action={ROUTES.asset}>
         <label htmlFor={ASSET_PARAMETER}>The address of a registered asset</label>
         <input id={ASSET_PARAMETER} name={ASSET_PARAMETER} required autoComplete="off" />
+        <p className="limit">
+          An account address or a contract address, which starts with G or with C. The registry
+          address in the frame above is not one of these.
+        </p>
         <button type="submit">Show the solvency result</button>
       </form>
-      <dl>
-        <dt>Network</dt>
-        <dd>{input.network}</dd>
-        <dt>Registry</dt>
-        <dd className="address">{input.registry}</dd>
-      </dl>
     </Layout>
   );
 }

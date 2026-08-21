@@ -73,7 +73,6 @@ import {
   LOOPBACK_HOST,
   ROUTES,
 } from "../src/constants.js";
-import { renderPage } from "../src/render.js";
 import { responseHeaders, route } from "../src/routes.js";
 import type { DashboardRequest } from "../src/routes.js";
 import { recordEgress } from "./egress.js";
@@ -95,6 +94,7 @@ import {
   historyView,
   dashboard,
   request,
+  framed,
   sources,
 } from "./support.js";
 
@@ -164,18 +164,18 @@ function runs(): readonly Run[] {
 /** Every page of the dashboard, in every state it renders. */
 function everyPage(): readonly { name: string; markup: string }[] {
   const pages: { name: string; markup: string }[] = [
-    { name: "home", markup: renderPage(<Home network={NETWORK} registry={REGISTRY} />) },
+    { name: "home", markup: framed(<Home />) },
     {
       name: "home with a reason",
-      markup: renderPage(<Home network={NETWORK} registry={REGISTRY} reason="give an address" />),
+      markup: framed(<Home reason="give an address" />),
     },
     {
       name: "asset with an attestation and a history",
-      markup: renderPage(<AssetPage view={assetView({ observedSum: 9n })} history={historyView()} />),
+      markup: framed(<AssetPage view={assetView({ observedSum: 9n })} history={historyView()} />),
     },
     {
       name: "asset without an attestation",
-      markup: renderPage(
+      markup: framed(
         <AssetPage
           view={assetView({ record: assetRecord({ attestation: undefined }), observedSum: 9n })}
           history={undefined}
@@ -184,7 +184,7 @@ function everyPage(): readonly { name: string; markup: string }[] {
     },
     {
       name: "asset whose observation failed",
-      markup: renderPage(
+      markup: framed(
         <AssetPage
           view={assetView({ observationFailure: "one balance read failed", diagnosis: diagnosis() })}
           history={historyView({ entries: [], reachesTheRetentionLimit: false })}
@@ -193,38 +193,38 @@ function everyPage(): readonly { name: string; markup: string }[] {
     },
     {
       name: "an asset with no record",
-      markup: renderPage(<UnregisteredAssetPage asset={ASSET} registry={REGISTRY} />),
+      markup: framed(<UnregisteredAssetPage asset={ASSET} registry={REGISTRY} />),
     },
-    { name: "the inclusion form", markup: renderPage(<InclusionForm />) },
+    { name: "the inclusion form", markup: framed(<InclusionForm />) },
     {
       name: "the inclusion form with a reason",
-      markup: renderPage(<InclusionForm reason="give a path" />),
+      markup: framed(<InclusionForm reason="give a path" />),
     },
-    { name: "the attestation form", markup: renderPage(<AttestationForm open={undefined} />) },
+    { name: "the attestation form", markup: framed(<AttestationForm open={undefined} />) },
     {
       name: "the attestation form with an open run",
-      markup: renderPage(<AttestationForm open={runs()[0]} reason="a run is open" />),
+      markup: framed(<AttestationForm open={runs()[0]} reason="a run is open" />),
     },
-    { name: "a forgotten run", markup: renderPage(<ForgottenRunPage />) },
+    { name: "a forgotten run", markup: framed(<ForgottenRunPage />) },
     {
       name: "a failure",
-      markup: renderPage(<Failure title="cannot read" reason="the endpoint refused" />),
+      markup: framed(<Failure title="cannot read" reason="the endpoint refused" />),
     },
   ];
   for (const verdict of VERDICTS) {
     pages.push({
       name: `the verdict ${verdict.kind}`,
-      markup: renderPage(<InclusionVerdictPage verdict={verdict} />),
+      markup: framed(<InclusionVerdictPage verdict={verdict} />),
     });
   }
   for (const run of runs()) {
     pages.push({
       name: `a ${run.action} run that is ${run.stage}`,
-      markup: renderPage(<RunPage run={run} joined={false} />),
+      markup: framed(<RunPage run={run} joined={false} />),
     });
     pages.push({
       name: `a joined ${run.action} run that is ${run.stage}`,
-      markup: renderPage(<RunPage run={run} joined={true} />),
+      markup: framed(<RunPage run={run} joined={true} />),
     });
   }
   return pages;

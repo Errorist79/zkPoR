@@ -23,7 +23,6 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { EXIT_CODES, exitCode, verdictLines } from "@zkpor/sdk";
 import type { Verdict } from "@zkpor/sdk";
 import { PACKAGE_PATH_FIELD, ROUTES, SECTION_IDS } from "../src/constants.js";
-import { renderPage } from "../src/render.js";
 import { route } from "../src/routes.js";
 import { InclusionVerdictPage } from "../src/views/inclusion.js";
 import {
@@ -33,6 +32,7 @@ import {
   dashboard,
   request,
   sectionOf,
+  framed,
   textOf,
 } from "./support.js";
 
@@ -186,7 +186,7 @@ const EVERY_VERDICT: readonly Verdict[] = [
 
 describe("the verdict page", () => {
   it.each(EVERY_VERDICT)("states every line the kit writes for $kind", (verdict) => {
-    const markup = renderPage(<InclusionVerdictPage verdict={verdict} />);
+    const markup = framed(<InclusionVerdictPage verdict={verdict} />);
     const shown = textOf(sectionOf(markup, SECTION_IDS.verdict));
     for (const line of verdictLines(verdict)) {
       expect(shown).toContain(line);
@@ -204,7 +204,7 @@ describe("the verdict page", () => {
     if (lapsed === undefined) {
       throw new Error("the list of verdicts lost the lapsed case");
     }
-    const shown = textOf(sectionOf(renderPage(<InclusionVerdictPage verdict={lapsed} />), SECTION_IDS.verdict));
+    const shown = textOf(sectionOf(framed(<InclusionVerdictPage verdict={lapsed} />), SECTION_IDS.verdict));
     expect(shown).toContain("The leaf is under the attested root.");
     expect(shown).toContain("The inclusion is valid.");
     expect(shown).toContain("The solvency claim has lapsed");

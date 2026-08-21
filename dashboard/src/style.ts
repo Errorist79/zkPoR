@@ -39,6 +39,16 @@ nav a {
   margin-right: 1rem;
 }
 
+nav a[aria-current="page"] {
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.deployment {
+  font-size: 0.9rem;
+  margin-bottom: 0.25rem;
+}
+
 .local,
 .limit {
   color: var(--edge);
@@ -106,10 +116,26 @@ label {
   font-weight: 600;
 }
 
+/* The label of a choice names the option rather than the field above it, so it
+   carries the weight of running text and not the weight of a field name. */
+label.choice {
+  font-weight: 400;
+}
+
 input {
   font-family: ui-monospace, monospace;
+}
+
+/* The width and the padding belong to a field that takes typing. A radio takes
+   none, and the pair stretched it across the line and pushed its own text onto
+   the next one, so the two options read as headings. */
+input:not([type="radio"]) {
   padding: 0.4rem;
   width: 100%;
+}
+
+label.choice input {
+  margin-right: 0.4rem;
 }
 
 button {

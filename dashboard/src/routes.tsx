@@ -31,6 +31,7 @@ import { readAssetView, readHistoryView } from "./chain.js";
 import { submitRun } from "./attestation.js";
 import type { RunAction, RunStore } from "./runs.js";
 import { renderPage } from "./render.js";
+import type { Frame } from "./render.js";
 import { STYLESHEET } from "./style.js";
 import { AssetPage, Home, UnregisteredAssetPage } from "./views/asset.js";
 import { InclusionForm, InclusionVerdictPage } from "./views/inclusion.js";
@@ -67,6 +68,21 @@ export interface DashboardResponse {
   readonly body: string;
   /** The address of a redirect, which is always a path of this process. */
   readonly location?: string;
+}
+
+/**
+ * What the frame of a page states, for one request.
+ *
+ * The navigation entry is the one the reader is inside, which is not always the
+ * path they are on: an asset page and a run page each sit under an entry of
+ * their own.
+ */
+function frameOf(dashboard: Dashboard, current: string): Frame {
+  return {
+    network: dashboard.reader.config.network,
+    registry: dashboard.reader.registry,
+    current,
+  };
 }
 
 /** The headers that one answer carries. */
@@ -185,27 +201,37 @@ export async function route(
     if (path === ROUTES.home) {
       return html(
         200,
-        renderPage(
-          <Home network={dashboard.reader.config.network} registry={dashboard.reader.registry} />,
-        ),
+        renderPage(<Home />, frameOf(dashboard, ROUTES.home)),
       );
     }
     if (path === ROUTES.asset) {
       return await assetPage(query.get(ASSET_PARAMETER), dashboard);
     }
     if (path === ROUTES.inclusion) {
-      return html(200, renderPage(<InclusionForm />));
+      return html(200, renderPage(<InclusionForm />, frameOf(dashboard, ROUTES.inclusion)));
     }
     if (path === ROUTES.attestation) {
-      return html(200, renderPage(<AttestationForm open={dashboard.store.open()} />));
+      return html(
+        200,
+        renderPage(
+          <AttestationForm open={dashboard.store.open()} />,
+          frameOf(dashboard, ROUTES.attestation),
+        ),
+      );
     }
     const id = runIdOf(path);
     if (id !== undefined) {
       const run = dashboard.store.get(id);
       if (run === undefined) {
-        return html(404, renderPage(<ForgottenRunPage />));
+        return html(404, renderPage(<ForgottenRunPage />, frameOf(dashboard, ROUTES.attestation)));
       }
-      return html(200, renderPage(<RunPage run={run} joined={query.get(JOINED_PARAMETER) === JOINED_VALUE} />));
+      return html(
+        200,
+        renderPage(
+          <RunPage run={run} joined={query.get(JOINED_PARAMETER) === JOINED_VALUE} />,
+          frameOf(dashboard, ROUTES.attestation),
+        ),
+      );
     }
   }
 
@@ -234,7 +260,7 @@ async function assetPage(asset: string | null, dashboard: Dashboard): Promise<Da
   const chooseAgain = (reason: string): DashboardResponse =>
     html(
       400,
-      renderPage(<Home network={reader.config.network} registry={reader.registry} reason={reason} />),
+      renderPage(<Home reason={reason} />, frameOf(dashboard, ROUTES.home)),
     );
   if (asset === null || asset.trim().length === 0) {
     return chooseAgain("Give the address of a registered asset.");
@@ -247,10 +273,16 @@ async function assetPage(asset: string | null, dashboard: Dashboard): Promise<Da
   try {
     view = await readAssetView(reader, address);
   } catch (cause) {
-    return failure("The dashboard cannot read the asset", cause);
+    return failure("The dashboard cannot read the asset", cause, frameOf(dashboard, ROUTES.home));
   }
   if (view === undefined) {
-    return html(404, renderPage(<UnregisteredAssetPage asset={address} registry={reader.registry} />));
+    return html(
+      404,
+      renderPage(
+        <UnregisteredAssetPage asset={address} registry={reader.registry} />,
+        frameOf(dashboard, ROUTES.home),
+      ),
+    );
   }
   // The history is a second read and it can fail on its own. A page without it
   // still carries the attestation that the entry holds, so a failure of the
@@ -261,7 +293,10 @@ async function assetPage(asset: string | null, dashboard: Dashboard): Promise<Da
   } catch {
     history = undefined;
   }
-  return html(200, renderPage(<AssetPage view={view} history={history} />));
+  return html(
+    200,
+    renderPage(<AssetPage view={view} history={history} />, frameOf(dashboard, ROUTES.home)),
+  );
 }
 
 async function inclusionVerdict(
@@ -269,7 +304,13 @@ async function inclusionVerdict(
   dashboard: Dashboard,
 ): Promise<DashboardResponse> {
   if (path === null || path.trim().length === 0) {
-    return html(400, renderPage(<InclusionForm reason="Give the path of your package file." />));
+    return html(
+      400,
+      renderPage(
+        <InclusionForm reason="Give the path of your package file." />,
+        frameOf(dashboard, ROUTES.inclusion),
+      ),
+    );
   }
   const chosen = path.trim();
   let packageText;
@@ -278,7 +319,10 @@ async function inclusionVerdict(
   } catch {
     return html(
       400,
-      renderPage(<InclusionForm reason={`This machine holds no readable file at ${chosen}.`} />),
+      renderPage(
+        <InclusionForm reason={`This machine holds no readable file at ${chosen}.`} />,
+        frameOf(dashboard, ROUTES.inclusion),
+      ),
     );
   }
   const { reader } = dashboard;
@@ -290,9 +334,16 @@ async function inclusionVerdict(
       config: reader.config,
       readOptions: reader.readOptions,
     });
-    return html(200, renderPage(<InclusionVerdictPage verdict={verdict} />));
+    return html(
+      200,
+      renderPage(<InclusionVerdictPage verdict={verdict} />, frameOf(dashboard, ROUTES.inclusion)),
+    );
   } catch (cause) {
-    return failure("The dashboard cannot complete the check", cause);
+    return failure(
+      "The dashboard cannot complete the check",
+      cause,
+      frameOf(dashboard, ROUTES.inclusion),
+    );
   }
 }
 
@@ -309,7 +360,13 @@ async function startRun(
   dashboard: Dashboard,
 ): Promise<DashboardResponse> {
   const refuse = (reason: string): DashboardResponse =>
-    html(400, renderPage(<AttestationForm open={dashboard.store.open()} reason={reason} />));
+    html(
+      400,
+      renderPage(
+        <AttestationForm open={dashboard.store.open()} reason={reason} />,
+        frameOf(dashboard, ROUTES.attestation),
+      ),
+    );
 
   const contextPath = fields.get(RUN_FIELDS.contextPath)?.trim() ?? "";
   const customersPath = fields.get(RUN_FIELDS.customersPath)?.trim() ?? "";
@@ -337,7 +394,11 @@ async function startRun(
     // secret whose salts anybody can recompute, and a snapshot that can no
     // longer land, and this package refuses a missing key.
     if (cause instanceof InfrastructureError) {
-      return failure("The dashboard cannot start the run", cause);
+      return failure(
+        "The dashboard cannot start the run",
+        cause,
+        frameOf(dashboard, ROUTES.attestation),
+      );
     }
     return refuse(cause instanceof Error ? cause.message : "The dashboard cannot start the run.");
   }
@@ -353,8 +414,8 @@ async function startRun(
  * failure of another kind carries no message that a reader can act on, so the
  * page states the kind and nothing more.
  */
-function failure(title: string, cause: unknown): DashboardResponse {
+function failure(title: string, cause: unknown, frame: Frame): DashboardResponse {
   const reason =
     cause instanceof Error ? cause.message : "the client failed for a reason it cannot describe";
-  return html(502, renderPage(<Failure title={title} reason={reason} />));
+  return html(502, renderPage(<Failure title={title} reason={reason} />, frame));
 }

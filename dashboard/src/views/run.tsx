@@ -53,11 +53,11 @@ export function AttestationForm(input: { open: Run | undefined; reason?: string 
         />
         <fieldset>
           <legend>What this run does</legend>
-          <label>
+          <label className="choice">
             <input type="radio" name={RUN_FIELDS.action} value="prove" defaultChecked />
             Prove only. The run stops at the proof and submits nothing.
           </label>
-          <label>
+          <label className="choice">
             <input type="radio" name={RUN_FIELDS.action} value="attest" />
             Prove and attest. The run submits the attestation to the registry.
           </label>

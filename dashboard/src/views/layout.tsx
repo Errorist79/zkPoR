@@ -7,8 +7,23 @@
  * it reaches nothing.
  */
 
+import { useContext } from "react";
 import type { ReactNode } from "react";
 import { ROUTES } from "../constants.js";
+import { FrameContext } from "../render.js";
+
+/** One entry of the navigation. */
+function Entry(input: { href: string; current: string; children: ReactNode }) {
+  // The marking is an attribute that names the state rather than a class that
+  // describes a look, so a reader who hears the page hears it too. The page
+  // carries no script, so the frame decides this and nothing later changes it.
+  const here = input.href === input.current;
+  return (
+    <a href={input.href} aria-current={here ? "page" : undefined}>
+      {input.children}
+    </a>
+  );
+}
 
 /**
  * The heading and the navigation that every page carries.
@@ -16,12 +31,22 @@ import { ROUTES } from "../constants.js";
  * A page that watches an open run names a refresh interval. The directive
  * reloads this same address, which is a navigation and not a fetch, so the
  * policy that blocks every script and every remote resource still holds.
+ *
+ * The frame states the network and the registry on every page. A reader who is
+ * about to submit an attestation must see which network and which registry the
+ * submission reaches, and that reader is not on the asset page.
  */
 export function Layout(input: {
   title: string;
   children: ReactNode;
   refreshSeconds?: number | undefined;
 }) {
+  const frame = useContext(FrameContext);
+  if (frame === undefined) {
+    throw new Error(
+      "this page rendered outside the frame, so it states no network and no registry",
+    );
+  }
   return (
     <html lang="en">
       <head>
@@ -37,10 +62,20 @@ export function Layout(input: {
         <header>
           <p className="mark">zkPoR</p>
           <nav>
-            <a href={ROUTES.home}>Asset</a>
-            <a href={ROUTES.attestation}>Prove and attest</a>
-            <a href={ROUTES.inclusion}>Inclusion check</a>
+            <Entry href={ROUTES.home} current={frame.current}>
+              Asset
+            </Entry>
+            <Entry href={ROUTES.attestation} current={frame.current}>
+              Prove and attest
+            </Entry>
+            <Entry href={ROUTES.inclusion} current={frame.current}>
+              Inclusion check
+            </Entry>
           </nav>
+          <p className="deployment">
+            Network <strong>{frame.network}</strong>, registry{" "}
+            <span className="address">{frame.registry}</span>
+          </p>
           <p className="local">
             This dashboard runs on this machine. It sends nothing anywhere except the read calls
             that it makes to the network endpoint you configured.
