@@ -8,7 +8,21 @@
  * registry.
  *
  * These cases call the function that writes the lines and read what it returns.
- * A comment cannot satisfy them.
+ * A comment cannot satisfy them. *
+ * ## Some cases here assert a sentence, and that is deliberate
+ *
+ * Where the requirement is that a page or an answer says something, the wording
+ * is the property, and a case can only check it by reading the words. Such a
+ * case fails whenever somebody improves the sentence, including when the
+ * improvement is right.
+ *
+ * That is not a defect in the case. It is a checkpoint. Each one names the
+ * claim it protects, separately from the phrase it asserts. **If one fails
+ * after a rewrite, read the claim, confirm the new sentence still carries it,
+ * and then update the phrase.** Do not weaken the assertion to make it pass.
+ *
+ * This is a different thing from a guard that reads a source file, which a
+ * comment can satisfy without the program saying anything at all.
  */
 
 import { describe, expect, it } from "vitest";
@@ -35,7 +49,10 @@ const INCLUDED: Verdict = {
 };
 
 describe("the answer of the inclusion check", () => {
-  it("says the package chose the registry, in the answer itself", () => {
+  // Claim: the answer says which of the two possible choosers picked this
+  // registry, so a reader is never left to work out whether the package or the
+  // client decided.
+  it("says, in words, that the package chose the registry", () => {
     // The asset page names a registry too, and finds it by asking which
     // generation holds the asset. The two coincide today and diverge for a
     // package of an earlier generation, so each answer says who chose.
@@ -44,7 +61,9 @@ describe("the answer of the inclusion check", () => {
     expect(lines).toContain("this check read that registry");
   });
 
-  it("says a package cannot choose the file that the client trusts", () => {
+  // Claim: a package selects within the trusted deployments file and cannot
+  // select the file, and one naming an unrecorded registry is refused.
+  it("says, in words, that a package cannot choose the trusted file", () => {
     // Stating only that the package named the registry advertises the
     // obedience and hides the guard. A reader would be right to wonder whether
     // a package can point this client anywhere, and the answer is no.
@@ -53,6 +72,8 @@ describe("the answer of the inclusion check", () => {
     expect(lines).toContain("is refused");
   });
 
+  // Claim: the asset and the registry are two statements, so two facts do not
+  // read as one.
   it("names the asset on a line of its own", () => {
     // The asset and the registry were one sentence, which made two claims read
     // as one fact.

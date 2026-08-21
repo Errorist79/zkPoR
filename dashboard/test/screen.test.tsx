@@ -79,6 +79,9 @@ describe("what a page tells a reader to do", () => {
     expect(markup).not.toContain("registered with this registry");
   });
 
+  // Claim: a generation is one deployment of the registry and its verifier, an
+  // asset lives on the one it registered with, and an issuer may register again
+  // on a newer one.
   it("defines a generation before a page uses the word", () => {
     // The word carries the whole point of the release and appeared first on the
     // page that answers, with no page defining it.
@@ -86,7 +89,9 @@ describe("what a page tells a reader to do", () => {
     expect(markup).toContain("A generation is one deployment of the registry");
   });
 
-  it("says why the inclusion field will not take a directory", () => {
+  // Claim: the refusal is a rule rather than a limitation, because each file
+  // holds one customer's balance.
+  it("says, in words, why the inclusion field will not take a directory", () => {
     // The refusal is a rule and not a limitation: each file holds one
     // customer's balance, so choosing one would be the page deciding whose.
     const markup = framed(<InclusionForm />);
@@ -102,7 +107,10 @@ describe("what a page tells a reader to do", () => {
     expect(markup).toContain("package-000000.zkpor.json");
   });
 
-  it("says what unit its figures are in", () => {
+  // Claim: the figures are raw balances in the asset's smallest unit, the page
+  // applies no decimal of its own, and a classic Stellar asset is ten million
+  // to the unit.
+  it("says, in words, what unit its figures are in", () => {
     // A reader who does not know Stellar reads 150000000000 as an amount.
     const markup = framed(<AssetPage view={assetView()} history={undefined} />);
     expect(markup).toContain("smallest unit");
