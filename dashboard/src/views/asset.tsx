@@ -9,7 +9,13 @@
 
 import { toHex } from "@zkpor/sdk";
 import { ASSET_PARAMETER, ROUTES, SECTION_IDS } from "../constants.js";
-import type { AssetView, HistoryView, SolvencyResult } from "../model.js";
+import type {
+  AssetView,
+  HistoryBlock,
+  HistoryEntry,
+  HistoryView,
+  SolvencyResult,
+} from "../model.js";
 import { Layout } from "./layout.js";
 import { AttestedReservesSection, ObservedReservesSection } from "./reserves.js";
 
@@ -116,35 +122,60 @@ function Registration(input: { view: AssetView }) {
   );
 }
 
-/** The record of the earlier attestations, with the bound of the query. */
+/**
+ * The record of the earlier attestations, one block for each generation.
+ *
+ * An issuer who registered again after a migration holds attestations on two
+ * registries. A page that showed one of them would be true and would read as
+ * the whole record, so every recorded generation gets a block and each block
+ * names the registry that answered it.
+ */
 function History(input: { history: HistoryView | undefined }) {
   if (input.history === undefined) {
     return null;
   }
-  const { history } = input;
   return (
     <section id={SECTION_IDS.history}>
       <h2>Earlier attestations</h2>
-      <p>
-        The query covered the ledgers from {history.oldestLedgerCovered} to {history.latestLedger}.
-        The endpoint retains the ledgers from {history.oldestLedgerRetained}.
+      {input.history.blocks.map((block) => (
+        <HistoryOfRegistry key={block.registry} block={block} />
+      ))}
+      <p className="limit">
+        Weigh the record of repeated attestations over any single one. A single attestation proves
+        the balances at one ledger that the authority chose.
       </p>
-      {history.reachesTheRetentionLimit ? (
+    </section>
+  );
+}
+
+/** One generation's answer about one asset. */
+function HistoryOfRegistry(input: { block: HistoryBlock }) {
+  const { block } = input;
+  return (
+    <div className="generation">
+      <h3>
+        The registry <span className="address">{block.registry}</span>
+      </h3>
+      <p>
+        The query covered the ledgers from {block.oldestLedgerCovered} to {block.latestLedger}. The
+        endpoint retains the ledgers from {block.oldestLedgerRetained}.
+      </p>
+      {block.reachesTheRetentionLimit ? (
         <p className="limit">
           The query started at the oldest retained ledger. An earlier attestation can exist that this
           result does not name, so this is not the complete record.
         </p>
       ) : null}
-      {!history.coversTheWholeRange ? (
+      {!block.coversTheWholeRange ? (
         <p className="limit">
           The endpoint stopped before the end of the range, so this page cannot say whether the
           range holds an attestation that the table does not name.
         </p>
       ) : null}
-      {history.entries.length === 0 ? (
+      {block.entries.length === 0 ? (
         <p>
-          {history.coversTheWholeRange
-            ? "The query found no attestation in that range."
+          {block.coversTheWholeRange
+            ? "This registry holds no attestation of this asset in that range."
             : "The query saw no attestation before the endpoint stopped."}
         </p>
       ) : (
@@ -160,14 +191,16 @@ function History(input: { history: HistoryView | undefined }) {
             </tr>
           </thead>
           <tbody>
-            {history.entries.map((entry) => (
+            {block.entries.map((entry: HistoryEntry) => (
               <tr key={entry.transactionHash}>
                 <td>{entry.snapshotLedger}</td>
                 <td>{entry.attested.attestedLedger}</td>
                 <td className="figure">{entry.totalLiabilities.toString(10)}</td>
                 <td className="figure">{entry.attested.sum.toString(10)}</td>
                 <td>
-                  {entry.coverage === "reserves-reach-liabilities" ? "Reserves reach" : "Reserves fall short"}
+                  {entry.coverage === "reserves-reach-liabilities"
+                    ? "Reserves reach"
+                    : "Reserves fall short"}
                 </td>
                 <td className="address">{entry.transactionHash}</td>
               </tr>
@@ -175,11 +208,7 @@ function History(input: { history: HistoryView | undefined }) {
           </tbody>
         </table>
       )}
-      <p className="limit">
-        Weigh the record of repeated attestations over any single one. A single attestation proves
-        the balances at one ledger that the authority chose.
-      </p>
-    </section>
+    </div>
   );
 }
 
@@ -212,14 +241,24 @@ export function AssetPage(input: { view: AssetView; history: HistoryView | undef
   );
 }
 
-/** The page for an address that the registry holds no record of. */
-export function UnregisteredAssetPage(input: { asset: string; registry: string }) {
+/** The page for an address that no recorded generation holds. */
+export function UnregisteredAssetPage(input: { asset: string; asked: readonly string[] }) {
   return (
     <Layout title={`zkPoR: ${input.asset}`}>
       <h1 className="address">{input.asset}</h1>
       <p>
-        The registry <span className="address">{input.registry}</span> holds no record of this
-        asset. That is an answer from the registry, and not a failure of this dashboard.
+        No recorded generation holds this asset. That is an answer from the registries, and not a
+        failure of this dashboard.
+      </p>
+      <p>
+        This dashboard asked{" "}
+        {input.asked.map((registry, position) => (
+          <span key={registry}>
+            {position > 0 ? ", " : ""}
+            <span className="address">{registry}</span>
+          </span>
+        ))}
+        .
       </p>
       <p>
         <a href={ROUTES.home}>Choose another asset</a>

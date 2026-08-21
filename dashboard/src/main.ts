@@ -10,6 +10,7 @@
 
 import {
   ConfigurationError,
+  generationsNewestFirst,
   EXIT_USAGE,
   openServer,
   readDeployments,
@@ -17,7 +18,6 @@ import {
   resolveReadOptions,
 } from "@zkpor/sdk";
 import { DEFAULT_PORT, LOOPBACK_HOST, PORT_ENV } from "./constants.js";
-import { registryOfGeneration } from "./chain.js";
 import { RunStore } from "./runs.js";
 import { openDashboard } from "./server.js";
 
@@ -51,7 +51,14 @@ function port(value: string | undefined): number {
 async function main(): Promise<void> {
   const config = resolveNetworkConfig(process.env);
   const deploymentsText = await readDeployments(process.env);
-  const registry = registryOfGeneration(deploymentsText, config.network);
+  // This process holds no registry, and it still refuses to start against a
+  // network the file does not record. That is a setting an operator can
+  // correct, so they meet it now rather than on the first page they open.
+  if (generationsNewestFirst(deploymentsText, config.network).length === 0) {
+    throw new ConfigurationError(
+      `the deployments file records no generation on the network ${config.network}`,
+    );
+  }
   const server = await openDashboard({
     port: port(process.env[PORT_ENV]),
     dashboard: {
@@ -59,7 +66,6 @@ async function main(): Promise<void> {
         server: openServer(config),
         config,
         readOptions: resolveReadOptions(process.env),
-        registry,
         deploymentsText,
       },
       store: new RunStore(),
@@ -80,7 +86,7 @@ async function main(): Promise<void> {
   process.stdout.write(
     [
       `The zkPoR dashboard listens on http://${LOOPBACK_HOST}:${String(bound.port)}/`,
-      `The network is ${config.network} and the registry is ${registry}.`,
+      `The network is ${config.network}.`,
       "The listener binds the loopback address only, so no other machine reaches it.",
       "Stop it with Ctrl-C.",
       "",

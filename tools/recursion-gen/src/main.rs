@@ -796,17 +796,31 @@ fn write_packages(
 
     let deployments = fs::read_to_string(request.deployments_file)
         .unwrap_or_else(|_| panic!("read {}", request.deployments_file.display()));
-    let generation = deployments::current(&deployments, request.network)
-        .unwrap_or_else(|reason| panic!("{DEPLOYMENTS_FILE}: {reason}"));
+    // The record of the registry that the attestation reached, and not of the
+    // newest generation. An asset that registered under an earlier generation
+    // can be attested nowhere else, so an attestation legitimately reaches a
+    // registry that is not the newest, and demanding the newest here would
+    // refuse exactly those runs after the transaction had landed.
+    //
+    // The guard does not weaken. It changes from "the attestation reached the
+    // newest generation" to "the attestation reached a generation this file
+    // records", which is the property that matters: a registry nobody vouched
+    // for gets no packages.
+    let generation = deployments::find(&deployments, request.network, request.registry)
+        .unwrap_or_else(|reason| panic!("{DEPLOYMENTS_FILE}: {reason}"))
+        .unwrap_or_else(|| {
+            panic!(
+                "{DEPLOYMENTS_FILE} records no generation with the registry {} on the network {}",
+                request.registry, request.network
+            )
+        });
+    // The depth comes from the same record as the registry. Reading one field
+    // from the generation that answered and another from the newest would check
+    // this tree against a generation the attestation never touched.
     assert_eq!(
         generation.tree_depth, depth,
-        "the {} generation holds trees of depth {}, and this tree has depth {depth}",
-        request.network, generation.tree_depth
-    );
-    assert_eq!(
-        generation.registry, request.registry,
-        "the {} generation names the registry {}, and the attestation reached {}",
-        request.network, generation.registry, request.registry
+        "the generation of the registry {} holds trees of depth {}, and this tree has depth {depth}",
+        generation.registry, generation.tree_depth
     );
 
     // The first half of the gate. This comparison needs no tree, and it names
@@ -1850,18 +1864,50 @@ mod tests {
         );
     }
 
-    /// The package sends the customer to the registry of the deployment
-    /// record. A record of another registry must stop the generation, because
-    /// the customer would read a root that this attestation never reached.
+    /// The package sends the customer to the registry that the attestation
+    /// reached. A registry that the deployments file does not record must stop
+    /// the generation, because nobody vouched for the contract the customer
+    /// would then be sent to.
     #[test]
-    #[should_panic(expected = "names the registry")]
-    fn a_generation_of_another_registry_is_refused() {
+    #[should_panic(expected = "records no generation with the registry")]
+    fn a_registry_that_the_file_does_not_record_is_refused() {
         let depth = read_shape().2.trailing_zeros() as usize;
         generate_for_registry(
             "zkpor_packages_registry",
             fixture_attestation(),
             &deployments_with_depth("zkpor_deployments_registry.json", depth),
             "CANOTHERREGISTRY",
+        );
+    }
+
+    /// An asset that registered under an earlier generation can be attested
+    /// nowhere else, so an attestation reaches a registry that is not the
+    /// newest and the packages of its customers must still be written.
+    #[test]
+    fn an_earlier_recorded_generation_is_accepted() {
+        let depth = read_shape().2.trailing_zeros() as usize;
+        let file = write_temp(
+            "zkpor_deployments_two.json",
+            &format!(
+                "[\n  {{\n    \"network\": \"{TEST_NETWORK}\",\n    \
+                 \"registry\": \"{TEST_REGISTRY}\",\n    \
+                 \"verifier\": \"{TEST_REGISTRY}\",\n    \
+                 \"verification_key_sha256\": \"{TEST_TRANSACTION}\",\n    \
+                 \"tree_depth\": {depth}\n  }},\n  {{\n    \
+                 \"network\": \"{TEST_NETWORK}\",\n    \
+                 \"registry\": \"CANEWERREGISTRY\",\n    \
+                 \"verifier\": \"{TEST_REGISTRY}\",\n    \
+                 \"verification_key_sha256\": \"{TEST_TRANSACTION}\",\n    \
+                 \"tree_depth\": {depth}\n  }}\n]\n"
+            ),
+        );
+        // TEST_REGISTRY is the older record of the two, and the packages are
+        // written for it rather than for the newest.
+        generate_for_registry(
+            "zkpor_packages_earlier",
+            fixture_attestation(),
+            &file,
+            TEST_REGISTRY,
         );
     }
 

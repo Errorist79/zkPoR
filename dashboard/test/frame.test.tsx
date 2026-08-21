@@ -45,14 +45,25 @@ describe("the frame of every page", () => {
     }
   });
 
-  it("states the network and the registry, whatever the page holds", async () => {
+  it("states the network, whatever the page holds", async () => {
     // The page that submits an attestation is the one where this matters, and
-    // it is not the asset page. Before the frame carried them, the asset page
-    // was the only page that did.
+    // it is not the asset page. Before the frame carried it, the asset page was
+    // the only page that named the network.
     for (const each of PAGES) {
       const markup = await markupOf(each.target);
       expect(markup, `${each.name} names no network`).toContain(NETWORK);
-      expect(markup, `${each.name} names no registry`).toContain(REGISTRY);
+    }
+  });
+
+  it("names no registry in the frame, because this process holds none", async () => {
+    // A page about an asset names the generation that holds that asset, inside
+    // the page. A frame that named one registry would state it above a page
+    // answering about another, which is the defect that made the asset page
+    // tell a reader that a registered asset does not exist.
+    for (const each of PAGES) {
+      const markup = await markupOf(each.target);
+      const frame = markup.slice(0, markup.indexOf("</header>"));
+      expect(frame, `${each.name} names a registry in its frame`).not.toContain(REGISTRY);
     }
   });
 

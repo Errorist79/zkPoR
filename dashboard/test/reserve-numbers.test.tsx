@@ -194,20 +194,25 @@ describe("the history, which is a third place that shows a reserve number", () =
       <AssetPage
         view={assetView({ observedSum: SAME, observedLedger: 5_200 })}
         history={{
-          entries: [
+          blocks: [
             {
-              snapshotLedger: 4_300,
-              totalLiabilities: 900n,
-              attested: { sum: SAME, attestedLedger: 4_390 },
-              coverage: "reserves-reach-liabilities",
-              transactionHash: "a".repeat(64),
+              registry: "CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG",
+              entries: [
+                {
+                  snapshotLedger: 4_300,
+                  totalLiabilities: 900n,
+                  attested: { sum: SAME, attestedLedger: 4_390 },
+                  coverage: "reserves-reach-liabilities",
+                  transactionHash: "a".repeat(64),
+                },
+              ],
+              oldestLedgerCovered: 4_000,
+              oldestLedgerRetained: 4_000,
+              latestLedger: 5_200,
+              reachesTheRetentionLimit: false,
+              coversTheWholeRange: true,
             },
           ],
-          oldestLedgerCovered: 4_000,
-          oldestLedgerRetained: 4_000,
-          latestLedger: 5_200,
-          reachesTheRetentionLimit: false,
-          coversTheWholeRange: true,
         }}
       />,
     );

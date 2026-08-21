@@ -15,7 +15,7 @@ import {
   MASTER_SECRET_ENV,
   MASTER_SECRET_FILE_ENV,
 } from "./constants.js";
-import { InfrastructureError, latestLedger, openServer } from "./network.js";
+import { latestLedger, openServer } from "./network.js";
 import type { NetworkConfig } from "./network.js";
 import {
   AUTHORITY_SECRET_ENV,
@@ -30,7 +30,12 @@ import {
   resolveNetworkConfig,
   resolveReadOptions,
 } from "./config.js";
-import { currentGeneration } from "./deployments.js";
+import type { Generation } from "./deployments.js";
+import {
+  generationForRegistration,
+  generationsNewestFirst,
+  locateAsset,
+} from "./resolve.js";
 import {
   EXIT_NO_VERDICT,
   EXIT_USAGE,
@@ -41,7 +46,6 @@ import {
 import {
   defaultHistoryStart,
   observeReserves,
-  readAssetRecord,
   readAttestationHistory,
   solvencyLapsed,
 } from "./registry.js";
@@ -66,7 +70,7 @@ import {
   readReserveKeypair,
 } from "./secret.js";
 import { attestWithAuthority } from "./attest.js";
-import { attestAndReport, completeCommand, runReport } from "./report.js";
+import { attestAndReport, completeCommand, failureNote, runReport } from "./report.js";
 import type { CommandResult } from "./report.js";
 
 const USAGE = `zkpor <command> [arguments]
@@ -184,15 +188,6 @@ function print(lines: readonly string[]): void {
   process.stdout.write(`${lines.join("\n")}\n`);
 }
 
-async function registryOf(config: NetworkConfig, path?: string): Promise<string> {
-  const generation = currentGeneration(await deploymentsText(path), config.network);
-  if (generation === undefined) {
-    throw new InfrastructureError(
-      `the deployments file records no generation on the network ${config.network}`,
-    );
-  }
-  return generation.registry;
-}
 
 async function commandVerifyInclusion(args: readonly string[]): Promise<CommandResult> {
   const packagePath = args[0];
@@ -210,6 +205,18 @@ async function commandVerifyInclusion(args: readonly string[]): Promise<CommandR
   return { lines: verdictLines(verdict), code: exitCode(verdict) };
 }
 
+/**
+ * What a read says when no recorded generation holds the asset.
+ *
+ * It names every generation the walk asked. A reader who expected a record
+ * learns which registries answered for it, and a reader whose asset lives on a
+ * network this file does not record learns that too.
+ */
+function noHolder(asset: string, asked: readonly Generation[]): string {
+  const names = asked.map((generation) => generation.registry).join(", ");
+  return `No recorded generation holds the asset ${asset}. This client asked ${names}.`;
+}
+
 async function commandEntry(args: readonly string[]): Promise<CommandResult> {
   const named = args[0];
   if (named === undefined) {
@@ -218,11 +225,18 @@ async function commandEntry(args: readonly string[]): Promise<CommandResult> {
   const asset = addressArgument(named, "the asset");
   const config = networkConfig();
   const server = openServer(config);
-  const registry = await registryOf(config);
-  const record = await readAssetRecord(server, config, readOptions(), registry, asset);
-  if (record === undefined) {
-    return { lines: [`The registry ${registry} holds no record of the asset ${asset}.`] };
+  const located = await locateAsset({
+    server,
+    config,
+    options: readOptions(),
+    deploymentsText: await deploymentsText(undefined),
+    asset,
+  });
+  if (located.holder === undefined) {
+    return { lines: [noHolder(asset, located.asked)] };
   }
+  const { generation, record } = located.holder;
+  const registry = generation.registry;
   const lines = [
     `The registry is ${registry}.`,
     `The authority is ${record.authority}.`,
@@ -255,16 +269,22 @@ async function commandObserveReserves(args: readonly string[]): Promise<CommandR
   const asset = addressArgument(named, "the asset");
   const config = networkConfig();
   const server = openServer(config);
-  const observation = await observeReserves(
+  const options = readOptions();
+  const located = await locateAsset({
     server,
     config,
-    readOptions(),
-    await registryOf(config),
+    options,
+    deploymentsText: await deploymentsText(undefined),
     asset,
-  );
+  });
+  if (located.holder === undefined) {
+    fail(noHolder(asset, located.asked), EXIT_NO_VERDICT);
+  }
+  const registry = located.holder.generation.registry;
+  const observation = await observeReserves(server, config, options, registry, asset);
   return {
     lines: [
-      `The registry read the reserves of ${asset} at ledger ${observation.observedLedger}.`,
+      `The registry ${registry} read the reserves of ${asset} at ledger ${observation.observedLedger}.`,
       `The sum of the reserve balances is ${observation.observedSum.toString(10)}.`,
       "No attestation covers this reading. It is an observation at that ledger.",
     ],
@@ -279,32 +299,57 @@ async function commandHistory(args: readonly string[]): Promise<CommandResult> {
   const asset = addressArgument(named, "the asset");
   const config = networkConfig();
   const server = openServer(config);
-  const registry = await registryOf(config);
   const from =
     args[1] === undefined
       ? defaultHistoryStart(await latestLedger(server))
       : Number.parseInt(args[1], 10);
-  const history = await readAttestationHistory(server, registry, asset, Math.max(from, 0));
-  const lines = [
-    `The query covered the ledgers from ${history.oldestLedgerCovered} to ${history.latestLedger}.`,
-    `The endpoint retains the ledgers from ${history.oldestLedgerRetained}.`,
-  ];
-  if (history.reachesTheRetentionLimit) {
-    lines.push(
-      "The query started at the oldest retained ledger, so an earlier attestation may exist that this result does not name.",
-    );
+  // Every recorded generation, and not the one that holds the record. An issuer
+  // who registered again after a migration has attestations on two registries,
+  // and a query that read one of them would answer truthfully and read as the
+  // whole history. Asking each generation costs a query and says which
+  // registry each attestation came from.
+  const generations = generationsNewestFirst(await deploymentsText(undefined), config.network);
+  if (generations.length === 0) {
+    fail(`the deployments file records no generation on the network ${config.network}`, EXIT_NO_VERDICT);
   }
-  if (history.coversTheWholeRange) {
-    lines.push(`The query found ${history.attestations.length} attestations.`);
-  } else {
+  const lines: string[] = [];
+  for (const generation of generations) {
+    let history;
+    try {
+      history = await readAttestationHistory(
+        server,
+        generation.registry,
+        asset,
+        Math.max(from, 0),
+      );
+    } catch (cause) {
+      fail(
+        `the registry ${generation.registry} did not answer the attestation query, so this result would not say whether it holds earlier attestations: ${cause instanceof Error ? cause.message : String(cause)}`,
+        EXIT_NO_VERDICT,
+      );
+    }
     lines.push(
-      `The endpoint stopped before the end of the range, so this result does not say how many attestations the range holds. It names the ${history.attestations.length} attestations that the query saw. Ask again from a later ledger.`,
+      `The registry ${generation.registry}:`,
+      `  The query covered the ledgers from ${history.oldestLedgerCovered} to ${history.latestLedger}.`,
+      `  The endpoint retains the ledgers from ${history.oldestLedgerRetained}.`,
     );
-  }
-  for (const attestation of history.attestations) {
-    lines.push(
-      `Ledger ${attestation.ledger}: snapshot ${attestation.snapshotLedger}, liabilities ${attestation.totalLiabilities.toString(10)}, reserves ${attestation.reserveSum.toString(10)}, transaction ${attestation.transactionHash}.`,
-    );
+    if (history.reachesTheRetentionLimit) {
+      lines.push(
+        "  The query started at the oldest retained ledger, so an earlier attestation may exist that this result does not name.",
+      );
+    }
+    if (history.coversTheWholeRange) {
+      lines.push(`  The query found ${history.attestations.length} attestations.`);
+    } else {
+      lines.push(
+        `  The endpoint stopped before the end of the range, so this result does not say how many attestations the range holds. It names the ${history.attestations.length} attestations that the query saw. Ask again from a later ledger.`,
+      );
+    }
+    for (const attestation of history.attestations) {
+      lines.push(
+        `  Ledger ${attestation.ledger}: snapshot ${attestation.snapshotLedger}, liabilities ${attestation.totalLiabilities.toString(10)}, reserves ${attestation.reserveSum.toString(10)}, transaction ${attestation.transactionHash}.`,
+      );
+    }
   }
   return { lines };
 }
@@ -318,16 +363,17 @@ async function commandDiagnoseReserves(args: readonly string[]): Promise<Command
   const config = networkConfig();
   const server = openServer(config);
   const options = readOptions();
-  const record = await readAssetRecord(
+  const located = await locateAsset({
     server,
     config,
     options,
-    await registryOf(config),
+    deploymentsText: await deploymentsText(undefined),
     asset,
-  );
-  if (record === undefined) {
-    fail(`the registry holds no record of the asset ${asset}`, EXIT_NO_VERDICT);
+  });
+  if (located.holder === undefined) {
+    fail(noHolder(asset, located.asked), EXIT_NO_VERDICT);
   }
+  const record = located.holder.record;
   const diagnosis = await diagnoseReserves(server, config, options, {
     asset,
     reserves: record.reserves,
@@ -367,7 +413,8 @@ async function commandPrepareRegistration(args: readonly string[]): Promise<Comm
   const account = await server.getAccount(source.publicKey());
   const prepared = await prepareRegistration(server, config, {
     sourceAccount: new Account(account.accountId(), account.sequenceNumber()),
-    registry: await registryOf(config),
+    registry: generationForRegistration(await deploymentsText(undefined), config.network)
+      .registry,
     asset,
     authority,
     authenticity:
@@ -530,7 +577,20 @@ async function commandAttest(args: readonly string[]): Promise<CommandResult> {
   if (!carriesAuthoritySecret(process.env)) {
     fail(`set ${AUTHORITY_SECRET_ENV} to the secret key of the authority`, EXIT_USAGE);
   }
-  const registry = await registryOf(config);
+  // The attestation goes where the asset is registered. An asset that lives on
+  // an earlier generation can be attested nowhere else, and the newest
+  // generation holds no record of it.
+  const located = await locateAsset({
+    server,
+    config,
+    options: readOptions(),
+    deploymentsText: await deploymentsText(undefined),
+    asset: context.asset,
+  });
+  if (located.holder === undefined) {
+    fail(noHolder(context.asset, located.asked), EXIT_NO_VERDICT);
+  }
+  const registry = located.holder.generation.registry;
   const outcome = await attestAndReport({
     context,
     proof,
@@ -607,6 +667,6 @@ async function main(): Promise<void> {
 main().catch((cause: unknown) => {
   const message = cause instanceof Error ? cause.message : String(cause);
   process.stderr.write(`${message}\n`);
-  process.stderr.write("This is a failure of the client or of the network. It is not a verdict.\n");
+  process.stderr.write(`${failureNote(cause)}\n`);
   process.exit(EXIT_NO_VERDICT);
 });

@@ -21,6 +21,7 @@ export * from "./manifest.js";
 export * from "./network.js";
 export * from "./registry-errors.js";
 export * from "./registry.js";
+export * from "./resolve.js";
 export * from "./consent.js";
 export * from "./registration.js";
 export * from "./diagnose.js";

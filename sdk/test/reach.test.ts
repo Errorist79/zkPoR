@@ -58,6 +58,7 @@ import {
   globalUsesOf,
   namedModulesOf,
   sourceFiles,
+  sourceOf,
 } from "./sources.js";
 
 /** The dependencies that this package declares, from its own manifest. */
@@ -334,6 +335,17 @@ describe("what every module of this package may reach", () => {
       }
     }
   }, READING_DEADLINE);
+
+  it("keeps the inclusion check out of the asset resolution", () => {
+    // A customer package names its own registry, and the check resolves from
+    // that name through the trusted file. If the asset resolution reached this
+    // module, a package of one generation and a resolution landing on another
+    // would disagree, and the exit codes of the check would stop meaning what
+    // this package publishes.
+    const source = sourceOf("inclusion.ts");
+    expect(source).not.toContain("locateAsset");
+    expect(source).toContain("findGeneration");
+  });
 
   it("names no global of the runtime that this table does not carry", () => {
     const resolved: string[] = [];

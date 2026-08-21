@@ -73,8 +73,7 @@ export function Layout(input: {
             </Entry>
           </nav>
           <p className="deployment">
-            Network <strong>{frame.network}</strong>, registry{" "}
-            <span className="address">{frame.registry}</span>
+            Network <strong>{frame.network}</strong>
           </p>
           <p className="local">
             This dashboard runs on this machine. It sends nothing anywhere except the read calls

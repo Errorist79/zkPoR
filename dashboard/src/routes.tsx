@@ -33,6 +33,7 @@ import type { RunAction, RunStore } from "./runs.js";
 import { renderPage } from "./render.js";
 import type { Frame } from "./render.js";
 import { STYLESHEET } from "./style.js";
+import { generationsNewestFirst } from "@zkpor/sdk";
 import { AssetPage, Home, UnregisteredAssetPage } from "./views/asset.js";
 import { InclusionForm, InclusionVerdictPage } from "./views/inclusion.js";
 import { Failure } from "./views/layout.js";
@@ -80,7 +81,6 @@ export interface DashboardResponse {
 function frameOf(dashboard: Dashboard, current: string): Frame {
   return {
     network: dashboard.reader.config.network,
-    registry: dashboard.reader.registry,
     current,
   };
 }
@@ -279,7 +279,12 @@ async function assetPage(asset: string | null, dashboard: Dashboard): Promise<Da
     return html(
       404,
       renderPage(
-        <UnregisteredAssetPage asset={address} registry={reader.registry} />,
+        <UnregisteredAssetPage
+          asset={address}
+          asked={generationsNewestFirst(reader.deploymentsText, reader.config.network).map(
+            (generation): string => generation.registry,
+          )}
+        />,
         frameOf(dashboard, ROUTES.home),
       ),
     );

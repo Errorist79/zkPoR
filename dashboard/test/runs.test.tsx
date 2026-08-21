@@ -18,7 +18,12 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ATTESTATION_MAX_AGE_LEDGERS, MASTER_SECRET_ENV, AUTHORITY_SECRET_ENV } from "@zkpor/sdk";
 import { MAX_REMEMBERED_RUNS, ROUTES } from "../src/constants.js";
-import { RunRefusedError, afterTheProof, submitRun } from "../src/attestation.js";
+import {
+  RunRefusedError,
+  afterTheProof,
+  directoryOfPackages,
+  submitRun,
+} from "../src/attestation.js";
 import { route } from "../src/routes.js";
 import { RunStore } from "../src/runs.js";
 import type { ProofSummary, Run, RunOutcome, Submission, WindowAtEnd } from "../src/runs.js";
@@ -584,6 +589,21 @@ describe("a prove-only run and the window", () => {
     expect(markup).toContain("had already left its window");
     expect(markup).toContain("The registry refuses this root now.");
     expect(markup).not.toContain("could still be attested");
+  });
+});
+
+describe("the directory that the generator reports", () => {
+  it("takes the directory out of the answer of the generator", () => {
+    // The generator names the directory it wrote, and that directory carries
+    // the asset and the snapshot. The inclusion check needs a file inside it.
+    expect(
+      directoryOfPackages("packages: 4000 files in /run/packages/packages/CBSQ/4263061"),
+    ).toBe("/run/packages/packages/CBSQ/4263061");
+  });
+
+  it("answers nothing when the generator names no directory, so the caller falls back", () => {
+    expect(directoryOfPackages("the generator said something else")).toBeUndefined();
+    expect(directoryOfPackages("")).toBeUndefined();
   });
 });
 

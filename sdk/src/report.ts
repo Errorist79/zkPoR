@@ -19,6 +19,7 @@
  */
 
 import { snapshotInsideWindow } from "./attest.js";
+import { RegistryRefusedError } from "./registry.js";
 import { toHex } from "./fr.js";
 import type { Proof, RunContext } from "./proving.js";
 
@@ -157,4 +158,24 @@ export function completeCommand(
     throw result.failure;
   }
   return result.code;
+}
+
+/**
+ * The sentence that follows a failure of a command.
+ *
+ * A refusal of the registry is the answer of the registry about the request.
+ * Calling it a failure of the client or of the network is false, and it is
+ * false in the one place a reader looks to learn who answered. It also inverts
+ * the rule that this package publishes: the exit codes separate a verdict from
+ * a failure, and a line that misnames the source of an answer undoes that
+ * separation in prose.
+ *
+ * The exit code does not change. A refusal still produces no verdict of the
+ * inclusion check, and the codes of that check belong to it alone.
+ */
+export function failureNote(cause: unknown): string {
+  if (cause instanceof RegistryRefusedError) {
+    return "The registry answered this. It is the answer of the contract about the request, and not a verdict of the inclusion check.";
+  }
+  return "This is a failure of the client or of the network. It is not a verdict.";
 }

@@ -144,7 +144,9 @@ export interface HistoryEntry {
  * view states the oldest ledger that the query covered and never presents a
  * window-bounded result as the complete record.
  */
-export interface HistoryView {
+export interface HistoryBlock {
+  /** The registry that answered this block. */
+  readonly registry: string;
   readonly entries: readonly HistoryEntry[];
   readonly oldestLedgerCovered: number;
   readonly oldestLedgerRetained: number;
@@ -155,4 +157,16 @@ export interface HistoryView {
    * that it could not see the range, and never states an absence.
    */
   readonly coversTheWholeRange: boolean;
+}
+
+/**
+ * The history of one asset, as one block for each recorded generation.
+ *
+ * An issuer who registered again after a migration holds attestations on two
+ * registries. A view of one of them would be true and would read as the whole
+ * history, so the page shows every generation and says which one answered each
+ * block.
+ */
+export interface HistoryView {
+  readonly blocks: readonly HistoryBlock[];
 }

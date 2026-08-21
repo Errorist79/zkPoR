@@ -21,10 +21,15 @@ const DOCTYPE = "<!doctype html>\n";
 
 /** What the frame of a page states, whatever the page holds. */
 export interface Frame {
-  /** The network that this process reads and writes. */
+  /**
+   * The network that this process reads and writes.
+   *
+   * The frame names no registry. This process holds none: a page about an
+   * asset reads the generation that holds that asset and names it there, and a
+   * page with no asset has no registry to name. A frame that named one would
+   * state a registry above a page answering about another.
+   */
   readonly network: string;
-  /** The registry that this process reads and writes. */
-  readonly registry: string;
   /** The navigation entry that the reader is inside. */
   readonly current: string;
 }

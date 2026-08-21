@@ -24,16 +24,18 @@
  * an entry point.
  */
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { EXIT_NO_VERDICT, EXIT_USAGE } from "../src/inclusion.js";
-import { attestAndReport, completeCommand, runReport } from "../src/report.js";
+import { RegistryRefusedError } from "../src/registry.js";
+import { attestAndReport, completeCommand, failureNote, runReport } from "../src/report.js";
 import { ATTESTATION_MAX_AGE_LEDGERS } from "../src/constants.js";
 import { builtCli } from "./built.js";
+import { assetRecordXdr, fakeEndpoint } from "./endpoint.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -77,6 +79,11 @@ function contextFile(body: string): string {
  *
  * A failure to start is therefore never an outcome. It is retried, and it is
  * reported as itself if it persists.
+ *
+ * This runner stops the event loop of this process until the child ends. A test
+ * that serves the child from inside this process therefore cannot use it: the
+ * server never reaches its turn, and the call ends at the timeout with nothing
+ * to show for it. Those tests use `runCliServed` below.
  */
 function runCli(
   args: readonly string[],
@@ -121,6 +128,159 @@ describe("the two kinds of failure", () => {
     expect(EXIT_NO_VERDICT).toBe(8);
   });
 });
+
+/**
+ * Runs the built command line without blocking this process.
+ *
+ * The synchronous runner above stops the event loop until the child ends, so a
+ * server inside this process can never answer it. A test that needs an endpoint
+ * of its own uses this one instead.
+ */
+async function runCliServed(
+  args: readonly string[],
+  environment: Record<string, string>,
+): Promise<{ code: number; stderr: string; stdout: string }> {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [CLI, ...args], {
+      env: {
+        PATH: process.env["PATH"] ?? "",
+        HOME: process.env["HOME"] ?? "",
+        ZKPOR_NETWORK: "testnet",
+        ...environment,
+      },
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString()));
+    child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      resolve({ code: code ?? -1, stderr, stdout });
+    });
+  });
+}
+
+describe("which generation a read answers about", () => {
+  /** The three registries of the committed file, oldest first. */
+  const OLDEST = "CC4MA6FWDBG3Y4YXYGDHYEZ36O3YSP7DREGOLBWKP6ZTQQ6IYFFX3KQK";
+  const MIDDLE = "CCHUTDKUPWXVUIX6D26SE5NZ5STP74VV4DY2CNVCMNJYOU5PTROLA7MY";
+  const NEWEST = "CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG";
+
+  /** An asset address. The value is test data. */
+  const ASSET = "CBSQOEUZDBCKO4NYNRJJSPOLEIXVWZZ66CZXWRSVUNZTNZK7IKHNNRY3";
+
+  /** One record, for whichever registry a case says holds the asset. */
+  const RECORD = assetRecordXdr({ authority: ACCOUNT, reserves: [ACCOUNT] });
+
+  const environment = (url: string): Record<string, string> => ({
+    ZKPOR_DEPLOYMENTS: DEPLOYMENTS,
+    ZKPOR_RPC_URL: url,
+  });
+
+  it("asks the newest generation first", async () => {
+    const endpoint = await fakeEndpoint({ fallback: 7 });
+    try {
+      await runCliServed(["entry", ASSET], environment(endpoint.url));
+      expect(endpoint.asked[0]).toBe(NEWEST);
+    } finally {
+      await endpoint.close();
+    }
+  }, 60_000);
+
+  it("stops at the generation that holds the asset", async () => {
+    // The walk ends at the first record. An older generation is not asked,
+    // because the answer is already known and asking costs a round trip.
+    const endpoint = await fakeEndpoint({ holds: { [NEWEST]: RECORD }, fallback: 7 });
+    try {
+      const answer = await runCliServed(["entry", ASSET], environment(endpoint.url));
+      expect(answer.stdout).toContain(NEWEST);
+      expect(endpoint.asked).toEqual([NEWEST]);
+    } finally {
+      await endpoint.close();
+    }
+  }, 60_000);
+
+  it("reaches an earlier generation when the newest holds nothing", async () => {
+    // This is the asset the client could not reach at all before. The newest
+    // generation holds no record of it and it can be attested nowhere else.
+    const endpoint = await fakeEndpoint({ holds: { [MIDDLE]: RECORD }, fallback: 7 });
+    try {
+      const answer = await runCliServed(["entry", ASSET], environment(endpoint.url));
+      expect(answer.stdout).toContain(MIDDLE);
+      expect(endpoint.asked).toEqual([NEWEST, MIDDLE]);
+    } finally {
+      await endpoint.close();
+    }
+  }, 60_000);
+
+  it("answers about the newest of two generations that hold the asset", async () => {
+    // Nothing on the network produces this state, and the documented
+    // registration path produces it the moment an issuer on an earlier
+    // generation registers again. The newest holder wins, because that path
+    // writes on the newest, so the newest holder is where the most recent act
+    // put the asset.
+    const endpoint = await fakeEndpoint({
+      holds: { [NEWEST]: RECORD, [MIDDLE]: RECORD },
+      fallback: 7,
+    });
+    try {
+      const answer = await runCliServed(["entry", ASSET], environment(endpoint.url));
+      expect(answer.stdout).toContain(NEWEST);
+      expect(answer.stdout).not.toContain(MIDDLE);
+      expect(endpoint.asked).toEqual([NEWEST]);
+    } finally {
+      await endpoint.close();
+    }
+  }, 60_000);
+
+  it("stops the command when a generation fails, rather than reading the failure as an absence", async () => {
+    // Code 1 is not AssetNotRegistered. A walk that stepped past it could
+    // answer from an older generation while the failed one also held a record,
+    // and the reader would get an older record than the truth with nothing to
+    // say so.
+    const endpoint = await fakeEndpoint({
+      refuseWith: { [NEWEST]: 1 },
+      holds: { [MIDDLE]: RECORD },
+      fallback: 7,
+    });
+    try {
+      const answer = await runCliServed(["entry", ASSET], environment(endpoint.url));
+      expect(answer.code).toBe(EXIT_NO_VERDICT);
+      expect(answer.stderr).toContain(NEWEST);
+      expect(answer.stderr).toContain("did not answer");
+      expect(endpoint.asked).toEqual([NEWEST]);
+    } finally {
+      await endpoint.close();
+    }
+  }, 60_000);
+
+  it("names every generation it asked when none holds the asset", async () => {
+    const endpoint = await fakeEndpoint({ fallback: 7 });
+    try {
+      const answer = await runCliServed(["entry", ASSET], environment(endpoint.url));
+      expect(answer.code).toBe(0);
+      for (const registry of [NEWEST, MIDDLE, OLDEST]) {
+        expect(answer.stdout).toContain(registry);
+      }
+    } finally {
+      await endpoint.close();
+    }
+  }, 60_000);
+
+  it("contacts no address that the deployments file does not record", async () => {
+    const endpoint = await fakeEndpoint({ fallback: 7 });
+    try {
+      await runCliServed(["entry", ASSET], environment(endpoint.url));
+      for (const contract of endpoint.asked) {
+        expect([OLDEST, MIDDLE, NEWEST], `the client asked ${contract}`).toContain(contract);
+      }
+      expect(endpoint.asked.length).toBeGreaterThan(0);
+    } finally {
+      await endpoint.close();
+    }
+  }, 60_000);
+});
+
 
 describe("a context file that an operator can correct", () => {
   it("names no asset, and the command line reports a wrong command line", () => {
@@ -601,5 +761,23 @@ describe("no secret is a value of the command line", () => {
         new RegExp(`export (?:async )?function ${reader}\\(`),
       );
     }
+  });
+});
+
+describe("the sentence that follows a failure", () => {
+  it("says the registry answered, when the registry answered", () => {
+    // A refusal is the answer of the contract about the request. Calling it a
+    // failure of the client or of the network is false in the one line a
+    // reader consults to learn who answered.
+    const note = failureNote(new RegistryRefusedError(7));
+    expect(note).toContain("The registry answered this");
+    expect(note).not.toContain("failure of the client");
+  });
+
+  it("keeps the other sentence for a failure that is not an answer", () => {
+    expect(failureNote(new Error("the client cannot reach the endpoint"))).toContain(
+      "failure of the client or of the network",
+    );
+    expect(failureNote("a value that is not an error")).toContain("failure of the client");
   });
 });

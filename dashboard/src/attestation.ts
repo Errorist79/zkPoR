@@ -32,6 +32,7 @@ import {
   InfrastructureError,
   deploymentsPath,
   packagesDirectory,
+  locateAsset,
   readAssetRecord,
   writeCustomerPackages,
 } from "@zkpor/sdk";
@@ -116,6 +117,21 @@ export async function afterTheProof(input: {
   return { proof: input.proof, submission: accepted, window, packages };
 }
 
+/**
+ * The directory that the generator reports, or `undefined` when its answer does
+ * not name one.
+ *
+ * The caller falls back to the directory it asked for. That is the parent of
+ * the one the generator writes, so a reader still reaches the files, and a
+ * changed message of the generator degrades the answer rather than failing the
+ * run that already attested.
+ */
+export function directoryOfPackages(reported: string): string | undefined {
+  const found = /files in (\S+)/.exec(reported);
+  const path = found?.[1];
+  return path === undefined || path.length === 0 ? undefined : path;
+}
+
 /** A submission that the dashboard refuses before a run starts. */
 export class RunRefusedError extends Error {
   constructor(message: string) {
@@ -169,6 +185,23 @@ export async function submitRun(input: {
 
   windowAllowsProving(context.snapshotLedger, await latestLedger(input.reader.server));
 
+  // The attestation goes where the asset is registered. This resolves once,
+  // before the proof, so a run that could reach no registry stops in a second
+  // rather than after a minute of proving.
+  const located = await locateAsset({
+    server: input.reader.server,
+    config: input.reader.config,
+    options: input.reader.readOptions,
+    deploymentsText: input.reader.deploymentsText,
+    asset: context.asset,
+  });
+  if (located.holder === undefined) {
+    throw new RunRefusedError(
+      `no recorded generation holds the asset ${context.asset}, so there is no registry to attest to`,
+    );
+  }
+  const registry = located.holder.generation.registry;
+
   const work: RunWork = async (report, recordProof, recordWindow, recordSubmission) => {
     const proof = await prove({
       repository: input.repository,
@@ -202,7 +235,7 @@ export async function submitRun(input: {
           // as the master secret is. It reaches no variable of this package.
           readAuthoritySecret(input.environment),
           {
-            registry: input.reader.registry,
+            registry,
             asset: context.asset,
             snapshotLedger: context.snapshotLedger,
             finalRoot: summary.finalRoot,
@@ -223,7 +256,7 @@ export async function submitRun(input: {
           input.reader.server,
           input.reader.config,
           input.reader.readOptions,
-          input.reader.registry,
+          registry,
           context.asset,
         );
         if (record === undefined || record.attestation === undefined) {
@@ -232,7 +265,7 @@ export async function submitRun(input: {
           );
         }
         const directory = packagesDirectory(input.environment, customersPath);
-        await writeCustomerPackages({
+        const reported = await writeCustomerPackages({
           repository: input.repository,
           contextFile: contextPath,
           customersFile: customersPath,
@@ -241,13 +274,19 @@ export async function submitRun(input: {
           // is for the proof. It reaches no variable of this package.
           masterSecret: await readMasterSecret(input.environment),
           network: input.reader.config.network,
-          registry: input.reader.registry,
+          registry,
           attestedRoot: record.attestation.finalRoot,
           attestedSnapshot: record.attestation.snapshotLedger,
           transactionHash: accepted.transactionHash,
           deploymentsFile: deploymentsPath(input.environment),
         });
-        return directory;
+        // The generator writes the files, and it names the directory it wrote
+        // them in. That directory carries the asset and the snapshot, and the
+        // inclusion check needs a file inside it, so naming the parent would
+        // leave the reader to build the rest of the path by hand. Reading the
+        // answer of the writer also keeps one account of the layout, which
+        // belongs to the generator rather than to this package.
+        return directoryOfPackages(reported) ?? directory;
       },
     });
   };

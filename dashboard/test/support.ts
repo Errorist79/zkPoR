@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import { openServer } from "@zkpor/sdk";
 import type { AssetRecord, Attestation, ReserveDiagnosis } from "@zkpor/sdk";
 import type { Reader } from "../src/chain.js";
-import type { AssetView, HistoryView } from "../src/model.js";
+import type { AssetView, HistoryBlock, HistoryView } from "../src/model.js";
 import { observedReserves, solvencyResult } from "../src/model.js";
 import type { Dashboard } from "../src/routes.js";
 import { RunStore } from "../src/runs.js";
@@ -115,9 +115,13 @@ export function assetView(choices: ViewChoices = {}): AssetView {
   };
 }
 
-/** One history view with a single earlier attestation. */
-export function historyView(changes: Partial<HistoryView> = {}): HistoryView {
+/** A registry address for a history block. The value is test data. */
+export const A_REGISTRY = "CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG";
+
+/** One history block with a single earlier attestation. */
+export function historyBlock(changes: Partial<HistoryBlock> = {}): HistoryBlock {
   return {
+    registry: A_REGISTRY,
     entries: [
       {
         snapshotLedger: 4_300,
@@ -134,6 +138,11 @@ export function historyView(changes: Partial<HistoryView> = {}): HistoryView {
     coversTheWholeRange: true,
     ...changes,
   };
+}
+
+/** One history view holding one block. */
+export function historyView(changes: Partial<HistoryBlock> = {}): HistoryView {
+  return { blocks: [historyBlock(changes)] };
 }
 
 /**
@@ -162,7 +171,6 @@ export function reader(deploymentsText: string): Reader {
       allowHttp: true,
     },
     readOptions: {},
-    registry: REGISTRY,
     deploymentsText,
   };
 }
@@ -264,5 +272,5 @@ export function textOf(markup: string): string {
  * otherwise, because most pages here sit under it.
  */
 export function framed(element: ReactElement, current: string = ROUTES.home): string {
-  return renderPage(element, { network: NETWORK, registry: REGISTRY, current });
+  return renderPage(element, { network: NETWORK, current });
 }

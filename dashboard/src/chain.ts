@@ -10,17 +10,16 @@
 import {
   InfrastructureError,
   RegistryRefusedError,
-  currentGeneration,
   defaultHistoryStart,
   diagnoseReserves,
   latestLedger,
   observeReserves,
-  readAssetRecord,
   readAttestationHistory,
 } from "@zkpor/sdk";
 import type { NetworkConfig, ReadOptions, openServer } from "@zkpor/sdk";
 import { attestedReserves, coverageOf, observedReserves, solvencyResult } from "./model.js";
 import type { AssetView, HistoryView } from "./model.js";
+import { generationsNewestFirst, locateAsset } from "@zkpor/sdk";
 
 /**
  * The client of the endpoint, as the kit builds it.
@@ -35,21 +34,10 @@ export interface Reader {
   readonly server: Server;
   readonly config: NetworkConfig;
   readonly readOptions: ReadOptions;
-  readonly registry: string;
   /** The text of the deployments file that this process trusts. */
   readonly deploymentsText: string;
 }
 
-/** The registry of the current generation of the configured network. */
-export function registryOfGeneration(deploymentsText: string, network: string): string {
-  const generation = currentGeneration(deploymentsText, network);
-  if (generation === undefined) {
-    throw new InfrastructureError(
-      `the deployments file records no generation on the network ${network}`,
-    );
-  }
-  return generation.registry;
-}
 
 /**
  * The view of one asset, or nothing when the registry holds no record of it.
@@ -62,16 +50,20 @@ export async function readAssetView(
   reader: Reader,
   asset: string,
 ): Promise<AssetView | undefined> {
-  const record = await readAssetRecord(
-    reader.server,
-    reader.config,
-    reader.readOptions,
-    reader.registry,
+  // One resolution for this request. Every read below uses the generation it
+  // found, so a page cannot answer about two of them and say nothing about it.
+  const located = await locateAsset({
+    server: reader.server,
+    config: reader.config,
+    options: reader.readOptions,
+    deploymentsText: reader.deploymentsText,
     asset,
-  );
-  if (record === undefined) {
+  });
+  if (located.holder === undefined) {
     return undefined;
   }
+  const registry = located.holder.generation.registry;
+  const record = located.holder.record;
   const currentLedger = await latestLedger(reader.server);
 
   let observed;
@@ -79,13 +71,7 @@ export async function readAssetView(
   let diagnosis;
   try {
     observed = observedReserves(
-      await observeReserves(
-        reader.server,
-        reader.config,
-        reader.readOptions,
-        reader.registry,
-        asset,
-      ),
+      await observeReserves(reader.server, reader.config, reader.readOptions, registry, asset),
     );
   } catch (cause) {
     if (!(cause instanceof RegistryRefusedError) && !(cause instanceof InfrastructureError)) {
@@ -101,7 +87,7 @@ export async function readAssetView(
   return {
     asset,
     network: reader.config.network,
-    registry: reader.registry,
+    registry,
     record,
     solvency:
       record.attestation === undefined
@@ -121,24 +107,31 @@ export async function readAssetView(
  * two views of one asset cover the same range.
  */
 export async function readHistoryView(reader: Reader, asset: string): Promise<HistoryView> {
-  const history = await readAttestationHistory(
-    reader.server,
-    reader.registry,
-    asset,
-    defaultHistoryStart(await latestLedger(reader.server)),
-  );
-  return {
-    entries: history.attestations.map((event) => ({
-      snapshotLedger: event.snapshotLedger,
-      totalLiabilities: event.totalLiabilities,
-      attested: attestedReserves(event),
-      coverage: coverageOf(event),
-      transactionHash: event.transactionHash,
-    })),
-    oldestLedgerCovered: history.oldestLedgerCovered,
-    oldestLedgerRetained: history.oldestLedgerRetained,
-    latestLedger: history.latestLedger,
-    reachesTheRetentionLimit: history.reachesTheRetentionLimit,
-    coversTheWholeRange: history.coversTheWholeRange,
-  };
+  const from = defaultHistoryStart(await latestLedger(reader.server));
+  const generations = generationsNewestFirst(reader.deploymentsText, reader.config.network);
+  const blocks = [];
+  for (const generation of generations) {
+    const history = await readAttestationHistory(
+      reader.server,
+      generation.registry,
+      asset,
+      from,
+    );
+    blocks.push({
+      registry: generation.registry,
+      entries: history.attestations.map((event) => ({
+        snapshotLedger: event.snapshotLedger,
+        totalLiabilities: event.totalLiabilities,
+        attested: attestedReserves(event),
+        coverage: coverageOf(event),
+        transactionHash: event.transactionHash,
+      })),
+      oldestLedgerCovered: history.oldestLedgerCovered,
+      oldestLedgerRetained: history.oldestLedgerRetained,
+      latestLedger: history.latestLedger,
+      reachesTheRetentionLimit: history.reachesTheRetentionLimit,
+      coversTheWholeRange: history.coversTheWholeRange,
+    });
+  }
+  return { blocks };
 }

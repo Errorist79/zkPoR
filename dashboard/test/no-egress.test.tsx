@@ -193,7 +193,7 @@ function everyPage(): readonly { name: string; markup: string }[] {
     },
     {
       name: "an asset with no record",
-      markup: framed(<UnregisteredAssetPage asset={ASSET} registry={REGISTRY} />),
+      markup: framed(<UnregisteredAssetPage asset={ASSET} asked={[REGISTRY]} />),
     },
     { name: "the inclusion form", markup: framed(<InclusionForm />) },
     {
