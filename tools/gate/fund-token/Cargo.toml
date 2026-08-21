@@ -1,0 +1,27 @@
+# Scenario scaffolding, and not a part of the contract workspace. The empty
+# table keeps this package out of it.
+[workspace]
+
+[package]
+name = "gate-fund-token"
+version = "0.1.0"
+edition = "2021"
+
+# The rlib is what lets the tests reach the contract. The gate deploys the
+# cdylib.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = { version = "=26.0.1", default-features = false }
+
+[dev-dependencies]
+soroban-sdk = { version = "=26.0.1", default-features = false, features = ["testutils"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+overflow-checks = true

@@ -39,6 +39,7 @@ STANDALONE_CRATES=(
   tools/inclusion-verify
   tools/recursion-gen
   tools/gate/reserve-account
+  tools/gate/fund-token
 )
 
 # The Noir packages. A package without a test still compiles here, which

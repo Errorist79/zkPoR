@@ -33,6 +33,10 @@
 # registry derives the context hash from its own state, and a proof of another
 # context does not verify.
 #
+# scripts/context.template.toml is a template to copy. Copy it outside this
+# repository and fill it in: this client refuses a context whose path holds a
+# fixtures directory, because the material there is public.
+#
 # The master secret arrives as a file that the issuer keeps, and never in a
 # file of this repository. It never enters a witness. A run without it fails,
 # and a run with the test fixture secret fails, because those salts are public.

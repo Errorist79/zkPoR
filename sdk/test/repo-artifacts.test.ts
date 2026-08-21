@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  FIXTURE_DIRECTORY,
   FR_BYTES,
   PUBLIC_INPUT_BYTES,
   PUBLIC_INPUT_COUNT,
@@ -346,5 +347,60 @@ describe("the master secret channel", () => {
     await expect(readMasterSecret({ [MASTER_SECRET_FILE_ENV]: path })).resolves.toBeTypeOf(
       "bigint",
     );
+  });
+});
+
+/**
+ * The context template that an operator copies.
+ *
+ * A template that names a field the run does not read wastes somebody's time.
+ * A template that omits one the run does read produces a context hash that the
+ * registry does not derive, and the proof then fails at the end of a run that
+ * takes minutes. So the field list here comes from the reader in the generator
+ * rather than from a list written twice.
+ */
+describe("the committed context template", () => {
+  const TEMPLATE = join(ROOT, "scripts", "context.template.toml");
+
+  /** Every key that the context reader of the generator asks for. */
+  function fieldsTheRunReads(): string[] {
+    const source = readFileSync(join(ROOT, "tools", "recursion-gen", "src", "main.rs"), "utf8");
+    const reader = /fn read_context\([^)]*\)[^{]*\{([\s\S]*?)\n\}/.exec(source);
+    if (reader === null) {
+      throw new Error("the generator holds no read_context, so this test reads nothing");
+    }
+    const body = captureOf(reader, 1, "the context reader of the generator");
+    const asked = [...body.matchAll(/_value\(&pairs,\s*"([a-z_]+)"\)/g)]
+      .map((found) => found[1])
+      .filter((name): name is string => name !== undefined);
+    return [...new Set(asked)].sort();
+  }
+
+  it("reaches the reader, because a test that found no field would pass on anything", () => {
+    expect(fieldsTheRunReads().length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("names every field that the run reads, and no field that it does not", () => {
+    const text = readFileSync(TEMPLATE, "utf8");
+    const named = [...text.matchAll(/^([a-z_]+)\s*=/gm)]
+      .map((found) => found[1])
+      .filter((name): name is string => name !== undefined)
+      .sort();
+    expect(named).toEqual(fieldsTheRunReads());
+  });
+
+  it("carries no address, so nobody ships a copy of somebody else's context", () => {
+    // A template with a real address in it invites a run against an entry that
+    // belongs to another issuer, and the failure would arrive at the end of a
+    // proving run rather than at the start.
+    const text = readFileSync(TEMPLATE, "utf8");
+    expect(text).not.toMatch(/[GC][A-Z2-7]{55}/);
+  });
+
+  it("is not a fixture, so a copy of it can drive a run", () => {
+    // The client refuses a context whose path holds a fixtures directory. A
+    // template that lived there could be copied but never used from where it
+    // sat, and the refusal would look like a defect in the run.
+    expect(TEMPLATE.split(/[/\\]/)).not.toContain(FIXTURE_DIRECTORY);
   });
 });
