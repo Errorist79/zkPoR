@@ -109,6 +109,14 @@ export interface Run {
   readonly proof: ProofSummary | undefined;
   readonly submission: Submission | undefined;
   readonly window: WindowAtEnd | undefined;
+  /**
+   * Where the packages of the customers went, once a run wrote them.
+   *
+   * A reader looking for what a run produced looks under that heading. The
+   * directory was only in the last line of the steps, inside a sentence, which
+   * is not where anybody goes for it.
+   */
+  readonly packages: string | undefined;
   /** The reason the run failed. It never carries a secret, because no message here holds one. */
   readonly failure: string | undefined;
 }
@@ -172,6 +180,7 @@ export class RunStore {
       asset: request.asset,
       snapshotLedger: request.snapshotLedger,
       stage: "running",
+      packages: undefined,
       steps: [],
       proof: undefined,
       submission: undefined,
@@ -207,6 +216,7 @@ export class RunStore {
         proof: outcome.proof,
         submission: outcome.submission,
         window: outcome.window,
+        packages: outcome.packages,
       }));
     } catch (cause) {
       const failure =

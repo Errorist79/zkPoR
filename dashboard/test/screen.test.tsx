@@ -112,10 +112,15 @@ describe("what a page tells a reader to do", () => {
       proof: { proofBytes: 14_592, finalRoot: 1n, totalLiabilities: 2n, contextHash: 3n },
       submission: { ledger: 5_100, transactionHash: "a".repeat(64), registry: HOLDER },
       window: { currentLedger: 5_100, stillOpen: true },
+      packages: "/root/sitting/run/packages/packages/CBSQ/4265644",
       failure: undefined,
     };
     const markup = framed(<RunPage run={run} joined={false} />);
     expect(markup).toContain(HOLDER);
+    // The directory belongs under the heading a reader goes to for it, and not
+    // only in the last line of the steps, inside a sentence.
+    expect(markup).toContain("The packages of the customers");
+    expect(markup).toContain("/root/sitting/run/packages/packages/CBSQ/4265644");
   });
 
   it("says which generations it asked before one answered", () => {

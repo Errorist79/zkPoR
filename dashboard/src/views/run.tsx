@@ -118,6 +118,12 @@ function Produced(input: { run: Run }) {
         <dd className="figure">{toHex(proof.contextHash)}</dd>
         <dt>Proof size in bytes</dt>
         <dd>{proof.proofBytes}</dd>
+        {input.run.packages === undefined ? null : (
+          <>
+            <dt>The packages of the customers</dt>
+            <dd className="address">{input.run.packages}</dd>
+          </>
+        )}
       </dl>
       {submission === undefined ? (
         <>

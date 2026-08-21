@@ -179,6 +179,9 @@ describe("the record of a run", () => {
         "proof",
         "submission",
         "window",
+        // The directory the packages went to. It names an asset and a snapshot
+        // and no customer, and it holds no key.
+        "packages",
         "failure",
       ]),
     );
@@ -241,6 +244,7 @@ function runIn(stage: Run["stage"]): Run {
     proof: stage === "finished" ? PROOF : undefined,
     submission: undefined,
     window: undefined,
+    packages: undefined,
     failure: stage === "failed" ? "the prover does not match the pins" : undefined,
   };
 }

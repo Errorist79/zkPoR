@@ -136,6 +136,7 @@ function runs(): readonly Run[] {
     proof: undefined,
     submission: undefined,
     window: undefined,
+    packages: undefined,
     failure: undefined,
   };
   const proof = {
