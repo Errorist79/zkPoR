@@ -69,6 +69,16 @@ const BALANCE_FN: Symbol = symbol_short!("balance");
 /// longer than a short symbol, so it is built at the call.
 const VERIFY_PROOF_FN: &str = "verify_proof";
 
+/// Why the registry refused, as a number.
+///
+/// A refusal reaches a caller as this number and as nothing else. The client
+/// keeps its own copy of the list, and a test of the client compares the two
+/// against this file, so a name that moves to another number fails there.
+///
+/// Give a new error the next free number. Never give an old number to a new
+/// meaning. A client built before the change reports an unknown number
+/// honestly, and it reports a reused number as the error the number used to
+/// mean, which is worse than an unknown one.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]

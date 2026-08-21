@@ -32,6 +32,11 @@ import { FR_MODULUS } from "../src/constants.js";
 import { bytesToBigint, toHex } from "../src/fr.js";
 import { deriveSalt } from "../src/hashes.js";
 import { isRecord } from "../src/guards.js";
+import {
+  ASSET_NOT_REGISTERED,
+  REGISTRY_ERRORS,
+  RESERVE_BALANCE_UNAVAILABLE,
+} from "../src/registry-errors.js";
 import { captureOf, isStringRecord, valueOf } from "./fixture-guards.js";
 
 const ROOT = join(import.meta.dirname, "..", "..");
@@ -402,5 +407,59 @@ describe("the committed context template", () => {
     // template that lived there could be copied but never used from where it
     // sat, and the refusal would look like a defect in the run.
     expect(TEMPLATE.split(/[/\\]/)).not.toContain(FIXTURE_DIRECTORY);
+  });
+});
+
+/**
+ * The error numbers of the registry, which the client keeps a copy of.
+ *
+ * The contract owns these numbers. The discriminant of the enum is the wire
+ * format, so a refusal reaches the client as a number and as nothing else, and
+ * each variant carries the sentence that says what the caller did wrong. That
+ * is why the numbers stay in the contract source and no generator writes them
+ * from a data file: a data file would take the explanation away from the
+ * definition, and the client would still hold a copy that nothing compares.
+ *
+ * So the client holds a copy, and the case below compares it with the source in
+ * both directions. A name that moves to another number fails here, and a number
+ * that the contract adds and the client never learns fails here too.
+ *
+ * What this does not cover: it reads one commit. A client that talks to a
+ * deployment built from another commit is version skew, and no test in this
+ * repository reaches across that.
+ */
+describe("the error numbers of the registry contract", () => {
+  const NUMBERED = /^\s+([A-Z][A-Za-z]*) = (\d+),/gm;
+
+  function numbersOfTheContract(): Map<number, string> {
+    const source = readFileSync(
+      join(ROOT, "contracts", "registry", "src", "lib.rs"),
+      "utf8",
+    );
+    const found = new Map<number, string>();
+    for (const match of source.matchAll(NUMBERED)) {
+      const name = captureOf(match, 1, "name of a registry error");
+      const code = Number.parseInt(captureOf(match, 2, "number of a registry error"), 10);
+      found.set(code, name);
+    }
+    if (found.size === 0) {
+      throw new Error("the registry source states no numbered error");
+    }
+    return found;
+  }
+
+  it("names every number that the contract states, and no other", () => {
+    const byNumber = (pairs: ReadonlyMap<number, string>): [number, string][] =>
+      [...pairs].sort((left, right) => left[0] - right[0]);
+    expect(byNumber(REGISTRY_ERRORS)).toStrictEqual(byNumber(numbersOfTheContract()));
+  });
+
+  it("names the two numbers that the client reads by name", () => {
+    // Two numbers reach a decision rather than a message. The client stops a
+    // walk on the first and reports a reserve address on the second, so a move
+    // of either changes what a run does and not only what it says.
+    const contract = numbersOfTheContract();
+    expect(contract.get(ASSET_NOT_REGISTERED)).toBe("AssetNotRegistered");
+    expect(contract.get(RESERVE_BALANCE_UNAVAILABLE)).toBe("ReserveBalanceUnavailable");
   });
 });
