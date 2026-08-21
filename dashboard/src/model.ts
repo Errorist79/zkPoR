@@ -103,6 +103,13 @@ export function solvencyResult(attestation: Attestation, currentLedger: number):
 /** Everything that the asset page shows about one registered asset. */
 export interface AssetView {
   readonly asset: string;
+  /**
+   * Every generation the client asked before one answered, in that order.
+   *
+   * The page names them, so a reader learns how this client finds a record from
+   * a page that worked rather than only from one that failed.
+   */
+  readonly asked: readonly string[];
   readonly network: string;
   readonly registry: string;
   readonly record: AssetRecord;

@@ -635,7 +635,11 @@ describe("what one run does once the proof exists", () => {
           recordSubmission: (submission) => recorded.push(submission),
           submit: async () => {
             submissions += 1;
-            return await Promise.resolve({ ledger: 5_100, transactionHash: "a".repeat(64) });
+            return await Promise.resolve({
+              ledger: 5_100,
+              transactionHash: "a".repeat(64),
+              registry: "CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG",
+            });
           },
           writePackages: async (accepted) => {
             written.push(accepted);
@@ -659,7 +663,13 @@ describe("what one run does once the proof exists", () => {
     // to the snapshot that the registry attests.
     const seen = watcher();
     const outcome = await seen.call("attest", INSIDE);
-    expect(seen.written).toEqual([{ ledger: 5_100, transactionHash: "a".repeat(64) }]);
+    expect(seen.written).toEqual([
+      {
+        ledger: 5_100,
+        transactionHash: "a".repeat(64),
+        registry: "CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG",
+      },
+    ]);
     expect(outcome.packages).toBe("/somewhere/packages");
     expect(seen.steps).toContain("the packages of the customers are under /somewhere/packages");
   });
@@ -670,7 +680,13 @@ describe("what one run does once the proof exists", () => {
     // network failed, would send the issuer to attest a second time.
     const seen = watcher(true);
     await expect(seen.call("attest", INSIDE)).rejects.toThrow("the generator refused");
-    expect(seen.recorded).toEqual([{ ledger: 5_100, transactionHash: "a".repeat(64) }]);
+    expect(seen.recorded).toEqual([
+      {
+        ledger: 5_100,
+        transactionHash: "a".repeat(64),
+        registry: "CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG",
+      },
+    ]);
   });
 
   it("writes no package for a run that only proved", async () => {

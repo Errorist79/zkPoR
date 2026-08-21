@@ -87,6 +87,7 @@ export async function readAssetView(
 
   const view: AssetView = {
     asset,
+    asked,
     network: reader.config.network,
     registry,
     record,

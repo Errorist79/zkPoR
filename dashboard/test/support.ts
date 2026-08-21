@@ -87,6 +87,8 @@ export interface ViewChoices {
   readonly observedLedger?: number;
   readonly observationFailure?: string;
   readonly diagnosis?: ReserveDiagnosis;
+  readonly asked?: readonly string[];
+  readonly registry?: string;
 }
 
 /** One asset view. */
@@ -95,8 +97,9 @@ export function assetView(choices: ViewChoices = {}): AssetView {
   const currentLedger = choices.currentLedger ?? 5_200;
   return {
     asset: ASSET,
+    asked: choices.asked ?? [REGISTRY],
     network: NETWORK,
-    registry: REGISTRY,
+    registry: choices.registry ?? REGISTRY,
     record,
     solvency:
       record.attestation === undefined

@@ -32,9 +32,11 @@ function Entry(input: { href: string; current: string; children: ReactNode }) {
  * reloads this same address, which is a navigation and not a fetch, so the
  * policy that blocks every script and every remote resource still holds.
  *
- * The frame states the network and the registry on every page. A reader who is
- * about to submit an attestation must see which network and which registry the
- * submission reaches, and that reader is not on the asset page.
+ * The frame states the network on every page. A reader who is about to submit
+ * an attestation must see which network the submission reaches, and that reader
+ * is not on the asset page. The frame names no registry, because this process
+ * holds none: a page about an asset names the generation that answered it, and
+ * a page with no asset has no registry to name.
  */
 export function Layout(input: {
   title: string;
@@ -44,7 +46,7 @@ export function Layout(input: {
   const frame = useContext(FrameContext);
   if (frame === undefined) {
     throw new Error(
-      "this page rendered outside the frame, so it states no network and no registry",
+      "this page rendered outside the frame, so it states no network",
     );
   }
   return (

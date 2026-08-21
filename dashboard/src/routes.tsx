@@ -252,7 +252,19 @@ export async function route(
     }
   }
 
-  return { status: 404, contentType: TEXT, body: "This dashboard serves no such page.\n" };
+  // A page, and not bare text. An unknown run already answers with one, and a
+  // reader who mistypes an address should not meet a different kind of answer
+  // from a reader who mistypes a path.
+  return html(
+    404,
+    renderPage(
+      <Failure
+        title="This dashboard serves no such page"
+        reason={`There is no page at ${path}.`}
+      />,
+      frameOf(dashboard, ROUTES.home),
+    ),
+  );
 }
 
 async function assetPage(asset: string | null, dashboard: Dashboard): Promise<DashboardResponse> {

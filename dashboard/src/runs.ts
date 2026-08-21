@@ -42,6 +42,14 @@ export interface ProofSummary {
 export interface Submission {
   readonly ledger: number;
   readonly transactionHash: string;
+  /**
+   * The registry that accepted it.
+   *
+   * The client sends an attestation to the generation that holds the asset,
+   * which is not always the newest. This page is where that happens, so it is
+   * where a reader must be able to see which registry received it.
+   */
+  readonly registry: string;
 }
 
 /**

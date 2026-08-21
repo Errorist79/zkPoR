@@ -138,12 +138,9 @@ function Produced(input: { run: Run }) {
       ) : (
         <>
           <p>
-            The registry accepted the attestation at ledger {submission.ledger}. The transaction is{" "}
+            The registry <span className="address">{submission.registry}</span> accepted the
+            attestation at ledger {submission.ledger}. The transaction is{" "}
             <span className="address">{submission.transactionHash}</span>.
-          </p>
-          <p>
-            Generate the customer packages with the generator, which reads the attested root from
-            the registry before it writes any file.
           </p>
           <p>
             <a href={`${ROUTES.asset}?asset=${encodeURIComponent(input.run.asset)}`}>

@@ -33,16 +33,18 @@ export function Home(input: { reason?: string }) {
     <Layout title="zkPoR dashboard">
       <h1>Open an asset</h1>
       <p>
-        Give the address of an asset that somebody registered with this registry. The registry
-        answers about one asset at a time and it keeps no list, so this page cannot offer one.
+        Give the address of an asset that somebody registered. This dashboard asks each recorded
+        generation of the network above, newest first, and answers from the one that holds the
+        asset. A registry answers about one asset at a time and keeps no list, so this page cannot
+        offer one.
       </p>
       {input.reason === undefined ? null : <p className="failure">{input.reason}</p>}
       <form method="get" action={ROUTES.asset}>
         <label htmlFor={ASSET_PARAMETER}>The address of a registered asset</label>
         <input id={ASSET_PARAMETER} name={ASSET_PARAMETER} required autoComplete="off" />
         <p className="limit">
-          An account address or a contract address, which starts with G or with C. The registry
-          address in the frame above is not one of these.
+          An account address or a contract address, which starts with G or with C. A registry
+          address is not one of these.
         </p>
         <button type="submit">Show the solvency result</button>
       </form>
@@ -138,9 +140,10 @@ function History(input: { history: HistoryView | undefined }) {
     <section id={SECTION_IDS.history}>
       <h2>Earlier attestations</h2>
       <p className="limit">
-        This section covers the {input.history.blocks.length} recorded generations of this network.
-        The endpoint retains the ledgers from {retainedFrom(input.history.blocks)}, and it holds
-        nothing before that, so this is not the whole history of this asset.
+        This section covers the {input.history.blocks.length} recorded generations of this network,
+        over the ledgers that each query names below. The endpoint retains further back than these
+        queries reach, and it holds nothing at all before the ledger that each query names as its
+        retention boundary. So this is not the whole history of this asset.
       </p>
       {input.history.blocks.filter(answered).map((block) => (
         <HistoryOfRegistry key={block.registry} block={block} />
@@ -154,17 +157,6 @@ function History(input: { history: HistoryView | undefined }) {
   );
 }
 
-/**
- * The oldest ledger the endpoint still holds, as the blocks report it.
- *
- * A reader who cannot see this boundary cannot tell a history that is empty
- * from one that is out of reach, and every block of one answer reads the same
- * endpoint.
- */
-function retainedFrom(blocks: readonly HistoryBlock[]): string {
-  const first = blocks[0];
-  return first === undefined ? "an unknown ledger" : String(first.oldestLedgerRetained);
-}
 
 /**
  * True when a block earns its own place on the page.
@@ -282,7 +274,13 @@ export function AssetPage(input: { view: AssetView; history: HistoryView | undef
         <span className="address">{view.registry}</span>, which is the generation that holds this
         asset.
       </p>
+      <AskedRegistries asked={view.asked} answered={view.registry} />
       <Headline solvency={view.solvency} />
+      <p className="limit">
+        Every figure on this page is a balance in the smallest unit that the asset uses, exactly as
+        the registry holds it. This dashboard applies no decimal place of its own, so a classic
+        Stellar asset reads here in stroops, which are ten million to the unit.
+      </p>
       {view.solvency === undefined ? null : (
         <>
           <AttestedReservesSection solvency={view.solvency} />
@@ -299,6 +297,33 @@ export function AssetPage(input: { view: AssetView; history: HistoryView | undef
       <Registration view={view} />
       <History history={input.history} />
     </Layout>
+  );
+}
+
+/**
+ * The generations this dashboard asked before one answered.
+ *
+ * Without it a reader learns how this client works only when it fails, because
+ * the dead end explains the walk and the success page did not. The line is
+ * silent when the first generation answered, since naming one registry twice
+ * teaches nothing.
+ */
+function AskedRegistries(input: { asked: readonly string[]; answered: string }) {
+  const others = input.asked.filter((registry) => registry !== input.answered);
+  if (others.length === 0) {
+    return null;
+  }
+  return (
+    <p className="limit">
+      This dashboard asked{" "}
+      {others.map((registry, position) => (
+        <span key={registry}>
+          {position > 0 ? ", " : ""}
+          <span className="address">{registry}</span>
+        </span>
+      ))}{" "}
+      first, and {others.length === 1 ? "it holds" : "they hold"} no record of this asset.
+    </p>
   );
 }
 

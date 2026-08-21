@@ -243,7 +243,11 @@ export async function submitRun(input: {
             proof: proof.proof,
           },
         );
-        return { ledger: accepted.ledger, transactionHash: accepted.transactionHash };
+        return {
+          ledger: accepted.ledger,
+          transactionHash: accepted.transactionHash,
+          registry,
+        };
       },
       writePackages: async (accepted) => {
         // The root comes back from the registry rather than from the proof this
