@@ -121,15 +121,28 @@ export async function afterTheProof(input: {
  * The directory that the generator reports, or `undefined` when its answer does
  * not name one.
  *
- * The caller falls back to the directory it asked for. That is the parent of
- * the one the generator writes, so a reader still reaches the files, and a
- * changed message of the generator degrades the answer rather than failing the
- * run that already attested.
+ * Two things this reads carefully, because both were wrong and both were
+ * measured rather than argued.
+ *
+ * The path runs to the end of its line. An operator chooses where the packages
+ * go, so the path can hold a space, and an expression that stopped at the first
+ * space turned `/run/my packages/...` into `/run/my`.
+ *
+ * The last line wins. Anything the generator printed earlier can carry the same
+ * words, and the first match is then an older answer or none at all. That was
+ * latent rather than live, because the generator prints the phrase once and
+ * cargo writes elsewhere, and latent is not fixed.
+ *
+ * The caller falls back to the directory it asked for. That directory is three
+ * levels above the one the generator writes, since the generator adds the
+ * `packages` directory, the asset and the snapshot under it. A reader still
+ * reaches the files from there, and a changed message degrades the answer
+ * rather than failing a run that already attested.
  */
 export function directoryOfPackages(reported: string): string | undefined {
-  const found = /files in (\S+)/.exec(reported);
-  const path = found?.[1];
-  return path === undefined || path.length === 0 ? undefined : path;
+  const lines = [...reported.matchAll(/^packages: \d+ files in (.+)$/gm)];
+  const last = lines[lines.length - 1]?.[1]?.trim();
+  return last === undefined || last.length === 0 ? undefined : last;
 }
 
 /** A submission that the dashboard refuses before a run starts. */
@@ -286,8 +299,9 @@ export async function submitRun(input: {
         });
         // The generator writes the files, and it names the directory it wrote
         // them in. That directory carries the asset and the snapshot, and the
-        // inclusion check needs a file inside it, so naming the parent would
-        // leave the reader to build the rest of the path by hand. Reading the
+        // inclusion check needs a file inside it, so reporting the directory
+        // this process asked for would leave the reader to build three levels
+        // of the path by hand. Reading the
         // answer of the writer also keeps one account of the layout, which
         // belongs to the generator rather than to this package.
         return directoryOfPackages(reported) ?? directory;
