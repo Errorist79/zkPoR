@@ -20,7 +20,7 @@
 
 import { spawn } from "node:child_process";
 import { copyFile, mkdir, readFile, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   ATTESTATION_MAX_AGE_LEDGERS,
   FIXTURE_DIRECTORY,
@@ -453,4 +453,70 @@ export async function prove(input: {
     report("the proof is ready");
     return { proof, publicInputs, values: readPublicInputs(manifest, publicInputs) };
   });
+}
+
+/**
+ * Writes the package of every customer of one accepted attestation.
+ *
+ * The generator writes the files. This function starts it and passes the master
+ * secret through the environment of that process, exactly as the proof does, so
+ * no second writer of per-customer files appears and the secret reaches no
+ * argument vector.
+ *
+ * The generator recomputes every salt from the master secret and refuses to
+ * write unless the recomputed root equals the root that this call declares. A
+ * caller that reads the root back from the registry therefore gets a round trip
+ * which proves that the balance file reproduces the attestation the chain
+ * holds.
+ *
+ * Each file carries one balance in clear text. The files are the copy of the
+ * customer and not the working material of a run, so they land outside the
+ * repository and the sweep of the run lifecycle never reaches them.
+ */
+export async function writeCustomerPackages(input: {
+  repository: string;
+  contextFile: string;
+  customersFile: string;
+  outputDirectory: string;
+  masterSecret: bigint;
+  network: string;
+  registry: string;
+  attestedRoot: bigint;
+  attestedSnapshot: number;
+  transactionHash: string;
+  deploymentsFile: string;
+}): Promise<string> {
+  return await runTool(
+    "cargo",
+    [
+      "run",
+      "--release",
+      "--quiet",
+      "--",
+      "packages",
+      // The generator runs in its own directory, so a path that the caller gave
+      // relative to this process would name a different file there, or none.
+      resolve(input.contextFile),
+      resolve(input.customersFile),
+      resolve(input.outputDirectory),
+      "--network",
+      input.network,
+      "--registry",
+      input.registry,
+      "--attested-root",
+      input.attestedRoot.toString(16).padStart(64, "0"),
+      "--attested-snapshot",
+      String(input.attestedSnapshot),
+      "--transaction",
+      input.transactionHash,
+      "--deployments",
+      resolve(input.deploymentsFile),
+    ],
+    {
+      cwd: join(input.repository, PATHS.generator),
+      env: {
+        [MASTER_SECRET_ENV]: `0x${input.masterSecret.toString(16).padStart(64, "0")}`,
+      },
+    },
+  );
 }

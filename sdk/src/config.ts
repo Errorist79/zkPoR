@@ -10,6 +10,8 @@
 
 import { Address } from "@stellar/stellar-sdk";
 import { readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { PACKAGES_DIRECTORY_NAME } from "./constants.js";
 import { InfrastructureError } from "./network.js";
 import type { NetworkConfig } from "./network.js";
 import { passphraseOfNetwork } from "./registry.js";
@@ -29,6 +31,27 @@ export const READ_SOURCE_ENV = "ZKPOR_READ_SOURCE";
 
 /** The environment variable that names the deployments file. */
 export const DEPLOYMENTS_ENV = "ZKPOR_DEPLOYMENTS";
+
+/** The environment name that says where the packages of the customers land. */
+export const PACKAGES_OUT_ENV = "ZKPOR_PACKAGES_OUT";
+
+/**
+ * The directory of the packages, beside the balance file when nothing names
+ * one.
+ *
+ * The balance file already holds every balance in clear text, so its directory
+ * is already at the sensitivity that a package carries. Writing there keeps the
+ * material of the customers in one place that the issuer chose, and keeps it
+ * out of the repository, where the sweep of a run and the working tree of the
+ * project both live.
+ */
+export function packagesDirectory(environment: Environment, customersFile: string): string {
+  const named = environment[PACKAGES_OUT_ENV];
+  if (named !== undefined && named.length > 0) {
+    return named;
+  }
+  return join(dirname(customersFile), PACKAGES_DIRECTORY_NAME);
+}
 
 /** The default path of the deployments file, against the working directory. */
 export const DEFAULT_DEPLOYMENTS = "scripts/deployments.json";

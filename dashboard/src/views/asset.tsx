@@ -135,8 +135,18 @@ function History(input: { history: HistoryView | undefined }) {
           result does not name, so this is not the complete record.
         </p>
       ) : null}
+      {!history.coversTheWholeRange ? (
+        <p className="limit">
+          The endpoint stopped before the end of the range, so this page cannot say whether the
+          range holds an attestation that the table does not name.
+        </p>
+      ) : null}
       {history.entries.length === 0 ? (
-        <p>The query found no attestation in that range.</p>
+        <p>
+          {history.coversTheWholeRange
+            ? "The query found no attestation in that range."
+            : "The query saw no attestation before the endpoint stopped."}
+        </p>
       ) : (
         <table>
           <thead>

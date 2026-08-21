@@ -129,9 +129,11 @@ has lapsed, and it says that the attestation still stands for the ledger it
 names. The window comes from the client library, so one constant governs the
 registry, the command line, and this page.
 
-## A run takes minutes
+## A run takes about a minute
 
-A proving run takes minutes, and three things follow.
+Four measured runs took 47, 50, 62 and 66 seconds. The build host has an
+AMD Ryzen 9 5950X with 16 cores and 125 GB of memory. A slower machine takes
+longer. Three things follow from a run of this length.
 
 A run is a resource with an identity. A submission starts the run and redirects
 to that resource, so the page that shows progress is a plain read. A reload of it

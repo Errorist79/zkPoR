@@ -1,5 +1,5 @@
 /**
- * The run that takes minutes, and the two things that gap creates.
+ * The run that takes about a minute, and the two things that gap creates.
  *
  * The first is concurrency. A second submission, from a second tab or from a
  * second click, must not start a second prover: the prover needs more memory
@@ -21,7 +21,7 @@ import { MAX_REMEMBERED_RUNS, ROUTES } from "../src/constants.js";
 import { RunRefusedError, afterTheProof, submitRun } from "../src/attestation.js";
 import { route } from "../src/routes.js";
 import { RunStore } from "../src/runs.js";
-import type { ProofSummary, Run, RunOutcome, WindowAtEnd } from "../src/runs.js";
+import type { ProofSummary, Run, RunOutcome, Submission, WindowAtEnd } from "../src/runs.js";
 import { RunPage } from "../src/views/run.js";
 import {
   ASSET,
@@ -96,7 +96,7 @@ describe("a second submission while a run is open", () => {
     const store = new RunStore();
     const first = controlled();
     const started = store.startOrJoin(first.request);
-    first.gate.settle({ proof: PROOF, submission: undefined, window: undefined });
+    first.gate.settle({ proof: PROOF, submission: undefined, window: undefined, packages: undefined });
     await settleEverything();
 
     expect(store.open()).toBeUndefined();
@@ -141,7 +141,7 @@ describe("the record of a run", () => {
       "checking the prover against the pins",
       "proving the aggregation, which is the slowest step",
     ]);
-    gate.settle({ proof: PROOF, submission: undefined, window: undefined });
+    gate.settle({ proof: PROOF, submission: undefined, window: undefined, packages: undefined });
     await settleEverything();
     const finished = store.get(started.run.id);
     expect(finished?.stage).toBe("finished");
@@ -185,7 +185,7 @@ describe("the record of a run", () => {
     for (let made = 0; made < MAX_REMEMBERED_RUNS + 3; made += 1) {
       const each = controlled();
       ids.push(store.startOrJoin(each.request).run.id);
-      each.gate.settle({ proof: PROOF, submission: undefined, window: undefined });
+      each.gate.settle({ proof: PROOF, submission: undefined, window: undefined, packages: undefined });
       await settleEverything();
     }
     const first = ids[0];
@@ -407,10 +407,32 @@ describe("a submission that this process cannot run", () => {
 });
 
 describe("both secrets in the source", () => {
-  /** The two readers of the client library, and the call each one feeds. */
+  /**
+   * The two readers of the client library, and every form a call of one may
+   * take.
+   *
+   * The list states the allowed forms rather than a count of the call sites. A
+   * count refused a second call site, which made it refuse the legitimate one
+   * that writes the packages of the customers as loudly as it would refuse a
+   * leak, and the number said nothing about why. The property is that a read
+   * passes straight into the call that needs it. A new call site is allowed
+   * here by writing its form, which is a line a reviewer can weigh.
+   */
   const READERS = [
-    { reader: "readMasterSecret", argument: "masterSecret: await readMasterSecret(" },
-    { reader: "readAuthoritySecret", argument: "readAuthoritySecret(input.environment)" },
+    {
+      reader: "readMasterSecret",
+      forms: [
+        // The proof, and the packages of the customers after the attestation.
+        /^\s*masterSecret: await readMasterSecret\(input\.environment\),$/,
+      ],
+    },
+    {
+      reader: "readAuthoritySecret",
+      forms: [
+        // The submission of the attestation.
+        /^\s*readAuthoritySecret\(input\.environment\),$/,
+      ],
+    },
   ] as const;
 
   const text = (): string =>
@@ -420,11 +442,21 @@ describe("both secrets in the source", () => {
 
   it.each(READERS)(
     "reads $reader into the call that needs it, and never into a name of this package",
-    ({ reader, argument }) => {
+    ({ reader, forms }) => {
       const source = text();
-      // One read, so a second call site cannot appear without this failing.
-      expect([...source.matchAll(new RegExp(`${reader}\\(`, "g"))]).toHaveLength(1);
-      expect(source).toContain(argument);
+      const calls = source
+        .split("\n")
+        .filter((line) => line.includes(`${reader}(`))
+        .map((line) => line.trimEnd());
+      // Every call site takes one of the forms above. A call in any other
+      // shape fails here and names itself.
+      expect(calls.length).toBeGreaterThan(0);
+      for (const line of calls) {
+        expect(
+          forms.some((form) => form.test(line)),
+          `${reader} is called as: ${line.trim()}`,
+        ).toBe(true);
+      }
       // A binding would put the value in a name of this package, where a later
       // line could log it, render it, or put it in a progress message.
       expect(source).not.toMatch(
@@ -557,15 +589,19 @@ describe("a prove-only run and the window", () => {
 
 describe("what one run does once the proof exists", () => {
   /** What one call recorded and did. */
-  function watcher() {
+  function watcher(failPackages = false) {
     const proofs: ProofSummary[] = [];
     const windows: WindowAtEnd[] = [];
     const steps: string[] = [];
+    const written: Submission[] = [];
+    const recorded: Submission[] = [];
     let submissions = 0;
     return {
       proofs,
       windows,
       steps,
+      written,
+      recorded,
       submitted: () => submissions,
       call: async (action: "prove" | "attest", currentLedger: number) =>
         await afterTheProof({
@@ -576,9 +612,17 @@ describe("what one run does once the proof exists", () => {
           report: (step) => steps.push(step),
           recordProof: (proof) => proofs.push(proof),
           recordWindow: (window) => windows.push(window),
+          recordSubmission: (submission) => recorded.push(submission),
           submit: async () => {
             submissions += 1;
             return await Promise.resolve({ ledger: 5_100, transactionHash: "a".repeat(64) });
+          },
+          writePackages: async (accepted) => {
+            written.push(accepted);
+            if (failPackages) {
+              throw new Error("the generator refused");
+            }
+            return await Promise.resolve("/somewhere/packages");
           },
         }),
     };
@@ -587,6 +631,42 @@ describe("what one run does once the proof exists", () => {
   /** A ledger inside the window of the snapshot, and one past it. */
   const INSIDE = 5_000 + ATTESTATION_MAX_AGE_LEDGERS;
   const PAST = INSIDE + 1;
+
+  it("writes the packages of the customers after an attestation, and names where", async () => {
+    // An issuer who attests through this page must leave their customers able
+    // to check inclusion. A run that attested and wrote no package would make
+    // the customer check impossible for that snapshot, because a package binds
+    // to the snapshot that the registry attests.
+    const seen = watcher();
+    const outcome = await seen.call("attest", INSIDE);
+    expect(seen.written).toEqual([{ ledger: 5_100, transactionHash: "a".repeat(64) }]);
+    expect(outcome.packages).toBe("/somewhere/packages");
+    expect(seen.steps).toContain("the packages of the customers are under /somewhere/packages");
+  });
+
+  it("records the transaction before the packages, so a later failure cannot hide it", async () => {
+    // The attestation stands on the chain the moment the registry accepts it.
+    // A page that said this run submitted nothing, because a step after the
+    // network failed, would send the issuer to attest a second time.
+    const seen = watcher(true);
+    await expect(seen.call("attest", INSIDE)).rejects.toThrow("the generator refused");
+    expect(seen.recorded).toEqual([{ ledger: 5_100, transactionHash: "a".repeat(64) }]);
+  });
+
+  it("writes no package for a run that only proved", async () => {
+    // A package names the transaction that carries the attestation, and a run
+    // that proved has no such transaction.
+    const seen = watcher();
+    const outcome = await seen.call("prove", INSIDE);
+    expect(seen.written).toEqual([]);
+    expect(outcome.packages).toBeUndefined();
+  });
+
+  it("writes no package when the window closed before the submission", async () => {
+    const seen = watcher();
+    await expect(seen.call("attest", PAST)).rejects.toThrow(RunRefusedError);
+    expect(seen.written).toEqual([]);
+  });
 
   it("records the proof before anything that can fail after it", async () => {
     const seen = watcher();

@@ -186,6 +186,55 @@ const PERMITTED_GLOBALS: readonly {
 ];
 
 /** The names that the reading of a use watches. */
+
+/**
+ * What this package may take from the file system, and which module may take
+ * each one.
+ *
+ * The generator holds the generation gate, and it is the one writer of
+ * per-customer files. That rule is prose in the documents, and this table is
+ * what keeps it true: a module of this package that could open a customer file
+ * and write to it would make a second writer, whatever the prose says.
+ *
+ * So the entries that change a file are named one by one, with the module that
+ * may take each. Nothing here writes the content of a file the caller names.
+ * `writeSync` belongs to the run lock and to nothing else, and the lock holds a
+ * process identifier rather than anything of a customer.
+ */
+const FILE_SYSTEM: readonly { entry: string; modules: readonly string[]; why: string }[] = [
+  { entry: "readFile", modules: [], why: "reads a file the caller names" },
+  { entry: "readFileSync", modules: [], why: "reads a file the caller names" },
+  { entry: "readdirSync", modules: ["witnesses.ts"], why: "lists what the sweep must remove" },
+  { entry: "existsSync", modules: ["witnesses.ts"], why: "asks whether the sweep has work" },
+  { entry: "stat", modules: ["secret.ts"], why: "reads the mode of the secret file" },
+  {
+    entry: "copyFile",
+    modules: ["proving.ts"],
+    why: "puts the prover input of one batch where the prover reads it",
+  },
+  { entry: "mkdir", modules: ["proving.ts"], why: "makes the output directory of a batch" },
+  { entry: "rm", modules: ["proving.ts", "witnesses.ts"], why: "removes what a run leaves" },
+  { entry: "rmSync", modules: ["witnesses.ts"], why: "removes what a run leaves, on the way out" },
+  { entry: "unlinkSync", modules: ["runlock.ts"], why: "gives the lock back" },
+  { entry: "openSync", modules: ["runlock.ts"], why: "takes the lock" },
+  { entry: "closeSync", modules: ["runlock.ts"], why: "closes the lock file" },
+  {
+    entry: "writeSync",
+    modules: ["runlock.ts"],
+    why: "writes the process identifier into the lock, and no other content anywhere",
+  },
+];
+
+/** The entries that put content into a file that a caller names. */
+const WRITERS = [
+  "writeFile",
+  "writeFileSync",
+  "appendFile",
+  "appendFileSync",
+  "createWriteStream",
+  "open",
+] as const;
+
 const WATCHED = PERMITTED_GLOBALS.map((each) => each.name);
 
 /**
@@ -241,6 +290,50 @@ describe("what every module of this package may reach", () => {
       100,
     );
   });
+
+
+  it("takes from the file system only what the table names, in the module it names", () => {
+    let counted = 0;
+    for (const name of sourceFiles()) {
+      for (const named of namedModulesOf(name)) {
+        if (named.specifier !== "node:fs" && named.specifier !== "node:fs/promises") {
+          continue;
+        }
+        for (const entry of named.names) {
+          counted += 1;
+          const allowed = FILE_SYSTEM.find((each) => each.entry === entry);
+          expect(allowed !== undefined, `${name} takes ${entry} from ${named.specifier}`).toBe(
+            true,
+          );
+          if (allowed !== undefined && allowed.modules.length > 0) {
+            expect(
+              allowed.modules.includes(name),
+              `${name} takes ${entry}, which belongs to ${allowed.modules.join(" and ")}`,
+            ).toBe(true);
+          }
+        }
+      }
+    }
+    // A read that found no entry would pass the loop without looking at
+    // anything.
+    expect(counted).toBeGreaterThan(5);
+  }, READING_DEADLINE);
+
+  it("names no entry that writes the content of a file, so the generator stays the one writer", () => {
+    for (const name of sourceFiles()) {
+      for (const named of namedModulesOf(name)) {
+        if (named.specifier !== "node:fs" && named.specifier !== "node:fs/promises") {
+          continue;
+        }
+        for (const entry of named.names) {
+          expect(
+            WRITERS.some((each) => each === entry),
+            `${name} takes ${entry}, which writes the content of a file that a caller names`,
+          ).toBe(false);
+        }
+      }
+    }
+  }, READING_DEADLINE);
 
   it("names no global of the runtime that this table does not carry", () => {
     const resolved: string[] = [];

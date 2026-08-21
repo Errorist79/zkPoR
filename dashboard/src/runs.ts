@@ -61,6 +61,12 @@ export interface RunOutcome {
   readonly proof: ProofSummary;
   readonly submission: Submission | undefined;
   readonly window: WindowAtEnd | undefined;
+  /**
+   * The directory that holds the package of every customer, for a run that
+   * attested. A run that only proved writes none, because a package names the
+   * transaction of an attestation.
+   */
+  readonly packages: string | undefined;
 }
 
 /**
@@ -75,6 +81,7 @@ export type RunWork = (
   report: ProgressReporter,
   recordProof: (proof: ProofSummary) => void,
   recordWindow: (window: WindowAtEnd) => void,
+  recordSubmission: (submission: Submission) => void,
 ) => Promise<RunOutcome>;
 
 /** One run, as a page shows it. */
@@ -182,6 +189,9 @@ export class RunStore {
         (window) => {
           this.change(id, (run) => ({ ...run, window }));
         },
+        (submission) => {
+          this.change(id, (run) => ({ ...run, submission }));
+        },
       );
       this.change(id, (run) => ({
         ...run,
@@ -193,8 +203,11 @@ export class RunStore {
     } catch (cause) {
       const failure =
         cause instanceof Error ? cause.message : "the run failed for a reason it cannot describe";
-      // The spread keeps the proof that the work already recorded. A submission
-      // that failed after a correct proof must not take the root away.
+      // The spread keeps the proof and the submission that the work already
+      // recorded. A submission that failed after a correct proof must not take
+      // the root away, and a step that failed after the network accepted the
+      // attestation must not take the transaction away: the attestation stands
+      // on the chain whatever happens in this process after it.
       this.change(id, (run) => ({ ...run, stage: "failed", failure }));
     } finally {
       if (this.openRunId === id) {

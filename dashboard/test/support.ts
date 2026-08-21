@@ -131,6 +131,7 @@ export function historyView(changes: Partial<HistoryView> = {}): HistoryView {
     oldestLedgerRetained: 4_000,
     latestLedger: 5_200,
     reachesTheRetentionLimit: true,
+    coversTheWholeRange: true,
     ...changes,
   };
 }

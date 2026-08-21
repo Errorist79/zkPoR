@@ -294,7 +294,13 @@ async function commandHistory(args: readonly string[]): Promise<CommandResult> {
       "The query started at the oldest retained ledger, so an earlier attestation may exist that this result does not name.",
     );
   }
-  lines.push(`The query found ${history.attestations.length} attestations.`);
+  if (history.coversTheWholeRange) {
+    lines.push(`The query found ${history.attestations.length} attestations.`);
+  } else {
+    lines.push(
+      `The endpoint stopped before the end of the range, so this result does not say how many attestations the range holds. It names the ${history.attestations.length} attestations that the query saw. Ask again from a later ledger.`,
+    );
+  }
   for (const attestation of history.attestations) {
     lines.push(
       `Ledger ${attestation.ledger}: snapshot ${attestation.snapshotLedger}, liabilities ${attestation.totalLiabilities.toString(10)}, reserves ${attestation.reserveSum.toString(10)}, transaction ${attestation.transactionHash}.`,

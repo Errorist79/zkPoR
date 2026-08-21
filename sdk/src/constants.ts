@@ -143,6 +143,9 @@ export const FIXTURE_DIRECTORY = "fixtures";
  */
 export const HISTORY_DEFAULT_LEDGERS = 17280;
 
+/** The name of the directory that holds the packages of the customers. */
+export const PACKAGES_DIRECTORY_NAME = "packages";
+
 /** The largest event count that one history page requests. */
 export const HISTORY_PAGE_LIMIT = 200;
 

@@ -84,10 +84,11 @@ FIXTURE_SECRET_FILE="$ROOT_DIR/fixtures/test_only_master_secret.env"
 # file, because a guard that a deleted file switches off is no guard. The
 # check below compares the file with this copy, so the two cannot drift.
 FIXTURE_SECRET="0x7a6b706f722d746573742d6f6e6c792d6d61737465722d736563726574212121"
-# The proof of the release configuration takes minutes, and a network closes a
-# ledger every few seconds. A run that starts with less than this much window
-# left would prove a snapshot that expires before the transaction arrives, so
-# it stops instead.
+# The proof of the release configuration took 47 to 66 seconds in four measured
+# runs, on an AMD Ryzen 9 5950X with 16 cores. A slower machine takes longer,
+# and a network closes a ledger every few seconds. A run that starts with less
+# than this much window left would prove a snapshot that expires before the
+# transaction arrives, so it stops instead.
 PROVING_MARGIN_LEDGERS=120
 
 die() { echo -e "\n${RED}attest: $*${NC}" >&2; exit 1; }
@@ -255,8 +256,9 @@ mkdir -p "$WORK"
 # -----------------------------------------------------------------------------
 # The registry derives the context hash from its own state, so a context that
 # differs anywhere produces a proof that the registry refuses. The comparison
-# runs before the proof, which takes minutes. It needs the network, and so does
-# the window check above, so an unreachable chain already stopped this run.
+# runs before the proof, which takes about a minute on a 16-core machine. It
+# needs the network, and so does the window check above, so an unreachable
+# chain already stopped this run.
 ASSET=$(sed -nE 's/^asset *= *"(.*)".*/\1/p' "$CONTEXT_FILE")
 [ -n "$ASSET" ] || die "the context file names no asset"
 # The answer of the registry arrives on the output, and the notes of the

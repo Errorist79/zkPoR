@@ -150,4 +150,9 @@ export interface HistoryView {
   readonly oldestLedgerRetained: number;
   readonly latestLedger: number;
   readonly reachesTheRetentionLimit: boolean;
+  /**
+   * True when the query read the whole range. When it is false, the page states
+   * that it could not see the range, and never states an absence.
+   */
+  readonly coversTheWholeRange: boolean;
 }

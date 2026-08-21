@@ -154,7 +154,12 @@ enumerates the assets of a registry, so a reader who holds only the registry
 address cannot reach the record. The `getEvents` method reaches the attestation
 events only inside the retained window of an endpoint, which is about seven
 days, so it stopped reaching these attestations in the middle of August 2026.
-After that the asset address is the one way back to the record.
+A query that starts before the retained window does not return an empty answer.
+It returns an error that names the ledger range the endpoint holds, so a reader
+sees a refusal and knows that the window, and not the absence of an attestation,
+produced it. On August 21, 2026 the endpoint held the ledgers from 4141385 to
+4262344, and the attestations of August 8 landed at the ledgers 4040321, 4042618
+and 4043038. After that the asset address is the one way back to the record.
 
 On August 17, 2026 the client read the record of both assets back from the
 chain. Every field of the first record equalled the values that the run of

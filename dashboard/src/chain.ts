@@ -139,5 +139,6 @@ export async function readHistoryView(reader: Reader, asset: string): Promise<Hi
     oldestLedgerRetained: history.oldestLedgerRetained,
     latestLedger: history.latestLedger,
     reachesTheRetentionLimit: history.reachesTheRetentionLimit,
+    coversTheWholeRange: history.coversTheWholeRange,
   };
 }

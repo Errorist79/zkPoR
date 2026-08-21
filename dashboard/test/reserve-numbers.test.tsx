@@ -207,6 +207,7 @@ describe("the history, which is a third place that shows a reserve number", () =
           oldestLedgerRetained: 4_000,
           latestLedger: 5_200,
           reachesTheRetentionLimit: false,
+          coversTheWholeRange: true,
         }}
       />,
     );

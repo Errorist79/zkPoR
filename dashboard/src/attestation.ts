@@ -29,6 +29,11 @@ import {
   readContext,
   readMasterSecret,
   windowAllowsProving,
+  InfrastructureError,
+  deploymentsPath,
+  packagesDirectory,
+  readAssetRecord,
+  writeCustomerPackages,
 } from "@zkpor/sdk";
 import type { Environment, ProgressReporter } from "@zkpor/sdk";
 import type { Reader } from "./chain.js";
@@ -59,7 +64,9 @@ export async function afterTheProof(input: {
   report: ProgressReporter;
   recordProof: (proof: ProofSummary) => void;
   recordWindow: (window: WindowAtEnd) => void;
+  recordSubmission: (submission: Submission) => void;
   submit: () => Promise<Submission>;
+  writePackages: (accepted: Submission) => Promise<string>;
 }): Promise<RunOutcome> {
   // The proof is recorded before anything that can fail after it. A submission
   // that fails must not take the root away, because the witness files are gone
@@ -81,7 +88,7 @@ export async function afterTheProof(input: {
         ? "the proof is ready, and this run submits nothing"
         : "the proof is ready, and its snapshot already left the window",
     );
-    return { proof: input.proof, submission: undefined, window };
+    return { proof: input.proof, submission: undefined, window, packages: undefined };
   }
   if (!window.stillOpen) {
     // The registry refuses a root whose snapshot left the window, so the run
@@ -92,8 +99,21 @@ export async function afterTheProof(input: {
   }
   input.report("submitting the attestation and waiting for the network");
   const accepted = await input.submit();
+  // The transaction is recorded before the step that follows it, for the reason
+  // the proof is. The attestation stands on the chain from this moment, and a
+  // failure of the packages after it must not make the page say that this run
+  // submitted nothing.
+  input.recordSubmission(accepted);
   input.report("the registry accepted the attestation");
-  return { proof: input.proof, submission: accepted, window };
+  // The packages come after the acceptance, because each one names the
+  // transaction that carries it and no such transaction exists before this
+  // point. A customer cannot check inclusion without one, so a run that
+  // attested and wrote none would leave the issuer holding a claim that their
+  // customers have no way to check.
+  input.report("writing the package of every customer");
+  const packages = await input.writePackages(accepted);
+  input.report(`the packages of the customers are under ${packages}`);
+  return { proof: input.proof, submission: accepted, window, packages };
 }
 
 /** A submission that the dashboard refuses before a run starts. */
@@ -149,7 +169,7 @@ export async function submitRun(input: {
 
   windowAllowsProving(context.snapshotLedger, await latestLedger(input.reader.server));
 
-  const work: RunWork = async (report, recordProof, recordWindow) => {
+  const work: RunWork = async (report, recordProof, recordWindow, recordSubmission) => {
     const proof = await prove({
       repository: input.repository,
       contextFile: contextPath,
@@ -173,6 +193,7 @@ export async function submitRun(input: {
       report,
       recordProof,
       recordWindow,
+      recordSubmission,
       submit: async () => {
         const accepted = await attestWithAuthority(
           input.reader.server,
@@ -190,6 +211,43 @@ export async function submitRun(input: {
           },
         );
         return { ledger: accepted.ledger, transactionHash: accepted.transactionHash };
+      },
+      writePackages: async (accepted) => {
+        // The root comes back from the registry rather than from the proof this
+        // process just made. The generator refuses to write unless the root it
+        // recomputes from the balance file equals the root declared here, so
+        // reading it from the chain turns that refusal into a round trip: it
+        // proves that this balance file reproduces the attestation the registry
+        // holds, and not merely the one this process believes it sent.
+        const record = await readAssetRecord(
+          input.reader.server,
+          input.reader.config,
+          input.reader.readOptions,
+          input.reader.registry,
+          context.asset,
+        );
+        if (record === undefined || record.attestation === undefined) {
+          throw new InfrastructureError(
+            "the registry accepted the attestation and holds no record of it, so the packages of the customers cannot name a root",
+          );
+        }
+        const directory = packagesDirectory(input.environment, customersPath);
+        await writeCustomerPackages({
+          repository: input.repository,
+          contextFile: contextPath,
+          customersFile: customersPath,
+          outputDirectory: directory,
+          // The secret is read here and passed on in the same expression, as it
+          // is for the proof. It reaches no variable of this package.
+          masterSecret: await readMasterSecret(input.environment),
+          network: input.reader.config.network,
+          registry: input.reader.registry,
+          attestedRoot: record.attestation.finalRoot,
+          attestedSnapshot: record.attestation.snapshotLedger,
+          transactionHash: accepted.transactionHash,
+          deploymentsFile: deploymentsPath(input.environment),
+        });
+        return directory;
       },
     });
   };
