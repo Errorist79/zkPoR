@@ -125,6 +125,14 @@ function Produced(input: { run: Run }) {
           </>
         )}
       </dl>
+      {input.run.packages === undefined ? null : (
+        <p>
+          Each file in that directory holds the balance of one customer. Take one file and{" "}
+          <a href={ROUTES.inclusion}>check it against the chain</a>. The check asks for the path of
+          a file, so add a file name to the directory above. This page does not put the directory
+          in that field, because a page that chose a file would choose whose balance to show.
+        </p>
+      )}
       {submission === undefined ? (
         <>
           <p>This run proved and submitted nothing.</p>

@@ -756,3 +756,33 @@ describe("what one run does once the proof exists", () => {
     expect(outcome.window).toEqual({ currentLedger: INSIDE, stillOpen: true });
   });
 });
+
+describe("the finished run and the check that follows it", () => {
+  const finished = (packages: string | undefined) =>
+    framed(<RunPage run={{ ...runIn("finished"), proof: PROOF, packages }} joined={false} />);
+
+  // Every page carries the check in its navigation, so the presence of that
+  // link proves nothing here. What these read is the sentence beside the
+  // packages, which is the one that tells a reader what to do next.
+  const INVITATION = "check it against the chain";
+
+  it("sends a reader from the packages of a run to the check", () => {
+    // A reader who has the packages and no sentence about them has to work out
+    // that the check exists, and the check is the step that makes a run mean
+    // anything to a customer.
+    const markup = finished("/run/out/packages/CBSQ/4263061");
+    expect(markup).toContain(INVITATION);
+    expect(markup).toContain(`href="${ROUTES.inclusion}"`);
+  });
+
+  it("says nothing about a check on a run that wrote no packages", () => {
+    expect(finished(undefined)).not.toContain(INVITATION);
+  });
+
+  it("carries no directory into the field of the check", () => {
+    // The field takes one file. A page that put the directory there would
+    // either be refused on arrival or would choose whose balance to show.
+    const markup = finished("/run/out/packages/CBSQ/4263061");
+    expect(markup).not.toContain(`${ROUTES.inclusion}?`);
+  });
+});

@@ -41,8 +41,9 @@ export function InclusionForm(input: { reason?: string }) {
         <input id={PACKAGE_PATH_FIELD} name={PACKAGE_PATH_FIELD} required autoComplete="off" />
         <p className="limit">
           One file, and not the directory that a run reports. A run writes one file for each
-          customer into that directory, named <code>package-000000.zkpor.json</code> upward, so a
-          path here ends with a file name of that shape. This page will not take the directory and
+          customer into that directory. The first file is{" "}
+          <code>package-000000.zkpor.json</code>, and the number counts up from there, so a path
+          here ends with a file name of that shape. This page will not take the directory and
           choose a file inside it: each file holds the balance of one customer, so choosing one
           would be this page deciding whose balance to show.
         </p>

@@ -216,8 +216,12 @@ export async function readyToProve(
 ): Promise<{ pins: Pins; manifest: Manifest; shape: Shape }> {
   const pins = await readPins(join(repository, PATHS.versions));
   report("checking the prover against the pins");
-  const found = await requirePinnedTools(pins);
-  report(`nargo and bb match the pins: ${found.nargo}, ${found.bb}`);
+  await requirePinnedTools(pins);
+  // The pinned versions, and not the text the tools print. One of them answers
+  // with four lines that carry a commit hash, and a reader of the run gets a
+  // paragraph where a sentence belongs. A tool that does not match stops the
+  // run, and that refusal carries the text it printed.
+  report(`nargo ${pins.nargoVersion} and bb ${pins.bbVersion} match the pins`);
 
   const manifest = parseManifest(await readFile(join(repository, PATHS.manifest), "utf8"));
   const shape = parseShape(await readFile(join(repository, PATHS.shape), "utf8"));
