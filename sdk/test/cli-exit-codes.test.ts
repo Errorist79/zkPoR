@@ -104,6 +104,16 @@ function runCli(
       },
     });
     if (answer.error === undefined && answer.status !== null) {
+      // A build that vanished mid-run is not a verdict about the contract.
+      // The command line is executed out of a directory that this run made,
+      // and another process removing it makes the module loader exit 1, which
+      // is a code this file also reads as an answer. So a non-zero code with no
+      // artifact on disk is reported as what it is, and never as a result.
+      if (answer.status !== 0 && !existsSync(CLI)) {
+        throw new Error(
+          `the built command line at ${CLI} disappeared while this case ran, so its exit code ${String(answer.status)} says nothing about the contract`,
+        );
+      }
       return { code: answer.status, stderr: answer.stderr, stdout: answer.stdout };
     }
     lastFailure =
