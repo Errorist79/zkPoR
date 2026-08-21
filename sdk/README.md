@@ -38,6 +38,12 @@ through one wrapper in `src/poseidon.ts`.
 
 ## Commands
 
+From a clone of the repository, run `npm install` at the root once. That install
+builds this package and puts `zkpor` on the path of the workspace, so every
+command below runs as `npx zkpor ...` from the root. An install of the published
+package puts the same command on the path of the machine, and it then runs as
+`zkpor ...`.
+
 ```
 zkpor verify-inclusion <package.zkpor.json> [deployments.json]
 zkpor entry <asset>

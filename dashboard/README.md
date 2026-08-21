@@ -20,14 +20,21 @@ The dashboard covers four things.
 ## Start it
 
 The dashboard loads the client library at run time, so the build of this package
-alone does not produce a process that can start. Build both, from the root of
-the repository:
+alone does not produce a process that can start. Install and build from the root
+of the repository:
 
 ```
+npm install
 npm run build
 ZKPOR_NETWORK=testnet ZKPOR_RPC_URL=https://soroban-testnet.stellar.org \
   npx zkpor-dashboard
 ```
+
+The install step comes first and it does more than fetch the dependencies. Each
+workspace builds itself during the install, because npm puts a command on the
+path only when the file that the command points at already exists. A package
+that built after the install carried no command at all, and `npx` then looked
+for the name in the public registry and reported that it is not published.
 
 The root build covers every workspace in order. From this directory,
 `npm run build` builds the dashboard only, and the process then fails to load

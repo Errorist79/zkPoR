@@ -22,6 +22,7 @@
   ],
   "scripts": {
     "build": "tsup",
+    "prepare": "npm run build",
     "pretest": "npm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
