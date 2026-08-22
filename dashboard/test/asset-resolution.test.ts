@@ -17,7 +17,7 @@ import { describe, expect, it } from "vitest";
 import { openServer } from "@zkpor/sdk";
 import { readAssetView } from "../src/chain.js";
 import type { Reader } from "../src/chain.js";
-import { assetRecordXdr, fakeEndpoint } from "../../sdk/test/endpoint.js";
+import { assetRecordXdr, fakeEndpoint } from "../../sdk/replay/endpoint.js";
 
 /** Three generations of one network, in the shape the file records. */
 const OLDEST = "CC4MA6FWDBG3Y4YXYGDHYEZ36O3YSP7DREGOLBWKP6ZTQQ6IYFFX3KQK";

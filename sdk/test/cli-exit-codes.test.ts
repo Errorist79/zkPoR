@@ -36,7 +36,7 @@ import { InfrastructureError } from "../src/network.js";
 import { attestAndReport, completeCommand, failureNote, runReport } from "../src/report.js";
 import { ATTESTATION_MAX_AGE_LEDGERS } from "../src/constants.js";
 import { builtCli } from "./built.js";
-import { assetRecordXdr, fakeEndpoint } from "./endpoint.js";
+import { assetRecordXdr, fakeEndpoint } from "../replay/endpoint.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 

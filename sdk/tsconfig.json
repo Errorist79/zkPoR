@@ -19,5 +19,5 @@
     "resolveJsonModule": true,
     "noEmit": true
   },
-  "include": ["src", "test", "tsup.config.ts", "vitest.config.ts"]
+  "include": ["src", "replay", "test", "tsup.config.ts", "vitest.config.ts"]
 }
