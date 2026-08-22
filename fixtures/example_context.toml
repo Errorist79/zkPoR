@@ -1,0 +1,22 @@
+# The context of the committed example, and of nothing else.
+#
+# The addresses here are real. They name a token that exists on the test
+# network only to make the customer check runnable from a clone, the authority
+# that administers that token, and one reserve address that holds its shares.
+#
+# This attestation stays until a person points a context file at this asset on
+# purpose, or until the test network resets. Nothing in this repository selects
+# this asset, so no run of the scenario replaces its root.
+#
+# The demonstration of the issuer runs under a different authority. The two
+# share no key, so neither is evidence about the other.
+#
+# The run that produced the committed package read a copy of the committed
+# customer list, at a path outside this directory, and a master secret that
+# this repository does not hold. So nobody can rebuild that package from this
+# repository. What a reader can do is check it against the chain, which is what
+# it is for.
+authority = "GBTWIUFV6TF7GDS22K6YUMS65G4TA5UOZNYB4HNBNESWOY6VIWORR6NU"
+asset = "CBEHK5VDPAKSY2YAQFQQKN2FWOZ6YU6LKNKYRQ5M6XIDIYJEOBDQRHTT"
+reserves = ["GDL3HMPUWH2P3KVQPTSVKSZ5PPUSG5MU53UG3R3GPJ4F6G7Y4OFC36JW"]
+snapshot_ledger = 4274940
