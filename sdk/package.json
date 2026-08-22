@@ -31,7 +31,8 @@
     "pretest": "npm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "example": "npm run build && node examples/check-a-package.mjs"
+    "example": "npm run build && node examples/check-a-package.mjs",
+    "example:library": "npm run build && node examples/verify-in-your-program.mjs"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "16.2.0",

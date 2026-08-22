@@ -829,11 +829,34 @@ describe("the example of the customer check", () => {
     expect(answer.code).toBe(0);
   }, 120_000);
 
+  it("shows a caller the three answers the library can give", async () => {
+    // The integration example teaches that a verdict is not a boolean, that a
+    // refusal is an answer, and that a failure is not a verdict. A case that
+    // read only the first would pass while the other two stopped working.
+    const answer = await new Promise<{ code: number; out: string }>((resolve) => {
+      let out = "";
+      const child = spawn(
+        process.execPath,
+        [join(import.meta.dirname, "..", "examples", "verify-in-your-program.mjs")],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      child.stdout.on("data", (chunk: Buffer) => (out += chunk.toString()));
+      child.stderr.on("data", (chunk: Buffer) => (out += chunk.toString()));
+      child.on("close", (code) => resolve({ code: code ?? 1, out }));
+    });
+    expect(answer.out).toContain("included: leaf 0 holds 1000");
+    expect(answer.out).toContain("root-mismatch");
+    expect(answer.out).toContain("which is not a verdict");
+    expect(answer.code).toBe(0);
+  }, 120_000);
+
   it("says that the answers came from a recording", async () => {
     // A reader who takes the recording for the chain has learned something
     // false. The file says so, and this reads the file rather than trusting it
     // to stay said.
-    const text = readFileSync(EXAMPLE, "utf8");
-    expect(text).toContain("A recording is not the chain.");
+    for (const name of ["check-a-package.mjs", "verify-in-your-program.mjs"]) {
+      const text = readFileSync(join(import.meta.dirname, "..", "examples", name), "utf8");
+      expect(text, name).toContain("A recording is not the chain.");
+    }
   });
 });

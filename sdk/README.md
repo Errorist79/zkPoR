@@ -67,6 +67,32 @@ is not reproducible from this repository: it read a master secret that this
 repository does not hold. The balance in it is fictional and already committed,
 in the list of test customers.
 
+## Call the check from your own program
+
+```
+npm install && npm run example:library
+```
+
+The example above runs the command line. This one calls the library, which is
+what a team integrating the flow does. It shows the three things a caller has to
+get right and nothing else.
+
+- **A verdict is not a boolean.** The check answers one of seven kinds, and six
+  of them are refusals that each mean something different.
+- **A refusal is an answer.** A package that is not under the attested root is
+  the check working. The verdict carries the recomputed root and the attested
+  one, so a caller shows a customer what happened.
+- **A failure is not a verdict.** When the network cannot be read, the call
+  raises `InfrastructureError`. A caller that turned that into "not included"
+  would tell a customer their balance is missing because a request timed out.
+
+It runs against a recording, and the same sentence applies: a recording is not
+the chain. Give the configuration the address of a network endpoint to read one.
+
+The example leaves out proving, attestation, registration, and the signing of a
+reserve consent. Those belong to the issuer, who runs them from the command line
+of this package, and no integrating team performs them.
+
 ## The Poseidon2 dependency
 
 The protocol names the Poseidon2 instance of `noir-lang/poseidon` v0.2.0, file
