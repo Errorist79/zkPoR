@@ -313,6 +313,13 @@ leaf = H_3([id, balance, salt])
   liability set, because an inclusion package proves one leaf, and a
   repeated identifier would let the authority split one liability across
   two leaves that each show a partial balance.
+  A scheme that derives the identifier from customer data must meet two further
+  conditions, and both are easy to miss. The input must carry enough entropy,
+  because a package states the identifier in clear and the client prints it, so
+  a guessable input lets whoever holds a package name the customer. The input
+  must also come from the customer rather than from the authority, because an
+  authority that assigns the input can give one input to two customers, and one
+  leaf then answers to both while the rule above never fires.
 - `balance` is the customer liability as a `u64`, embedded into `Fr`. The
   inner circuit must range-check it as `u64`. The sum accumulator must be
   `u128`.
