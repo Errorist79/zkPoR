@@ -399,3 +399,52 @@ describe("what every module of this package may reach", () => {
     }
   });
 });
+
+/**
+ * Whether a program can reach the replay endpoint without asking for it.
+ *
+ * The endpoint answers from a recording. A caller that reached it by importing
+ * the client library would hold a chain reader that reads no chain, and the
+ * naming would be the only thing standing between a recording and a verdict
+ * somebody believed.
+ *
+ * So the packaging keeps it apart, and these read the packaging rather than the
+ * name. The library names it nowhere, and the export map gives it its own path.
+ */
+describe("the replay endpoint, and what may reach it", () => {
+  const MANIFEST: unknown = JSON.parse(
+    readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8"),
+  );
+
+  it("is named by no module of the client library", () => {
+    for (const name of sourceFiles()) {
+      for (const named of namedModulesOf(name)) {
+        expect(named.specifier ?? "", `${name} names the replay endpoint`).not.toContain("replay");
+      }
+    }
+  });
+
+  it("has its own entry in the export map, and the library entry is not it", () => {
+    if (!isRecord(MANIFEST) || !isRecord(MANIFEST.exports)) {
+      throw new Error("the manifest of this package states no export map");
+    }
+    const map = MANIFEST.exports;
+    const library = map["."];
+    const replay = map["./replay"];
+    if (!isRecord(library) || !isRecord(replay)) {
+      throw new Error("the export map states no library entry or no replay entry");
+    }
+    expect(JSON.stringify(library)).not.toContain("replay");
+    expect(replay["import"]).toBe("./dist/replay.js");
+  });
+
+  it("states every path a program may import, so no other path resolves", () => {
+    // An export map answers only the paths it names. Without one, a program
+    // reaches any file in the package by its path inside `dist`, and the
+    // separation above would hold for the name and not for the packaging.
+    if (!isRecord(MANIFEST) || !isRecord(MANIFEST.exports)) {
+      throw new Error("the manifest of this package states no export map");
+    }
+    expect(Object.keys(MANIFEST.exports).sort()).toStrictEqual([".", "./replay"]);
+  });
+});

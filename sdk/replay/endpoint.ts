@@ -1,20 +1,24 @@
 /**
- * An endpoint that answers a read and records which contract it was asked
- * about.
+ * An endpoint that answers a read from a recording, and never from a chain.
  *
- * No test could see which generation a read resolves to. The suite ran against
- * an address that answers nothing, so every resolution reached the same
- * failure and the failure named no registry. A resolver that picked the oldest
- * recorded generation instead of the newest passed the whole suite.
+ * A recording is not the chain. Every answer here is one this repository wrote
+ * down, so a check that passes against it proves that the client reads and
+ * refuses correctly. It proves nothing about what any network holds now.
  *
- * This endpoint closes that. It speaks the two calls a read makes, it decodes
- * the contract address out of the simulated transaction, and it keeps the
- * addresses in the order it was asked. A test then states which registry the
- * client reached, which is the fact the suite could not observe.
+ * The client library reaches this file through no import of its own. It is a
+ * separate entry point, `@zkpor/sdk/replay`, so a program gets it only when the
+ * program asks for it by that name.
  *
- * It answers a refusal rather than a record. The question here is which
- * contract the client asks, and a refusal carries that answer without this file
- * having to build a registry entry of its own.
+ * Two callers use it, and a third runs the example of the customer check. The
+ * endpoint speaks the calls a read makes, it decodes the contract address out
+ * of the simulated transaction, and it keeps the addresses in the order it was
+ * asked. A reader of a test then states which registry the client reached.
+ *
+ * That last point is why it exists. No test could see which generation a read
+ * resolves to: the suite ran against an address that answers nothing, so every
+ * resolution reached the same failure and the failure named no registry. A
+ * resolver that picked the oldest recorded generation instead of the newest
+ * passed the whole suite.
  */
 
 import { createServer } from "node:http";
