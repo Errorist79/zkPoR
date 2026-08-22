@@ -72,9 +72,16 @@ The system does not guarantee the following:
   another customer usually sees a balance that is not their own, and that
   comparison is the one signal available today. It fails when two customers hold
   the same balance, which is common at a large issuer for a small round amount.
-  An identifier that commits to a key the customer holds would close this,
-  because one leaf would then answer to one key. That needs a key for every
-  customer, and it makes a lost key a lost balance. This project does not do it.
+  This closes when the identifier commits to something that only the customer
+  can produce. A secret that the customer chooses at enrolment is the cheapest
+  form. The customer recomputes the identifier and compares it with the one the
+  client states, and no key infrastructure is needed. A signing key is the
+  strongest form. A derivation from data that the issuer assigns, such as an
+  account number, does not close it, because the issuer can give two customers
+  one input and a single leaf then answers to both. Such an input must also
+  carry enough entropy, because the package states the identifier in clear, and
+  a guessable input would let whoever holds a package name the customer. This
+  project does none of these.
 - The real existence of the off-chain reserves. This is out of scope. It needs an
   auditor attestation or an oracle attestation. The system commits the
   liabilities and leaves an attestation interface.
