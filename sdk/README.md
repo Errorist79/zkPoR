@@ -23,6 +23,50 @@ tests compare against the committed vectors. The package also writes no
 customer file: the generation gate lives in the generator, and a second writer
 of per-customer files would double the surface that touches sensitive data.
 
+## Run the customer check
+
+The check tells one customer whether their balance sits under the root that the
+registry accepted. Two commands run it, and they differ only in where the
+answers come from.
+
+### Against a recording, which always works
+
+```
+npm install && npm run example
+```
+
+The example runs `zkpor verify-inclusion` against a recorded answer of the
+registry, and prints the verdict and the exit code. It needs no key, no funding,
+no proving toolchain, and no network.
+
+**A recording is not the chain.** Every answer is one this repository wrote
+down, so a check that passes against it proves that the client reads and refuses
+correctly. It proves nothing about what any network holds now.
+
+### Against the test network, while the record stands
+
+```
+ZKPOR_NETWORK=testnet ZKPOR_RPC_URL=https://soroban-testnet.stellar.org \
+  npx zkpor verify-inclusion ../fixtures/example_package.zkpor.json \
+  ../scripts/deployments.json
+```
+
+This reads the chain. It answers a verdict while the registry still holds the
+attestation that the committed package rests on.
+
+**It will stop working, and here is how to read it when it does.** The test
+network is cleared two to four times a year, and a clearing removes every
+contract. After one, the command answers that the registry holds no record of
+the asset. If somebody attests this asset again, the command answers that the
+package names one snapshot ledger and the registry attests another. Neither is a
+defect in the client. Both mean the record moved, and the recording above still
+runs.
+
+The package that both commands read is committed, and the run that produced it
+is not reproducible from this repository: it read a master secret that this
+repository does not hold. The balance in it is fictional and already committed,
+in the list of test customers.
+
 ## The Poseidon2 dependency
 
 The protocol names the Poseidon2 instance of `noir-lang/poseidon` v0.2.0, file

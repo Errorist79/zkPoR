@@ -804,3 +804,36 @@ describe("the sentence that follows a failure", () => {
     expect(failureNote("a value that is not an error")).toContain("failure of the client");
   });
 });
+
+/**
+ * The example of the customer check, run as a reader runs it.
+ *
+ * An example that nothing runs stops working quietly, and this one is the
+ * deliverable a stranger meets first. The case runs the file itself rather than
+ * reading it, so a change to the command line, to the recording, or to the
+ * committed package fails here.
+ */
+describe("the example of the customer check", () => {
+  const EXAMPLE = join(import.meta.dirname, "..", "examples", "check-a-package.mjs");
+
+  it("answers the verdict of an included package, and the code zero", async () => {
+    const answer = await new Promise<{ code: number; out: string }>((resolve) => {
+      let out = "";
+      const child = spawn(process.execPath, [EXAMPLE], { stdio: ["ignore", "pipe", "pipe"] });
+      child.stdout.on("data", (chunk: Buffer) => (out += chunk.toString()));
+      child.stderr.on("data", (chunk: Buffer) => (out += chunk.toString()));
+      child.on("close", (code) => resolve({ code: code ?? 1, out }));
+    });
+    expect(answer.out).toContain("The leaf is under the attested root.");
+    expect(answer.out).toContain("the exit code 0");
+    expect(answer.code).toBe(0);
+  }, 120_000);
+
+  it("says that the answers came from a recording", async () => {
+    // A reader who takes the recording for the chain has learned something
+    // false. The file says so, and this reads the file rather than trusting it
+    // to stay said.
+    const text = readFileSync(EXAMPLE, "utf8");
+    expect(text).toContain("A recording is not the chain.");
+  });
+});

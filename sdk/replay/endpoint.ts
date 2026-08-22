@@ -19,6 +19,11 @@
  * resolution reached the same failure and the failure named no registry. A
  * resolver that picked the oldest recorded generation instead of the newest
  * passed the whole suite.
+ *
+ * One rule for every caller. This endpoint answers from the process that
+ * started it, so a caller that starts the command line must not wait for it
+ * synchronously. A synchronous child stops the event loop, and the answer it
+ * waits for cannot come until it ends.
  */
 
 import { createServer } from "node:http";
@@ -29,18 +34,47 @@ import { Address, nativeToScVal, xdr } from "@stellar/stellar-sdk";
  * The entry of one asset, as the registry answers it.
  *
  * A record carries the authority, the tier, the reserve addresses, the hash of
- * that set, and the attestation slot. This builds the smallest record a client
- * accepts, with an empty attestation slot, because the tests here ask which
- * registry answered rather than what it attested.
+ * that set, and the attestation slot. A caller that leaves the attestation out
+ * gets an empty slot, which is the smallest record a client accepts and enough
+ * to ask which registry answered. A caller that gives one gets a filled slot,
+ * which is what a check of a package needs.
  */
+/** One entry of a map, which the record and the attestation both build. */
+function entry(name: string, val: xdr.ScVal): xdr.ScMapEntry {
+  return new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol(name), val });
+}
+
 export function assetRecordXdr(input: {
   authority: string;
   reserves: readonly string[];
+  attestation?: {
+    finalRoot: bigint;
+    totalLiabilities: bigint;
+    snapshotLedger: number;
+    reserveSum: bigint;
+    attestedLedger: number;
+  };
 }): string {
+  const slot =
+    input.attestation === undefined
+      ? xdr.ScVal.scvVec([xdr.ScVal.scvSymbol("Empty")])
+      : xdr.ScVal.scvVec([
+          xdr.ScVal.scvSymbol("Filled"),
+          xdr.ScVal.scvMap([
+            entry("attested_ledger", nativeToScVal(input.attestation.attestedLedger, { type: "u32" })),
+            entry("final_root", nativeToScVal(input.attestation.finalRoot, { type: "u256" })),
+            entry("reserve_sum", nativeToScVal(input.attestation.reserveSum, { type: "u128" })),
+            entry("snapshot_ledger", nativeToScVal(input.attestation.snapshotLedger, { type: "u32" })),
+            entry(
+              "total_liabilities",
+              nativeToScVal(input.attestation.totalLiabilities, { type: "u128" }),
+            ),
+          ]),
+        ]);
   const record = xdr.ScVal.scvMap([
     new xdr.ScMapEntry({
       key: xdr.ScVal.scvSymbol("attestation"),
-      val: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol("Empty")]),
+      val: slot,
     }),
     new xdr.ScMapEntry({
       key: xdr.ScVal.scvSymbol("authority"),
@@ -75,7 +109,13 @@ export interface FakeEndpoint {
   close: () => Promise<void>;
 }
 
-/** The ledger that this endpoint reports. The value is test data. */
+/**
+ * The ledger that this endpoint reports when a caller names none.
+ *
+ * A caller that also records an attestation should name one, because a current
+ * ledger older than the snapshot of that attestation describes a chain that
+ * cannot exist, and a reader of the answer sees it.
+ */
 const LATEST_LEDGER = 4_263_000;
 
 /** The window that this endpoint reports, in ledgers. The value is test data. */
@@ -125,7 +165,10 @@ export async function fakeEndpoint(input: {
   holds?: Readonly<Record<string, string>>;
   refuseWith?: Readonly<Record<string, number>>;
   fallback: number;
+  /** The ledger this endpoint reports as the latest one. */
+  latestLedger?: number;
 }): Promise<FakeEndpoint> {
+  const latestLedger = input.latestLedger ?? LATEST_LEDGER;
   const asked: string[] = [];
   const methods: string[] = [];
   const server: Server = createServer((request, response) => {
@@ -156,18 +199,18 @@ export async function fakeEndpoint(input: {
       if (method === "getHealth") {
         answer({
           status: "healthy",
-          latestLedger: LATEST_LEDGER,
-          oldestLedger: LATEST_LEDGER - RETAINED,
+          latestLedger,
+          oldestLedger: latestLedger - RETAINED,
           ledgerRetentionWindow: RETAINED,
         });
         return;
       }
       if (method === "getLatestLedger") {
-        answer({ id: "test", protocolVersion: 23, sequence: LATEST_LEDGER });
+        answer({ id: "test", protocolVersion: 23, sequence: latestLedger });
         return;
       }
       if (method === "getAccount" || method === "getLedgerEntries") {
-        answer({ entries: [], latestLedger: LATEST_LEDGER });
+        answer({ entries: [], latestLedger });
         return;
       }
       if (method === "simulateTransaction") {
@@ -184,7 +227,7 @@ export async function fakeEndpoint(input: {
         const held = contract !== undefined ? holds[contract] : undefined;
         if (held !== undefined) {
           answer({
-            latestLedger: LATEST_LEDGER,
+            latestLedger,
             results: [{ xdr: held, auth: [] }],
             transactionData: "",
             minResourceFee: "0",
@@ -196,13 +239,13 @@ export async function fakeEndpoint(input: {
         const code =
           contract !== undefined && contract in refusals ? refusals[contract] : input.fallback;
         answer({
-          latestLedger: LATEST_LEDGER,
+          latestLedger,
           error: `HostError: Error(Contract, #${String(code)})`,
           events: [],
         });
         return;
       }
-      answer({ latestLedger: LATEST_LEDGER });
+      answer({ latestLedger });
     });
   });
   await new Promise<void>((resolve) => {
