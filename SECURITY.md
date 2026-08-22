@@ -52,6 +52,29 @@ The system does not guarantee the following:
   an old balance set with a fresh ledger passes every check the registry makes.
   The same social mitigation applies as for completeness: a customer whose
   balance changed sees the old figure when they check their own leaf.
+- That the leaf a customer checks belongs to that customer. An inclusion package
+  proves that one leaf sits under the attested root. It does not prove whose
+  leaf it is. The identifier inside the package is opaque, and the mapping from
+  an identifier to a person lives outside this protocol, so nothing on chain
+  binds a package to the person who holds it. An issuer who gives one package to
+  two customers satisfies both checks with one leaf, and the total under the
+  root counts that liability once. The protocol forbids a repeated identifier
+  inside one liability set, which stops one liability being split across two
+  leaves. That rule does not reach the handing out of the files. This limit
+  reaches the mitigation that the two limits above rest on. Those state that a
+  customer who checks their own leaf makes an omission visible. A customer who
+  receives the package of another customer runs the same check, reads a true
+  answer, and sees nothing wrong. So the check passes and tells that customer
+  nothing about their own balance. A customer who cannot confirm that the
+  identifier is theirs trusts the issuer for that step, and trusts it also when
+  the check passes. The client states the identifier for that comparison, and it
+  cannot tell whose identifier it is. A customer who receives the leaf of
+  another customer usually sees a balance that is not their own, and that
+  comparison is the one signal available today. It fails when two customers hold
+  the same balance, which is common at a large issuer for a small round amount.
+  An identifier that commits to a key the customer holds would close this,
+  because one leaf would then answer to one key. That needs a key for every
+  customer, and it makes a lost key a lost balance. This project does not do it.
 - The real existence of the off-chain reserves. This is out of scope. It needs an
   auditor attestation or an oracle attestation. The system commits the
   liabilities and leaves an attestation interface.
