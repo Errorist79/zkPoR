@@ -9,7 +9,9 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { groupedDigits } from "@zkpor/sdk";
 import { SECTION_IDS } from "../src/constants.js";
+import { STYLESHEET } from "../src/style.js";
 import { coverageOf } from "../src/model.js";
 import { AssetPage } from "../src/views/asset.js";
 import {
@@ -52,7 +54,7 @@ describe("the attested sum and the observed sum", () => {
 
   it("appear once each, inside their own section and nowhere else", () => {
     const markup = pageWithEqualSums();
-    const digits = SAME.toString(10);
+    const digits = groupedDigits(SAME);
     const everywhere = markup.split(digits).length - 1;
     const inAttested = sectionOf(markup, SECTION_IDS.attestedReserves).split(digits).length - 1;
     const inObserved = sectionOf(markup, SECTION_IDS.observedReserves).split(digits).length - 1;
@@ -92,7 +94,7 @@ describe("the attested sum and the observed sum", () => {
 describe("the headline", () => {
   it("carries neither sum", () => {
     const headline = sectionOf(pageWithEqualSums(), SECTION_IDS.headline);
-    expect(headline).not.toContain(SAME.toString(10));
+    expect(headline).not.toContain(groupedDigits(SAME));
   });
 
   it("states the result of the comparison and not a number", () => {
@@ -122,7 +124,10 @@ describe("the comparison", () => {
     );
     const headline = textOf(sectionOf(markup, SECTION_IDS.headline));
     expect(headline).toContain("The attested reserves fall short of the attested liabilities.");
-    expect(headline).not.toContain("9999999");
+    // The digits as the page writes them. A literal without the grouping would
+    // be absent whatever the page did, so the case would pass for the wrong
+    // reason and stop guarding the comparison.
+    expect(headline).not.toContain(groupedDigits(9_999_999n));
   });
 });
 
@@ -221,7 +226,7 @@ describe("the history, which is a third place that shows a reserve number", () =
     expect(history).not.toContain("Reserves observed now");
     // The observed sum still lives in its own section only.
     const observed = sectionOf(markup, SECTION_IDS.observedReserves);
-    expect(observed.split(SAME.toString(10)).length - 1).toBe(1);
+    expect(observed.split(groupedDigits(SAME)).length - 1).toBe(1);
     expect(sectionOf(markup, SECTION_IDS.history)).not.toContain(
       `id="${SECTION_IDS.observedReserves}"`,
     );
@@ -252,5 +257,35 @@ describe("an observation that gave no sum", () => {
     expect(observed).toContain("The registry gave no observed sum");
     expect(observed).toContain("the address holds no trustline");
     expect(observed).not.toContain("Reserves observed now 0");
+  });
+});
+
+/**
+ * Whether the figures on the page can be read and compared.
+ *
+ * The reserves against the liabilities is the comparison this product exists to
+ * show, and a reader who cannot count the digits cannot make it. The separator
+ * is a space because a point and a comma each mark the decimal somewhere, and
+ * the same page states that no decimal of this project's own is applied.
+ */
+describe("the figures of the page", () => {
+  it("groups the digits of every figure it renders", () => {
+    const markup = pageWithEqualSums();
+    expect(markup).toContain(groupedDigits(SAME));
+    expect(markup).not.toContain(SAME.toString(10));
+  });
+
+  it("puts no point and no comma between the digits of a figure", () => {
+    // A reader in another locale takes either mark for a decimal point, and
+    // reads the figure wrong by orders of magnitude.
+    const text = textOf(pageWithEqualSums());
+    expect(text).not.toMatch(/\d[.,]\d\d\d\b/);
+  });
+
+  it("holds a figure on one line, and lets an address break", () => {
+    // A figure that wrapped at one of its spaces would read as two numbers.
+    expect(STYLESHEET).toMatch(/\.figure\s*\{[^}]*white-space:\s*nowrap/);
+    expect(STYLESHEET).toMatch(/\.figure\s*\{[^}]*tabular-nums/);
+    expect(STYLESHEET).toMatch(/\.address\s*\{[^}]*overflow-wrap:\s*anywhere/);
   });
 });

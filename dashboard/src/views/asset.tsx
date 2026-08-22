@@ -7,7 +7,7 @@
  * claims, so a lapsed window is its own outcome here and never a failure.
  */
 
-import { toHex } from "@zkpor/sdk";
+import { groupedDigits, toHex } from "@zkpor/sdk";
 import { ASSET_PARAMETER, ROUTES, SECTION_IDS } from "../constants.js";
 import type {
   AssetView,
@@ -251,8 +251,8 @@ function HistoryOfRegistry(input: { block: HistoryBlock }) {
               <tr key={entry.transactionHash}>
                 <td>{entry.snapshotLedger}</td>
                 <td>{entry.attested.attestedLedger}</td>
-                <td className="figure">{entry.totalLiabilities.toString(10)}</td>
-                <td className="figure">{entry.attested.sum.toString(10)}</td>
+                <td className="figure">{groupedDigits(entry.totalLiabilities)}</td>
+                <td className="figure">{groupedDigits(entry.attested.sum)}</td>
                 <td>
                   {entry.coverage === "reserves-reach-liabilities"
                     ? "Reserves reach"

@@ -9,6 +9,7 @@
  * means.
  */
 
+import { groupedDigits } from "@zkpor/sdk";
 import type { ReserveDiagnosis } from "@zkpor/sdk";
 import { SECTION_IDS } from "../constants.js";
 import type { ObservedReserves, SolvencyResult } from "../model.js";
@@ -25,9 +26,9 @@ export function AttestedReservesSection(input: { solvency: SolvencyResult }) {
       </p>
       <dl>
         <dt>Reserves at the attestation</dt>
-        <dd className="figure">{solvency.attested.sum.toString(10)}</dd>
+        <dd className="figure">{groupedDigits(solvency.attested.sum)}</dd>
         <dt>Total liabilities under the attested root</dt>
-        <dd className="figure">{solvency.totalLiabilities.toString(10)}</dd>
+        <dd className="figure">{groupedDigits(solvency.totalLiabilities)}</dd>
       </dl>
       <p>
         {solvency.coverage === "reserves-reach-liabilities"
@@ -65,7 +66,7 @@ export function ObservedReservesSection(input: {
           <dt>Ledger of the observation</dt>
           <dd>{input.observed.observedLedger}</dd>
           <dt>Reserves observed now</dt>
-          <dd className="figure">{input.observed.sum.toString(10)}</dd>
+          <dd className="figure">{groupedDigits(input.observed.sum)}</dd>
         </dl>
       )}
     </section>
@@ -110,7 +111,7 @@ function ObservationFailure(input: {
                     {reading.balance === undefined ? (
                       <span className="failure">{reading.failure ?? "the read gave no balance"}</span>
                     ) : (
-                      reading.balance.toString(10)
+                      groupedDigits(reading.balance)
                     )}
                   </td>
                 </tr>

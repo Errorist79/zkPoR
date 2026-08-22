@@ -199,3 +199,32 @@ export function registryAnswered(cause: unknown): boolean {
   }
   return false;
 }
+
+/**
+ * One figure, with its digits grouped so a reader can take it in.
+ *
+ * The separator is a space, and it is a space because every other candidate is
+ * a decimal marker somewhere. A point marks the decimal in English, a comma
+ * marks it across most of Europe, and a reader who takes a group mark for a
+ * decimal mark reads a figure wrong by orders of magnitude. The International
+ * System of Units states the same rule: digits are separated by a space, and
+ * neither a point nor a comma is ever put between the groups.
+ *
+ * The pages state that every figure is in the smallest unit and that no decimal
+ * of this project's own is applied. A separator that could be read as a decimal
+ * point would contradict that sentence on the same screen.
+ *
+ * A figure of four digits or fewer keeps its digits together, because a single
+ * digit standing alone reads as a separate number.
+ */
+export function groupedDigits(value: bigint): string {
+  const digits = value.toString(10);
+  if (digits.length <= 4) {
+    return digits;
+  }
+  const groups: string[] = [];
+  for (let end = digits.length; end > 0; end -= 3) {
+    groups.unshift(digits.slice(Math.max(0, end - 3), end));
+  }
+  return groups.join(" ");
+}

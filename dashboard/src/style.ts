@@ -77,12 +77,24 @@ section h2 {
 .figure,
 .address {
   font-family: ui-monospace, monospace;
+}
+
+/* An address has no groups, so it may break anywhere rather than leave the
+   page. A figure must not, which the rule below states again. */
+.address {
   overflow-wrap: anywhere;
 }
 
 .figure {
   font-size: 1.05rem;
   font-weight: 700;
+  /* Every digit takes one width, so two figures above one another compare by
+     their length. The reserves against the liabilities is the comparison this
+     product exists to show. */
+  font-variant-numeric: tabular-nums;
+  /* The groups of a figure are separated by a space, so a line break inside one
+     would split a number across two lines and read as two numbers. */
+  white-space: nowrap;
 }
 
 dl {

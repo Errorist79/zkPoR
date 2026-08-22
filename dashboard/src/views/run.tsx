@@ -10,7 +10,7 @@
  * file content, so nothing sensitive travels in a request body.
  */
 
-import { ATTESTATION_MAX_AGE_LEDGERS, toHex } from "@zkpor/sdk";
+import { groupedDigits, ATTESTATION_MAX_AGE_LEDGERS, toHex } from "@zkpor/sdk";
 import {
   RUN_FIELDS,
   RUN_REFRESH_SECONDS,
@@ -113,7 +113,7 @@ function Produced(input: { run: Run }) {
         <dt>Root</dt>
         <dd className="figure">{toHex(proof.finalRoot)}</dd>
         <dt>Total liabilities</dt>
-        <dd className="figure">{proof.totalLiabilities.toString(10)}</dd>
+        <dd className="figure">{groupedDigits(proof.totalLiabilities)}</dd>
         <dt>Context hash</dt>
         <dd className="figure">{toHex(proof.contextHash)}</dd>
         <dt>Proof size in bytes</dt>

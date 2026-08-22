@@ -27,6 +27,7 @@
 
 import { describe, expect, it } from "vitest";
 import { verdictLines } from "../src/inclusion.js";
+import { groupedDigits } from "../src/report.js";
 import type { Verdict } from "../src/inclusion.js";
 
 /** One asset, one registry and one account. The values are test data. */
@@ -114,5 +115,39 @@ describe("the identifier in the answer", () => {
     expect(verdictLines(INCLUDED).join("\n")).toContain(
       "proves the balance of another customer",
     );
+  });
+});
+
+/**
+ * Whether a figure can be read.
+ *
+ * A twenty-digit run cannot be counted by eye, and two of them cannot be
+ * compared. The separator is a space and not a point or a comma, because both
+ * of those mark the decimal somewhere: a point in English, a comma across most
+ * of Europe. A reader who takes the group mark for a decimal mark reads the
+ * figure wrong by orders of magnitude, and the pages state on the same screen
+ * that no decimal of this project's own is applied.
+ *
+ * These read the answer as a reader meets it rather than the function alone.
+ */
+describe("the figures in the answer", () => {
+  it("groups the digits of a long figure in threes", () => {
+    const answer = verdictLines(INCLUDED).join("\n");
+    expect(answer).toContain("100 000 000 000");
+    expect(answer).toContain("150 000 000 000");
+  });
+
+  it("carries no point and no comma inside a figure", () => {
+    // The failure this guards is a reader in another locale taking the mark for
+    // a decimal point, not an untidy line.
+    for (const line of verdictLines(INCLUDED)) {
+      expect(line, line).not.toMatch(/\d[.,]\d/);
+    }
+  });
+
+  it("leaves a short figure whole", () => {
+    // A group of one digit standing apart reads as a separate number.
+    expect(groupedDigits(1000n)).toBe("1000");
+    expect(groupedDigits(10_000n)).toBe("10 000");
   });
 });
