@@ -61,7 +61,7 @@ echo -e "${BLUE}2. Checking the verifier $VERIFIER against the manifest...${NC}"
 INVOKE_LOG=$(mktemp)
 if ! VERIFIER_KEY_QUOTED=$(stellar contract invoke \
   --id "$VERIFIER" \
-  --network "$STELLAR_NETWORK_NAME" \
+  --network "$ZKPOR_NETWORK" \
   --source "$STELLAR_SOURCE_ACCOUNT" \
   --send=no \
   -- vk_bytes 2>"$INVOKE_LOG"); then
@@ -89,14 +89,14 @@ stellar contract build --optimize --package zkpor-registry
 BUILT_SHA=$(file_sha256 "$REGISTRY_WASM")
 echo "  built $(wc -c < "$REGISTRY_WASM") bytes, sha256 $BUILT_SHA"
 
-echo -e "${BLUE}5. Deploying to $STELLAR_NETWORK_NAME...${NC}"
+echo -e "${BLUE}5. Deploying to $ZKPOR_NETWORK...${NC}"
 DEPLOY_OK=0
 for attempt in $(seq 1 "$STELLAR_DEPLOY_RETRIES"); do
   echo "  deploy attempt $attempt/$STELLAR_DEPLOY_RETRIES..."
   if REGISTRY_ID=$(stellar contract deploy \
     --wasm "$REGISTRY_WASM" \
     --source "$STELLAR_SOURCE_ACCOUNT" \
-    --network "$STELLAR_NETWORK_NAME" \
+    --network "$ZKPOR_NETWORK" \
     -- \
     --verifier "$VERIFIER"); then
     DEPLOY_OK=1; break
@@ -124,7 +124,7 @@ echo -e "\n${GREEN}Deployed: $REGISTRY_ID${NC} (saved to $(basename "$REGISTRY_I
 echo -e "${GREEN}Wasm: $CHAIN_SHA${NC} (saved to $(basename "$REGISTRY_SHA_FILE"))"
 echo
 echo "Add this record to $(basename "$DEPLOYMENTS_FILE"), so a later reader checks it without asking:"
-python3 - "$STELLAR_NETWORK_NAME" "$REGISTRY_ID" "$VERIFIER" "$MANIFEST_KEY" "$CHAIN_SHA" "$MANIFEST_FILE" <<'PYTHON'
+python3 - "$ZKPOR_NETWORK" "$REGISTRY_ID" "$VERIFIER" "$MANIFEST_KEY" "$CHAIN_SHA" "$MANIFEST_FILE" <<'PYTHON'
 import json, math, sys
 
 network, registry, verifier, key, wasm, manifest_path = sys.argv[1:7]

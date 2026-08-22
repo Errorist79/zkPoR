@@ -60,7 +60,7 @@
 #                             random bytes as hexadecimal.
 #   ZKPOR_REGISTRY       the registry contract, or .contract_id.registry
 #   STELLAR_SOURCE_ACCOUNT  the identity of the authority
-#   STELLAR_NETWORK_NAME    local (default), testnet, or mainnet
+#   ZKPOR_NETWORK    local (default), testnet, or mainnet
 #   ZKPOR_WORK           where the run keeps its files
 #   ZKPOR_PACKAGES_OUT   where the packages of the customers land
 #   ZKPOR_DEPLOYMENTS    the deployment records, or scripts/deployments.json
@@ -264,7 +264,7 @@ ASSET=$(sed -nE 's/^asset *= *"(.*)".*/\1/p' "$CONTEXT_FILE")
 # The answer of the registry arrives on the output, and the notes of the
 # command line arrive on the error stream, so the two do not mix.
 ENTRY=$(stellar contract invoke --id "$REGISTRY" --source "$STELLAR_SOURCE_ACCOUNT" \
-  --network "$STELLAR_NETWORK_NAME" -- entry --asset "$ASSET" 2>"$WORK/entry.error") \
+  --network "$ZKPOR_NETWORK" -- entry --asset "$ASSET" 2>"$WORK/entry.error") \
   || die "the registry holds no entry for $ASSET:\n$(cat "$WORK/entry.error")"
 # The comparison stops the run when it finds a difference and when it cannot
 # read either side, so a silent answer never passes for agreement.
@@ -321,9 +321,9 @@ note "final_root=$FINAL_ROOT total_liabilities=$TOTAL"
 # -----------------------------------------------------------------------------
 # 5. Submit. The registry builds the public inputs from its own state.
 # -----------------------------------------------------------------------------
-note "submitting to $REGISTRY as $STELLAR_SOURCE_ACCOUNT on $STELLAR_NETWORK_NAME"
+note "submitting to $REGISTRY as $STELLAR_SOURCE_ACCOUNT on $ZKPOR_NETWORK"
 SUBMISSION=$(stellar contract invoke --id "$REGISTRY" --source "$STELLAR_SOURCE_ACCOUNT" \
-  --network "$STELLAR_NETWORK_NAME" --send yes -- submit_attestation \
+  --network "$ZKPOR_NETWORK" --send yes -- submit_attestation \
   --asset "$(sed -nE 's/^asset *= *"(.*)".*/\1/p' "$CONTEXT_FILE")" \
   --snapshot_ledger "$SNAPSHOT" --final_root "$FINAL_ROOT" \
   --total_liabilities "$TOTAL" --proof-file-path "$WORK/proof" 2>&1) \
@@ -341,7 +341,7 @@ TRANSACTION=$(echo "$SUBMISSION" | sed -nE 's/.*Signing transaction: ([0-9a-f]{6
 # attestation. The deletion below waits for that proof, because the salts are
 # the only other way to reach the packages.
 ATTESTED=$(stellar contract invoke --id "$REGISTRY" --source "$STELLAR_SOURCE_ACCOUNT" \
-  --network "$STELLAR_NETWORK_NAME" -- entry --asset "$ASSET" 2>"$WORK/entry.error") \
+  --network "$ZKPOR_NETWORK" -- entry --asset "$ASSET" 2>"$WORK/entry.error") \
   || die "the registry holds no entry after the attestation:\n$(cat "$WORK/entry.error")"
 ATTESTED_ROOT=$(echo "$ATTESTED" | python3 -c "
 import json,sys
@@ -353,7 +353,7 @@ print('%064x' % int(json.load(sys.stdin)['attestation']['Filled']['final_root'])
 # record in this shell for the stop to reach.
 run_tool env -C "$GEN" cargo run --release --quiet -- packages \
   "$CONTEXT_FILE" "$CUSTOMERS_FILE" "$PACKAGES_OUT" \
-  --network "$STELLAR_NETWORK_NAME" --registry "$REGISTRY" \
+  --network "$ZKPOR_NETWORK" --registry "$REGISTRY" \
   --attested-root "$ATTESTED_ROOT" --attested-snapshot "$SNAPSHOT" \
   --transaction "$TRANSACTION" --deployments "$DEPLOYMENTS" \
   --report-file "$WORK/packages.path" \

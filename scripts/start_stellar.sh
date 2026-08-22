@@ -9,11 +9,11 @@ echo -e "${BLUE}Starting Stellar localnet container ($STELLAR_CONTAINER_NAME, Pr
 stellar container start --name "$STELLAR_CONTAINER_NAME" --limits unlimited \
   --image-tag-override "$QUICKSTART_IMAGE_TAG" --protocol-version "$PROTOCOL_VERSION" "$@"
 
-echo -e "${BLUE}Configuring network profile ($STELLAR_NETWORK_NAME)...${NC}"
-stellar network add "$STELLAR_NETWORK_NAME" \
+echo -e "${BLUE}Configuring network profile ($ZKPOR_NETWORK)...${NC}"
+stellar network add "$ZKPOR_NETWORK" \
   --rpc-url "$STELLAR_RPC_URL" \
   --network-passphrase "$STELLAR_NETWORK_PASSPHRASE" 2>/dev/null || true
-stellar network use "$STELLAR_NETWORK_NAME"
+stellar network use "$ZKPOR_NETWORK"
 
 echo -e "${BLUE}Waiting for local network to become healthy...${NC}"
 for _ in $(seq 1 "$STELLAR_HEALTH_RETRIES"); do

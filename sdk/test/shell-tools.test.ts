@@ -224,3 +224,55 @@ describe("a tool of the issuer script", () => {
     }
   }, 40_000);
 });
+
+/**
+ * One name for the network, across the scripts and the client.
+ *
+ * The scripts used to invent `STELLAR_NETWORK_NAME`, which is a name inside the
+ * namespace of the Stellar command line that the command line does not define.
+ * That tool reads `STELLAR_NETWORK` for a lookup in its own configuration, so
+ * three names described two concepts, and a person who had just attested had
+ * none of them set for the check that follows.
+ *
+ * These drive the shared profile rather than reading it, because a profile that
+ * states the value and exports nothing would pass a reading.
+ */
+describe("the network profile of the scripts", () => {
+  const CONFIG = join(import.meta.dirname, "..", "..", "scripts", "config.sh");
+
+  function profile(network: string): Record<string, string> {
+    const answer = spawnSync(
+      "bash",
+      ["-c", `source ${CONFIG} >/dev/null 2>&1; env | grep -E "^(ZKPOR|STELLAR)_"`],
+      { encoding: "utf8", env: { ...process.env, ZKPOR_NETWORK: network } },
+    );
+    const found: Record<string, string> = {};
+    for (const line of answer.stdout.split("\n")) {
+      const cut = line.indexOf("=");
+      if (cut > 0) {
+        found[line.slice(0, cut)] = line.slice(cut + 1);
+      }
+    }
+    return found;
+  }
+
+  it("configures the client of this project as well as the command line", () => {
+    // The defect this replaces: the scripts set the endpoint for one tool, and
+    // a person running the check afterwards set it again from memory.
+    const found = profile("testnet");
+    expect(found.ZKPOR_NETWORK).toBe("testnet");
+    expect(found.ZKPOR_RPC_URL).toBe(found.STELLAR_RPC_URL);
+    expect(found.ZKPOR_NETWORK_PASSPHRASE).toBe(found.STELLAR_NETWORK_PASSPHRASE);
+  });
+
+  it("carries the endpoint of each profile it names", () => {
+    expect(profile("testnet").ZKPOR_RPC_URL).toContain("soroban-testnet");
+    expect(profile("local").ZKPOR_RPC_URL).toContain("localhost");
+  });
+
+  it("names no network variable that the Stellar command line does not define", () => {
+    // `STELLAR_NETWORK_NAME` reads like a variable of that tool and is not one.
+    const found = profile("testnet");
+    expect(Object.keys(found)).not.toContain("STELLAR_NETWORK_NAME");
+  });
+});

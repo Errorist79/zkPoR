@@ -10,8 +10,13 @@ fi
 source "$ROOT_DIR/scripts/versions.env"
 
 # Network profile: local (default) / testnet / mainnet.
-export STELLAR_NETWORK_NAME="${STELLAR_NETWORK_NAME:-local}"
-case "$STELLAR_NETWORK_NAME" in
+#
+# One name for the network, and it is ours, because the value is the name that
+# the deployments file of this project records. The command line of Stellar
+# reads STELLAR_NETWORK for a different lookup, in its own configuration, so
+# that name stays theirs and the scripts here pass --network at each call.
+export ZKPOR_NETWORK="${ZKPOR_NETWORK:-local}"
+case "$ZKPOR_NETWORK" in
   testnet)
     export STELLAR_RPC_URL="${STELLAR_RPC_URL:-https://soroban-testnet.stellar.org}"
     export STELLAR_NETWORK_PASSPHRASE="${STELLAR_NETWORK_PASSPHRASE:-Test SDF Network ; September 2015}"
@@ -25,6 +30,13 @@ case "$STELLAR_NETWORK_NAME" in
     export STELLAR_NETWORK_PASSPHRASE="${STELLAR_NETWORK_PASSPHRASE:-Standalone Network ; February 2017}"
     ;;
 esac
+
+# The endpoint, under both names. The command line of Stellar reads the first
+# and the client of this project reads the second. A person who runs a script
+# here and then checks a package with the client would otherwise configure the
+# same endpoint twice, and the second time from memory.
+export ZKPOR_RPC_URL="${ZKPOR_RPC_URL:-$STELLAR_RPC_URL}"
+export ZKPOR_NETWORK_PASSPHRASE="${ZKPOR_NETWORK_PASSPHRASE:-$STELLAR_NETWORK_PASSPHRASE}"
 
 export STELLAR_DEPLOY_RETRIES="${STELLAR_DEPLOY_RETRIES:-24}"
 export STELLAR_DEPLOY_RETRY_INTERVAL="${STELLAR_DEPLOY_RETRY_INTERVAL:-10}"
@@ -70,7 +82,7 @@ file_sha256() {
 deployed_wasm_sha256() {
   local fetched
   fetched="$(mktemp)"
-  if ! stellar contract fetch --id "$1" --network "$STELLAR_NETWORK_NAME" \
+  if ! stellar contract fetch --id "$1" --network "$ZKPOR_NETWORK" \
     --out-file "$fetched" >/dev/null 2>&1; then
     rm -f "$fetched"
     return 1

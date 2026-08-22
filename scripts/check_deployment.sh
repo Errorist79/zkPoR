@@ -20,7 +20,7 @@
 #
 # Usage:
 #   bash scripts/check_deployment.sh --local
-#   STELLAR_NETWORK_NAME=testnet bash scripts/check_deployment.sh --network
+#   ZKPOR_NETWORK=testnet bash scripts/check_deployment.sh --network
 set -e
 source "$(dirname "${BASH_SOURCE[0]}")/config.sh"
 
@@ -72,7 +72,7 @@ PYTHON
 else
   echo -e "${BLUE}Reading back every contract that the file records...${NC}"
   while read -r NETWORK REGISTRY REGISTRY_SHA VERIFIER VERIFIER_SHA; do
-    [ "$NETWORK" = "$STELLAR_NETWORK_NAME" ] || continue
+    [ "$NETWORK" = "$ZKPOR_NETWORK" ] || continue
     echo -e "${BLUE}The record that names $REGISTRY...${NC}"
     state "the registry wasm" "$REGISTRY_SHA" "$(deployed_wasm_sha256 "$REGISTRY" || echo unreadable)"
     state "the verifier wasm" "$VERIFIER_SHA" "$(deployed_wasm_sha256 "$VERIFIER" || echo unreadable)"

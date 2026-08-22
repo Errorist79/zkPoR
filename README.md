@@ -231,7 +231,7 @@ verifier for its verification key and refuses unless that key hashes to the
 value the registry build expects, so the verifier goes first.
 
 ```bash
-export STELLAR_NETWORK_NAME=testnet
+export ZKPOR_NETWORK=testnet
 
 # 1. The verifier, with the release key that the manifest records.
 bash scripts/deploy.sh

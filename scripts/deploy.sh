@@ -30,14 +30,14 @@ echo -e "${BLUE}2. Ensuring $STELLAR_SOURCE_ACCOUNT is funded...${NC}"
 echo -e "${BLUE}3. Building + optimizing the verifier contract (wasm)...${NC}"
 stellar contract build --optimize
 
-echo -e "${BLUE}4. Deploying to $STELLAR_NETWORK_NAME...${NC}"
+echo -e "${BLUE}4. Deploying to $ZKPOR_NETWORK...${NC}"
 DEPLOY_OK=0
 for attempt in $(seq 1 "$STELLAR_DEPLOY_RETRIES"); do
   echo "  deploy attempt $attempt/$STELLAR_DEPLOY_RETRIES..."
   if CONTRACT_ID=$(stellar contract deploy \
     --wasm "$CONTRACT_WASM" \
     --source "$STELLAR_SOURCE_ACCOUNT" \
-    --network "$STELLAR_NETWORK_NAME" \
+    --network "$ZKPOR_NETWORK" \
     -- \
     --vk_bytes-file-path "$RELEASE_KEY"); then
     DEPLOY_OK=1; break
