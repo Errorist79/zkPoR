@@ -37,7 +37,7 @@ export function runReport(input: {
   submission?: AcceptedAttestation;
 }): string[] {
   const lines = [
-    `The proof holds ${input.proof.proof.length} bytes.`,
+    `The proof holds ${groupedDigits(BigInt(input.proof.proof.length))} bytes.`,
     `The snapshot ledger is ${input.context.snapshotLedger}.`,
     `The root is ${toHex(input.proof.values.final_root)}.`,
     `The total liabilities are ${input.proof.values.L.toString(10)}.`,
@@ -216,6 +216,12 @@ export function registryAnswered(cause: unknown): boolean {
  *
  * A figure of four digits or fewer keeps its digits together, because a single
  * digit standing alone reads as a separate number.
+ *
+ * This is for a quantity and not for an identifier. A balance, a total and a
+ * count of bytes are quantities, and a reader compares them. A ledger
+ * sequence, a leaf index and an error number name one thing each, and a
+ * reader matches them against another copy. Grouping an identifier would
+ * make it harder to match, which is the opposite of the purpose here.
  */
 export function groupedDigits(value: bigint): string {
   const digits = value.toString(10);

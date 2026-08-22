@@ -478,7 +478,7 @@ describe("what a proving run reports", () => {
 
   it("states what the proof commits to", () => {
     const lines = report().join("\n");
-    expect(lines).toContain("The proof holds 14592 bytes.");
+    expect(lines).toContain("The proof holds 14 592 bytes.");
     expect(lines).toContain("The snapshot ledger is 5000.");
     expect(lines).toContain("The root is ");
     expect(lines).toContain("The total liabilities are 1000.");
@@ -619,7 +619,7 @@ describe("what an attestation reports when the submission fails", () => {
     expect(lines).toContain("The root is ");
     expect(lines).toContain("The total liabilities are 1000.");
     expect(lines).toContain("The context hash is ");
-    expect(lines).toContain("The proof holds 14592 bytes.");
+    expect(lines).toContain("The proof holds 14 592 bytes.");
   });
 
   it("gives back the reason, so the command still fails as it did", async () => {

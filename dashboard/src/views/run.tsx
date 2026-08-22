@@ -117,7 +117,7 @@ function Produced(input: { run: Run }) {
         <dt>Context hash</dt>
         <dd className="figure">{toHex(proof.contextHash)}</dd>
         <dt>Proof size in bytes</dt>
-        <dd>{proof.proofBytes}</dd>
+        <dd>{groupedDigits(BigInt(proof.proofBytes))}</dd>
         {input.run.packages === undefined ? null : (
           <>
             <dt>The packages of the customers</dt>
