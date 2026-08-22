@@ -69,6 +69,11 @@ const BALANCE_FN: Symbol = symbol_short!("balance");
 /// longer than a short symbol, so it is built at the call.
 const VERIFY_PROOF_FN: &str = "verify_proof";
 
+// The lines below are a documentation comment, so they reach the contract
+// specification inside the wasm and the network stores them. This block
+// costs 516 bytes, which was measured by building with it and without it.
+// Keep a note that only a reader of the source needs in a plain comment
+// like this one, which the build does not carry.
 /// Why the registry refused, as a number.
 ///
 /// A refusal reaches a caller as this number and as nothing else. The client
