@@ -102,6 +102,7 @@ import {
 const VERDICTS: readonly Verdict[] = [
   {
     kind: "included",
+    id: 0x2an,
     asset: ASSET,
     registry: REGISTRY,
     leafIndex: 5,

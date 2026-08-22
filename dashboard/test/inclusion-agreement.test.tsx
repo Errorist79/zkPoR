@@ -168,6 +168,7 @@ describe("the page and the command line, on one package", () => {
 const EVERY_VERDICT: readonly Verdict[] = [
   {
     kind: "included",
+    id: 0x2an,
     asset: ASSET,
     registry: REGISTRY,
     leafIndex: 5,
@@ -181,6 +182,7 @@ const EVERY_VERDICT: readonly Verdict[] = [
   },
   {
     kind: "included",
+    id: 0x2an,
     asset: ASSET,
     registry: REGISTRY,
     leafIndex: 5,

@@ -38,6 +38,7 @@ const INCLUDED: Verdict = {
   kind: "included",
   asset: ASSET,
   registry: REGISTRY,
+  id: 0x2an,
   leafIndex: 0,
   balance: 25_000_000n,
   snapshotLedger: 4_265_529,
@@ -78,5 +79,40 @@ describe("the answer of the inclusion check", () => {
     // The asset and the registry were one sentence, which made two claims read
     // as one fact.
     expect(verdictLines(INCLUDED)).toContain(`The asset is ${ASSET}.`);
+  });
+});
+
+/**
+ * Whether the answer binds the leaf to a person.
+ *
+ * A package proves that one leaf is under the root. It does not prove that the
+ * leaf is the reader's. An issuer who gave the same package to two customers
+ * would satisfy both checks with one leaf, and the total under the root would
+ * count that liability once.
+ *
+ * The identifier is the only field that names the customer, and the answer used
+ * to leave it in the file. So the reader saw a balance, and the balance is a
+ * poor substitute: at a large issuer many customers hold the same small round
+ * figure, and there the substitution is invisible.
+ */
+describe("the identifier in the answer", () => {
+  it("states the identifier that the package carries", () => {
+    expect(verdictLines(INCLUDED).join("\n")).toContain(
+      "0x000000000000000000000000000000000000000000000000000000000000002a",
+    );
+  });
+
+  it("says that the check cannot tell whose identifier it is", () => {
+    // Without this, a reader takes the identifier on screen as a verdict about
+    // themselves, which is the belief that makes the substitution work.
+    const answer = verdictLines(INCLUDED).join("\n");
+    expect(answer).toContain("cannot tell whose identifier it is");
+    expect(answer).toContain("Compare it with the identifier that your issuer gave you");
+  });
+
+  it("says what another identifier would mean", () => {
+    expect(verdictLines(INCLUDED).join("\n")).toContain(
+      "proves the balance of another customer",
+    );
   });
 });

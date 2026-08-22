@@ -49,6 +49,8 @@ export type Verdict =
       readonly kind: "included";
       readonly asset: string;
       readonly registry: string;
+      /** The customer identifier that the package carries. */
+      readonly id: bigint;
       readonly leafIndex: number;
       readonly balance: bigint;
       readonly snapshotLedger: number;
@@ -201,6 +203,7 @@ export async function verifyInclusion(input: {
     kind: "included",
     asset: entry.asset,
     registry: generation.registry,
+    id: entry.id,
     leafIndex: entry.leafIndex,
     balance: entry.balance,
     snapshotLedger: attestation.snapshotLedger,
@@ -227,6 +230,10 @@ export function verdictLines(verdict: Verdict): string[] {
         `The package names the registry ${verdict.registry}, and this check read that registry.`,
         "This client reads only the registries its own deployments file records. A package chooses among those, and one naming any other registry is refused.",
         `The leaf index is ${verdict.leafIndex}, and the balance is ${verdict.balance.toString(10)}.`,
+        `The customer identifier in this package is ${toHex(verdict.id)}.`,
+        "This check reads that identifier from the package, and it cannot tell whose identifier it is.",
+        "Compare it with the identifier that your issuer gave you.",
+        "A package that carries another identifier proves the balance of another customer, and says nothing about your balance.",
         `The snapshot ledger is ${verdict.snapshotLedger}, and the registry read the reserves at ledger ${verdict.attestedLedger}.`,
         `The total liabilities under the root are ${verdict.totalLiabilities.toString(10)}.`,
         `The reserves at the attestation, at ledger ${verdict.attestedLedger}, were ${verdict.reserveSum.toString(10)}.`,

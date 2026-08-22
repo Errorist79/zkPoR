@@ -32,6 +32,7 @@ describe("a sentence that points at a value the page carries", () => {
   const VERDICTS = [
     {
       kind: "included" as const,
+      id: 0x2an,
       asset: "CBSQOEUZDBCKO4NYNRJJSPOLEIXVWZZ66CZXWRSVUNZTNZK7IKHNNRY3",
       registry: HOLDER,
       leafIndex: 0,
