@@ -17,6 +17,8 @@ import type { Reader } from "../src/chain.js";
 import type { AssetView, HistoryBlock, HistoryView } from "../src/model.js";
 import { observedReserves, solvencyResult } from "../src/model.js";
 import type { Dashboard } from "../src/routes.js";
+import { SILENT_LOG, openLog } from "../src/log.js";
+import type { Log } from "../src/log.js";
 import { RunStore } from "../src/runs.js";
 
 /**
@@ -163,8 +165,28 @@ export function unreachableServer() {
   });
 }
 
+/**
+ * A log that keeps its lines.
+ *
+ * A case reads what a run recorded, and no case writes to a stream of the
+ * machine. The setting is the one that records everything, so a case sees every
+ * line that this process can write.
+ */
+export function capturingLog(): { log: Log; lines: string[] } {
+  const lines: string[] = [];
+  return {
+    log: openLog({
+      setting: "debug",
+      write: (line) => {
+        lines.push(line);
+      },
+    }),
+    lines,
+  };
+}
+
 /** One reader against the committed deployments file. */
-export function reader(deploymentsText: string): Reader {
+export function reader(deploymentsText: string, log: Log = SILENT_LOG): Reader {
   return {
     server: unreachableServer(),
     config: {
@@ -175,6 +197,7 @@ export function reader(deploymentsText: string): Reader {
     },
     readOptions: {},
     deploymentsText,
+    log,
   };
 }
 
@@ -183,12 +206,15 @@ export function dashboard(input: {
   deploymentsText: string;
   environment?: Record<string, string>;
   store?: RunStore;
+  log?: Log;
 }): Dashboard {
+  const log = input.log ?? SILENT_LOG;
   return {
-    reader: reader(input.deploymentsText),
-    store: input.store ?? new RunStore(),
+    reader: reader(input.deploymentsText, log),
+    store: input.store ?? new RunStore(log),
     environment: input.environment ?? {},
     repository: PACKAGE_ROOT,
+    log,
   };
 }
 

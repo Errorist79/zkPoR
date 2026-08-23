@@ -27,6 +27,7 @@ import {
   RUN_FIELDS,
 } from "./constants.js";
 import type { Reader } from "./chain.js";
+import type { Log } from "./log.js";
 import { readAssetView, readHistoryView } from "./chain.js";
 import { submitRun } from "./attestation.js";
 import type { RunAction, RunStore } from "./runs.js";
@@ -43,6 +44,8 @@ import { AttestationForm, ForgottenRunPage, RunPage, runPath } from "./views/run
 export interface Dashboard {
   readonly reader: Reader;
   readonly store: RunStore;
+  /** The record of what this process did. Every route that starts work carries it. */
+  readonly log: Log;
   /** The environment that carries the keys. No route reads a key out of it. */
   readonly environment: Environment;
   /** The directory that holds the circuits and the generator. */
@@ -182,6 +185,31 @@ function runIdOf(path: string): string | undefined {
 
 /** The answer to one request. */
 export async function route(
+  request: DashboardRequest,
+  dashboard: Dashboard,
+): Promise<DashboardResponse> {
+  const started = Date.now();
+  const answered = await answerOf(request, dashboard);
+  const line = {
+    method: request.method,
+    route: split(request.target).path,
+    status: answered.status,
+    ms: Date.now() - started,
+  };
+  // A request that was answered repeats, because a page of an open run reloads
+  // itself every few seconds, so it belongs to the setting that asks for the
+  // lines that repeat. A request that failed is rare and it is the line an
+  // operator looks for, so it goes out whatever the setting says.
+  dashboard.log(
+    answered.status >= 400
+      ? { event: "request.failed", ...line }
+      : { event: "request.answered", ...line },
+  );
+  return answered;
+}
+
+/** The answer itself, which every route of this process decides. */
+async function answerOf(
   request: DashboardRequest,
   dashboard: Dashboard,
 ): Promise<DashboardResponse> {
@@ -409,6 +437,7 @@ async function startRun(
       reader: dashboard.reader,
       environment: dashboard.environment,
       repository: dashboard.repository,
+      log: dashboard.log,
       submission: { action, contextPath, customersPath },
     });
   } catch (cause) {
@@ -417,6 +446,8 @@ async function startRun(
     // issuer can correct on the form: the kit refuses a toolchain drift, a
     // secret whose salts anybody can recompute, and a snapshot that can no
     // longer land, and this package refuses a missing key.
+    const reason = cause instanceof Error ? cause.message : "the dashboard cannot start the run";
+    dashboard.log({ event: "run.refused", reason });
     if (cause instanceof InfrastructureError) {
       return failure(
         "The dashboard cannot start the run",

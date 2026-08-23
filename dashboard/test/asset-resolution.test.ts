@@ -16,6 +16,7 @@
 import { describe, expect, it } from "vitest";
 import { openServer } from "@zkpor/sdk";
 import { readAssetView } from "../src/chain.js";
+import { SILENT_LOG } from "../src/log.js";
 import type { Reader } from "../src/chain.js";
 import { assetRecordXdr, fakeEndpoint } from "../../sdk/replay/endpoint.js";
 
@@ -48,7 +49,13 @@ function readerAt(url: string): Reader {
     networkPassphrase: "Test SDF Network ; September 2015",
     allowHttp: true,
   };
-  return { server: openServer(config), config, readOptions: {}, deploymentsText: DEPLOYMENTS };
+  return {
+    server: openServer(config),
+    config,
+    readOptions: {},
+    deploymentsText: DEPLOYMENTS,
+    log: SILENT_LOG,
+  };
 }
 
 describe("the generation that an asset page answers about", () => {

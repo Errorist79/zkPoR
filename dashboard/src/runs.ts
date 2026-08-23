@@ -21,8 +21,11 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { toHex } from "@zkpor/sdk";
 import type { ProgressReporter } from "@zkpor/sdk";
 import { MAX_REMEMBERED_RUNS } from "./constants.js";
+import { SILENT_LOG } from "./log.js";
+import type { Log } from "./log.js";
 
 /** What a run does. A proof stops at the proof, and an attestation submits it. */
 export type RunAction = "prove" | "attest";
@@ -75,6 +78,13 @@ export interface RunOutcome {
    * transaction of an attestation.
    */
   readonly packages: string | undefined;
+  /**
+   * How many files this process found in that directory, for the record only.
+   *
+   * No page shows it. The generator answers with the directory and with no
+   * count, so a run counts what it finds there and the log says who counted.
+   */
+  readonly packageFilesCounted?: number | undefined;
 }
 
 /**
@@ -136,10 +146,22 @@ export interface RunRequest {
   readonly work: RunWork;
 }
 
-/** The runs of one process. */
+/**
+ * The runs of one process.
+ *
+ * The store holds the identity of a run, the values that the work records, and
+ * the stage, so it is where the record of a run belongs. A work function knows
+ * no identity, and a log line without one cannot be matched to a page.
+ */
 export class RunStore {
   private readonly runs = new Map<string, Run>();
+  private readonly started = new Map<string, number>();
   private openRunId: string | undefined;
+  private readonly log: Log;
+
+  constructor(log: Log = SILENT_LOG) {
+    this.log = log;
+  }
 
   /** The open run, when one is open. */
   open(): Run | undefined {
@@ -189,27 +211,63 @@ export class RunStore {
     };
     this.forget();
     this.runs.set(run.id, run);
+    this.started.set(run.id, Date.now());
     this.openRunId = run.id;
-    void this.perform(run.id, request.work);
+    void this.perform(run.id, request.work, request.action);
     return { run, started: true };
   }
 
-  private async perform(id: string, work: RunWork): Promise<void> {
+  private async perform(id: string, work: RunWork, action: RunAction): Promise<void> {
     try {
       const outcome = await work(
         (step) => {
+          // The step text is the text the page shows. It travels whole, so the
+          // log and the page never word one event two ways.
+          this.log({ event: "run.step", run: id, step, ms: this.elapsed(id) });
           this.change(id, (run) => ({ ...run, steps: [...run.steps, step] }));
         },
         (proof) => {
+          this.log({
+            event: "proof.finished",
+            run: id,
+            proof_bytes: proof.proofBytes,
+            final_root: toHex(proof.finalRoot),
+            total_liabilities: proof.totalLiabilities.toString(10),
+            context_hash: toHex(proof.contextHash),
+            ms: this.elapsed(id),
+          });
           this.change(id, (run) => ({ ...run, proof }));
         },
         (window) => {
+          this.log({
+            event: "window.read",
+            run: id,
+            current_ledger: window.currentLedger,
+            still_open: window.stillOpen,
+          });
           this.change(id, (run) => ({ ...run, window }));
         },
         (submission) => {
+          this.log({
+            event: "attestation.submitted",
+            run: id,
+            registry: submission.registry,
+            ledger: submission.ledger,
+            transaction: submission.transactionHash,
+            ms: this.elapsed(id),
+          });
           this.change(id, (run) => ({ ...run, submission }));
         },
       );
+      if (outcome.packages !== undefined) {
+        this.log({
+          event: "packages.written",
+          run: id,
+          directory: outcome.packages,
+          files_counted_here: outcome.packageFilesCounted,
+          ms: this.elapsed(id),
+        });
+      }
       this.change(id, (run) => ({
         ...run,
         stage: "finished",
@@ -218,6 +276,7 @@ export class RunStore {
         window: outcome.window,
         packages: outcome.packages,
       }));
+      this.log({ event: "run.finished", run: id, action, stage: "finished", ms: this.elapsed(id) });
     } catch (cause) {
       const failure =
         cause instanceof Error ? cause.message : "the run failed for a reason it cannot describe";
@@ -227,11 +286,18 @@ export class RunStore {
       // attestation must not take the transaction away: the attestation stands
       // on the chain whatever happens in this process after it.
       this.change(id, (run) => ({ ...run, stage: "failed", failure }));
+      this.log({ event: "run.failed", run: id, error: failure, ms: this.elapsed(id) });
     } finally {
       if (this.openRunId === id) {
         this.openRunId = undefined;
       }
     }
+  }
+
+  /** The milliseconds since this run began. */
+  private elapsed(id: string): number {
+    const started = this.started.get(id);
+    return started === undefined ? 0 : Date.now() - started;
   }
 
   private change(id: string, next: (run: Run) => Run): void {
@@ -255,6 +321,7 @@ export class RunStore {
         return;
       }
       this.runs.delete(oldest);
+      this.started.delete(oldest);
     }
   }
 }

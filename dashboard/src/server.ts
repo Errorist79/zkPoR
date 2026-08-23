@@ -12,6 +12,18 @@ import { LOOPBACK_HOST, MAX_BODY_BYTES } from "./constants.js";
 import type { Dashboard, DashboardResponse } from "./routes.js";
 import { responseHeaders, route } from "./routes.js";
 
+/**
+ * The path of a target, without its query.
+ *
+ * A log line names the route and never the query, because the query is what a
+ * reader typed. The path of this process is a fixed set, so it identifies the
+ * answer without carrying anything a reader gave.
+ */
+function routeOf(target: string): string {
+  const mark = target.indexOf("?");
+  return mark < 0 ? target : target.slice(0, mark);
+}
+
 /** The value of one header, when the request carries exactly one of it. */
 function header(request: IncomingMessage, name: string): string | undefined {
   const value = request.headers[name];
@@ -57,6 +69,12 @@ async function answer(
   response: ServerResponse,
   dashboard: Dashboard,
 ): Promise<void> {
+  // The route function records every answer it decides. The listener records
+  // the two failures that never reach it: a body that is too long, and a
+  // failure that leaves the connection without an answer at all.
+  const started = Date.now();
+  const method = request.method ?? "GET";
+  const asked = routeOf(request.url ?? "/");
   let body = "";
   if (request.method === "POST") {
     try {
@@ -70,12 +88,19 @@ async function answer(
         contentType: "text/plain; charset=utf-8",
         body: "The request body is too long.\n",
       });
+      dashboard.log({
+        event: "request.failed",
+        method,
+        route: asked,
+        status: 413,
+        ms: Date.now() - started,
+      });
       return;
     }
   }
   const answered = await route(
     {
-      method: request.method ?? "GET",
+      method,
       target: request.url ?? "/",
       host: header(request, "host"),
       fetchSite: header(request, "sec-fetch-site"),
@@ -96,7 +121,15 @@ export function openDashboard(input: { port: number; dashboard: Dashboard }): Pr
     answer(request, response, input.dashboard).catch(() => {
       // The route function answers every failure it can describe. A failure
       // that reaches here leaves the connection without a body, so the reader
-      // sees a broken request rather than a page that states nothing.
+      // sees a broken request rather than a page that states nothing. The line
+      // below is the only record that it happened, because no page carries one.
+      input.dashboard.log({
+        event: "request.failed",
+        method: request.method ?? "GET",
+        route: routeOf(request.url ?? "/"),
+        status: 0,
+        ms: 0,
+      });
       response.destroy();
     });
   });

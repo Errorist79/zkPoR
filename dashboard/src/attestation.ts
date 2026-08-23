@@ -36,8 +36,10 @@ import {
   readAssetRecord,
   writeCustomerPackages,
 } from "@zkpor/sdk";
+import { readdir } from "node:fs/promises";
 import type { Environment, ProgressReporter } from "@zkpor/sdk";
 import type { Reader } from "./chain.js";
+import type { Log } from "./log.js";
 import type {
   ProofSummary,
   RunAction,
@@ -114,7 +116,13 @@ export async function afterTheProof(input: {
   input.report("writing the package of every customer");
   const packages = await input.writePackages(accepted);
   input.report(`the packages of the customers are under ${packages}`);
-  return { proof: input.proof, submission: accepted, window, packages };
+  return {
+    proof: input.proof,
+    submission: accepted,
+    window,
+    packages,
+    packageFilesCounted: await countPackageFiles(packages),
+  };
 }
 
 /** A submission that the dashboard refuses before a run starts. */
@@ -144,6 +152,7 @@ export async function submitRun(input: {
   reader: Reader;
   environment: Environment;
   repository: string;
+  log: Log;
   submission: RunSubmission;
 }): Promise<StartResult> {
   const already = input.store.open();
@@ -276,10 +285,39 @@ export async function submitRun(input: {
     });
   };
 
-  return input.store.startOrJoin({
+  const result = input.store.startOrJoin({
     action,
     asset: context.asset,
     snapshotLedger: context.snapshotLedger,
     work,
   });
+  if (result.started) {
+    input.log({
+      event: "run.started",
+      run: result.run.id,
+      action,
+      asset: context.asset,
+      snapshot_ledger: context.snapshotLedger,
+      registry,
+      context_file: contextPath,
+      customers_file: customersPath,
+    });
+  }
+  return result;
+}
+
+/**
+ * How many files this process finds in the directory that a run wrote.
+ *
+ * The generator answers with the directory and with no count. A count that this
+ * process reads is a count of what is there, and the log names it that way. A
+ * directory that cannot be read gives no count, because a wrong count would
+ * read as a statement about the run.
+ */
+async function countPackageFiles(directory: string): Promise<number | undefined> {
+  try {
+    return (await readdir(directory)).length;
+  } catch {
+    return undefined;
+  }
 }

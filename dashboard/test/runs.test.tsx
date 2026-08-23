@@ -24,6 +24,7 @@ import {
   submitRun,
 } from "../src/attestation.js";
 import { route } from "../src/routes.js";
+import { SILENT_LOG } from "../src/log.js";
 import { RunStore } from "../src/runs.js";
 import type { ProofSummary, Run, RunOutcome, Submission, WindowAtEnd } from "../src/runs.js";
 import { RunPage } from "../src/views/run.js";
@@ -381,6 +382,7 @@ describe("a submission that this process cannot run", () => {
         reader: reader("[]"),
         environment: {},
         repository: PACKAGE_ROOT,
+        log: SILENT_LOG,
         submission: { action: "prove", contextPath: context, customersPath: "customers.csv" },
       }),
     ).rejects.toThrow(RunRefusedError);
@@ -393,6 +395,7 @@ describe("a submission that this process cannot run", () => {
         reader: reader("[]"),
         environment: { [MASTER_SECRET_ENV]: `0x${"11".repeat(32)}` },
         repository: PACKAGE_ROOT,
+        log: SILENT_LOG,
         submission: { action: "attest", contextPath: context, customersPath: "customers.csv" },
       }),
     ).rejects.toThrow(RunRefusedError);
@@ -404,6 +407,7 @@ describe("a submission that this process cannot run", () => {
       reader: reader("[]"),
       environment: { [MASTER_SECRET_ENV]: `0x${"11".repeat(32)}` },
       repository: PACKAGE_ROOT,
+      log: SILENT_LOG,
       submission: { action: "attest", contextPath: context, customersPath: "customers.csv" },
     }).catch((cause: unknown) => cause);
     expect(refused).toBeInstanceOf(Error);

@@ -102,6 +102,15 @@ export const RUN_REFRESH_SECONDS = 3;
  */
 export const MAX_REMEMBERED_RUNS = 20;
 
+/**
+ * The environment variable that names how much this process records.
+ *
+ * The default states what a run did. The other value adds the lines that
+ * repeat, which are a line for each request and a line for each read of the
+ * chain, and a watched run page alone makes twenty requests a minute.
+ */
+export const LOG_SETTING_ENV = "ZKPOR_DASHBOARD_LOG";
+
 /** The largest request body that the dashboard reads, in bytes. */
 export const MAX_BODY_BYTES = 8 * 1024;
 
