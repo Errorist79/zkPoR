@@ -28,8 +28,6 @@ import {
   resolveNetworkConfig,
   resolveReadOptions,
 } from "../src/config.js";
-import { HISTORY_DEFAULT_LEDGERS } from "../src/constants.js";
-import { defaultHistoryStart } from "../src/registry.js";
 import { InfrastructureError, openServer } from "../src/network.js";
 import { Keypair } from "@stellar/stellar-sdk";
 import { AttestationInputError, attestWithAuthority } from "../src/attest.js";
@@ -293,28 +291,21 @@ describe("the attestation that takes a secret key", () => {
 });
 
 describe("the range that a history query covers", () => {
-  it("is one day at the measured close interval of the network", () => {
-    // The duplication that made the command line and the dashboard disagree is
-    // gone, so a wrong value here is now wrong identically in both. That is the
-    // point of one definition, and it is also why the value itself needs a
-    // test: nothing else notices a shift of one ledger.
-    const secondsForEachLedger = 5;
-    const oneDay = 24 * 60 * 60;
-    expect(HISTORY_DEFAULT_LEDGERS * secondsForEachLedger).toBe(oneDay);
+  it("comes from the endpoint, because this project names no count of ledgers", () => {
+    // The old default reached back one day. It was a count that this project
+    // chose, it had no derivation, and the endpoint kept seven days, so the
+    // page showed a seventh of the record that the network could still serve.
+    // The window of the endpoint is the one boundary here that nobody invents.
+    // The behaviour of the read is held in history.test.ts.
+    const constants = readFileSync(new URL("../src/constants.ts", import.meta.url), "utf8");
+    expect(constants).not.toContain("HISTORY_DEFAULT_LEDGERS");
   });
 
-  it("counts back from the latest ledger, and never below zero", () => {
-    expect(defaultHistoryStart(1_000_000)).toBe(1_000_000 - HISTORY_DEFAULT_LEDGERS);
-    // A network younger than the range would otherwise give a negative ledger.
-    expect(defaultHistoryStart(100)).toBe(0);
-    expect(defaultHistoryStart(0)).toBe(0);
-  });
-
-  it("is the range that both front ends use", () => {
-    // The comment on the helper claims one definition. These are the two
-    // callers that make the claim true.
+  it("is the range that the command line asks for, and it names no ledger", () => {
+    // A front end that computed a start of its own is how the two front ends
+    // came to disagree. Neither computes one now.
     const cli = readFileSync(new URL("../src/cli.ts", import.meta.url), "utf8");
-    expect(cli).toContain("defaultHistoryStart(await latestLedger(server))");
-    expect(cli).not.toContain("HISTORY_DEFAULT_LEDGERS");
+    expect(cli).toContain("args[1] === undefined ? undefined");
+    expect(cli).not.toContain("defaultHistoryStart");
   });
 });

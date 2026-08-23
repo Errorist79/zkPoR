@@ -146,3 +146,37 @@ describe("a history read of a range that one request cannot cover", () => {
     expect(requests).toHaveLength(1);
   });
 });
+
+describe("the range that a read covers when the caller names no ledger", () => {
+  it("starts at the oldest ledger that the endpoint keeps", async () => {
+    // The default was a count of ledgers that this project chose, and a reader
+    // who did not choose it read one day of a seven day record as the record.
+    const { server, requests } = clientOf([page([attestationEvent(OLDEST + 10)], LATEST)]);
+
+    const history = await readAttestationHistory(server, REGISTRY, ASSET);
+
+    expect(requests[0]).toMatchObject({ startLedger: OLDEST });
+    expect(history.oldestLedgerCovered).toBe(OLDEST);
+    expect(history.reachesTheRetentionLimit).toBe(true);
+    expect(history.attestations).toHaveLength(1);
+  });
+
+  it("starts where a caller names, when that ledger is inside the window", async () => {
+    const { server, requests } = clientOf([page([], LATEST)]);
+
+    const history = await readAttestationHistory(server, REGISTRY, ASSET, LATEST - 7_160);
+
+    expect(requests[0]).toMatchObject({ startLedger: LATEST - 7_160 });
+    expect(history.reachesTheRetentionLimit).toBe(false);
+  });
+
+  it("starts at the boundary when a caller names a ledger before it", async () => {
+    // The endpoint refuses a start before the window it keeps, so the read
+    // clamps rather than sending a request that the endpoint rejects.
+    const { server, requests } = clientOf([page([], LATEST)]);
+
+    await readAttestationHistory(server, REGISTRY, ASSET, OLDEST - 50_000);
+
+    expect(requests[0]).toMatchObject({ startLedger: OLDEST });
+  });
+});

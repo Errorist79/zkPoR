@@ -21,11 +21,7 @@ import {
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
-import {
-  ATTESTATION_MAX_AGE_LEDGERS,
-  HISTORY_DEFAULT_LEDGERS,
-  HISTORY_PAGE_LIMIT,
-} from "./constants.js";
+import { ATTESTATION_MAX_AGE_LEDGERS, HISTORY_PAGE_LIMIT } from "./constants.js";
 import { InfrastructureError, retainedLedgers } from "./network.js";
 import { isRecord, isStringList } from "./guards.js";
 import type { NetworkConfig } from "./network.js";
@@ -356,16 +352,6 @@ export async function observeReserves(
   return decodeReserveObservation(returned);
 }
 
-/**
- * The ledger that a history query reaches back to, from the latest one.
- *
- * The command line and the dashboard cover the same range for one asset, so the
- * range has one definition. A ledger sequence never goes below zero.
- */
-export function defaultHistoryStart(latestLedger: number): number {
-  return Math.max(latestLedger - HISTORY_DEFAULT_LEDGERS, 0);
-}
-
 /** True when the solvency claim of a snapshot has lapsed at the current ledger. */
 export function solvencyLapsed(snapshotLedger: number, currentLedger: number): boolean {
   return currentLedger > snapshotLedger + ATTESTATION_MAX_AGE_LEDGERS;
@@ -427,17 +413,23 @@ function ledgerOfEventCursor(cursor: string): number | undefined {
  * Reads the attestation history of one asset from the event stream.
  *
  * The asset entry holds the latest attestation only, so the events are the one
- * record of the earlier attestations. The query starts at the requested ledger
- * or at the oldest retained ledger, whichever is later.
+ * record of the earlier attestations.
+ *
+ * A caller that names no ledger gets the whole window that the endpoint keeps.
+ * That boundary is the endpoint's and not ours, which is the reason to take it:
+ * every other start ledger is a count that somebody chooses, and a reader who
+ * did not choose it reads a part of the record as the record. A caller that
+ * names a ledger gets that ledger or the boundary, whichever is later.
  */
 export async function readAttestationHistory(
   server: rpc.Server,
   registry: string,
   asset: string,
-  fromLedger: number,
+  fromLedger?: number,
 ): Promise<AttestationHistory> {
   const retained = await retainedLedgers(server);
-  const startLedger = Math.max(fromLedger, retained.oldestLedger);
+  const startLedger =
+    fromLedger === undefined ? retained.oldestLedger : Math.max(fromLedger, retained.oldestLedger);
   const topicFilter = [
     xdr.ScVal.scvSymbol(ATTESTATION_EVENT_TOPIC).toXDR("base64"),
     nativeToScVal(Address.fromString(asset)).toXDR("base64"),

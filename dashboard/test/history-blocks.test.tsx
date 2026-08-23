@@ -11,8 +11,13 @@
  * established keeps its block, because a query that could not cover its range
  * reports that it does not know rather than that there is nothing, and those
  * two answers must not look alike.
+ *
+ * The last cases hold the range that the page asks for, because the room an
+ * answer takes and the range it covers are the same subject: a block reports
+ * what one query reached.
  */
 
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { AssetPage } from "../src/views/asset.js";
 import { assetView, framed, historyBlock } from "./support.js";
@@ -77,17 +82,29 @@ describe("the room that an empty answer takes", () => {
     expect(markup).not.toContain("were asked and hold no attestation");
   });
 
-  it("keeps the block of a generation that reached the oldest retained ledger", () => {
+  it("collapses a generation that read everything the endpoint can serve", () => {
+    // Every query starts at the oldest retained ledger now, so that flag no
+    // longer separates one answer from another. Keeping a block for it gave a
+    // heading to every empty generation. The statement it carried is above the
+    // blocks, once, in the line that says an earlier attestation can exist that
+    // no query reaches.
     const markup = pageOf([
       historyBlock({ registry: HOLDER }),
       historyBlock({
-        registry: UNSURE,
+        registry: SETTLED,
         entries: [],
         coversTheWholeRange: true,
         reachesTheRetentionLimit: true,
       }),
     ]);
-    expect(hasBlock(markup, UNSURE)).toBe(true);
+    expect(hasBlock(markup, SETTLED)).toBe(false);
+    expect(markup).toContain("were asked and hold no attestation");
+  });
+
+  it("says once that an earlier attestation can exist beyond the boundary", () => {
+    const markup = pageOf([historyBlock({ registry: HOLDER })]);
+    expect(markup).toContain("Each query starts at the oldest ledger that the endpoint keeps");
+    expect(markup).toContain("earlier attestations that no query reaches");
   });
 
   it("names the oldest ledger the endpoint still holds", () => {
@@ -109,5 +126,23 @@ describe("the room that an empty answer takes", () => {
     expect(markup).toContain("covers the 3 recorded generations");
     expect(markup).toContain(SETTLED);
     expect(markup).toContain(UNSURE);
+  });
+});
+
+describe("the range that the page asks for", () => {
+  /** The source of the reads that fill a page. */
+  const chain = readFileSync(new URL("../src/chain.ts", import.meta.url), "utf8");
+
+  it("names no start ledger, so the endpoint sets the range", () => {
+    // A front end that computed a start of its own is how the command line and
+    // this page came to cover different ranges. The read takes the window of
+    // the endpoint when the caller names nothing.
+    expect(chain).toContain("readAttestationHistory(reader.server, generation.registry, asset)");
+  });
+
+  it("reads the generations at the same time", () => {
+    // The reads are independent. One after another, the page waited for the sum
+    // of them, which was 5.2 seconds against 1.7 over the same request count.
+    expect(chain).toContain("await Promise.all(");
   });
 });

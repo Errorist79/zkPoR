@@ -146,9 +146,10 @@ function History(input: { history: HistoryView | undefined }) {
       <h2>Earlier attestations</h2>
       <p className="limit">
         This section covers the {input.history.blocks.length} recorded generations of this network,
-        over the ledgers that each query names below. The endpoint retains further back than these
-        queries reach, and it holds nothing at all before the ledger that each query names as its
-        retention boundary. So this is not the whole history of this asset.
+        over the ledgers that each query names below. Each query starts at the oldest ledger that
+        the endpoint keeps, and the endpoint holds nothing before that ledger. So this section shows
+        every attestation that the endpoint can still serve. It does not show the whole history of
+        this asset, because the asset can carry earlier attestations that no query reaches.
       </p>
       {input.history.blocks.filter(answered).map((block) => (
         <HistoryOfRegistry key={block.registry} block={block} />
@@ -175,9 +176,15 @@ function History(input: { history: HistoryView | undefined }) {
  * one line with the others, because a heading naming a registry gives an empty
  * answer the weight of a real one, and a reader can take it for evidence of
  * some relation between that registry and this asset.
+ *
+ * Reaching the oldest retained ledger no longer keeps a block. Every query
+ * starts there now, so that test kept every empty block and gave each one a
+ * heading. The statement it protected did not disappear: the line above the
+ * blocks says once that the asset can carry earlier attestations that no query
+ * reaches.
  */
 function answered(block: HistoryBlock): boolean {
-  return block.entries.length > 0 || !block.coversTheWholeRange || block.reachesTheRetentionLimit;
+  return block.entries.length > 0 || !block.coversTheWholeRange;
 }
 
 /**

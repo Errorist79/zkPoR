@@ -44,7 +44,6 @@ import {
   verifyInclusion,
 } from "./inclusion.js";
 import {
-  defaultHistoryStart,
   observeReserves,
   readAttestationHistory,
   solvencyLapsed,
@@ -299,10 +298,10 @@ async function commandHistory(args: readonly string[]): Promise<CommandResult> {
   const asset = addressArgument(named, "the asset");
   const config = networkConfig();
   const server = openServer(config);
-  const from =
-    args[1] === undefined
-      ? defaultHistoryStart(await latestLedger(server))
-      : Number.parseInt(args[1], 10);
+  // A command that names no ledger reads the whole window that the endpoint
+  // keeps, because that boundary is the endpoint's and every other one is a
+  // count that somebody chooses.
+  const from = args[1] === undefined ? undefined : Math.max(Number.parseInt(args[1], 10), 0);
   // Every recorded generation, and not the one that holds the record. An issuer
   // who registered again after a migration has attestations on two registries,
   // and a query that read one of them would answer truthfully and read as the
@@ -324,12 +323,7 @@ async function commandHistory(args: readonly string[]): Promise<CommandResult> {
   for (const generation of generations) {
     let history;
     try {
-      history = await readAttestationHistory(
-        server,
-        generation.registry,
-        asset,
-        Math.max(from, 0),
-      );
+      history = await readAttestationHistory(server, generation.registry, asset, from);
     } catch (cause) {
       fail(
         `the registry ${generation.registry} did not answer the attestation query, so this result would not say whether it holds earlier attestations: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -341,10 +335,12 @@ async function commandHistory(args: readonly string[]): Promise<CommandResult> {
     // could not cover its range reports that it does not know, which is not the
     // same answer and does not get the same room.
     oldestRetained = history.oldestLedgerRetained;
-    const settled =
-      history.attestations.length === 0 &&
-      history.coversTheWholeRange &&
-      !history.reachesTheRetentionLimit;
+    // A query that read its whole range and holds nothing reports a settled
+    // absence over everything the endpoint can serve. The line above the blocks
+    // states once that an earlier attestation can exist beyond the boundary, so
+    // a block for each empty generation would repeat it and would give an empty
+    // answer the room of a real one.
+    const settled = history.attestations.length === 0 && history.coversTheWholeRange;
     if (settled) {
       silent.push(generation.registry);
       continue;
@@ -381,7 +377,7 @@ async function commandHistory(args: readonly string[]): Promise<CommandResult> {
   // printed, because a generation that held nothing is still a generation this
   // answer covered.
   lines.unshift(
-    `This answer covers the ${generations.length} recorded generations of ${config.network}. The endpoint retains the ledgers from ${oldestRetained === undefined ? "an unknown ledger" : String(oldestRetained)}, and it holds nothing before that, so this is not the whole history of the asset.`,
+    `This answer covers the ${generations.length} recorded generations of ${config.network}. Each query starts at the oldest ledger that the endpoint keeps, which is ledger ${oldestRetained === undefined ? "that this answer cannot name" : String(oldestRetained)}, and the endpoint holds nothing before that ledger. So this answer shows every attestation that the endpoint can still serve. It does not show the whole history of the asset, because the asset can carry earlier attestations that no query reaches.`,
   );
   return { lines };
 }

@@ -133,16 +133,6 @@ export const FIXTURE_MASTER_SECRET =
 /** The directory name that holds the test inputs of this repository. */
 export const FIXTURE_DIRECTORY = "fixtures";
 
-/**
- * The ledger count that an attestation history query reaches back by default.
- *
- * The measured average close interval of the test network is 5 seconds, so this
- * is one day. A day covers the attestations of a working day for a reader who
- * asks for none in particular, and the endpoint retains far more, so a reader
- * who wants an older one names the ledger.
- */
-export const HISTORY_DEFAULT_LEDGERS = 17280;
-
 /** The name of the directory that holds the packages of the customers. */
 export const PACKAGES_DIRECTORY_NAME = "packages";
 
