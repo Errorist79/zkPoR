@@ -12,8 +12,11 @@
 
 import { groupedDigits, ATTESTATION_MAX_AGE_LEDGERS, toHex } from "@zkpor/sdk";
 import {
+  JOINED_PARAMETER,
+  JOINED_VALUE,
   RUN_FIELDS,
   RUN_REFRESH_SECONDS,
+  RUN_STEPS_ID,
   ROUTES,
   SECTION_IDS,
 } from "../constants.js";
@@ -74,14 +77,26 @@ export function AttestationForm(input: { open: Run | undefined; reason?: string 
   );
 }
 
-/** The steps that a run has reported, newest last. */
+/**
+ * The steps that a run has reported, newest first.
+ *
+ * A reader of an open run wants the step that the run reached, and the newest
+ * step was the line furthest down. The list reverses, and it takes the
+ * `reversed` attribute, so each step keeps the number of its true position and
+ * the newest step carries the highest one. The attribute belongs to the list
+ * element, so this needs no script.
+ *
+ * No case proves this order. A later edit that renders `input.run.steps`
+ * directly puts the newest step back at the bottom, and the suite stays green.
+ */
 function Steps(input: { run: Run }) {
   if (input.run.steps.length === 0) {
     return <p>The run has reported no step yet.</p>;
   }
+  const reported = input.run.steps.map((step, position) => ({ step, position }));
   return (
-    <ol>
-      {input.run.steps.map((step, position) => (
+    <ol reversed>
+      {reported.reverse().map(({ step, position }) => (
         <li key={`${String(position)}-${step}`}>{step}</li>
       ))}
     </ol>
@@ -172,12 +187,26 @@ function Produced(input: { run: Run }) {
 export function RunPage(input: { run: Run; joined: boolean }) {
   const { run } = input;
   const running = run.stage === "running";
+  // The address that the reload reads. It keeps the marker of a joined
+  // submission, so a reload does not take that statement away from the reader.
+  const reloadTo = `${runPath(run.id)}${
+    input.joined ? `?${JOINED_PARAMETER}=${JOINED_VALUE}` : ""
+  }#${RUN_STEPS_ID}`;
   return (
     <Layout
       title="zkPoR run"
       // The reader watches an open run without a script. A finished run carries
       // no directive, so the page stops reloading itself.
       refreshSeconds={running ? RUN_REFRESH_SECONDS : undefined}
+      // This page cannot know where the reader is, because it runs no script.
+      // So it does not restore the position of the reader. It returns the
+      // reader to the part of the page that changes, which is the steps, and
+      // the newest step is the first one there.
+      //
+      // No case proves that the address names the steps. A later edit that
+      // drops this leaves the reader at the top of the page after every reload,
+      // and the suite stays green.
+      refreshTarget={running ? reloadTo : undefined}
     >
       <h1>{run.action === "attest" ? "Prove and attest" : "Prove only"}</h1>
       {input.joined ? (
@@ -206,7 +235,7 @@ export function RunPage(input: { run: Run; joined: boolean }) {
             Leave it open, or come back to this address.
           </p>
         ) : null}
-        <h3>Steps</h3>
+        <h3 id={RUN_STEPS_ID}>Steps</h3>
         <Steps run={run} />
         {run.failure === undefined ? null : (
           <>

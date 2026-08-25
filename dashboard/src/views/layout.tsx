@@ -28,9 +28,11 @@ function Entry(input: { href: string; current: string; children: ReactNode }) {
 /**
  * The heading and the navigation that every page carries.
  *
- * A page that watches an open run names a refresh interval. The directive
- * reloads this same address, which is a navigation and not a fetch, so the
- * policy that blocks every script and every remote resource still holds.
+ * A page that watches an open run names a refresh interval and an address. The
+ * directive reloads that address, which is a navigation and not a fetch, so the
+ * policy that blocks every script and every remote resource still holds. The
+ * address is a path of this process, and it may carry a fragment that names an
+ * element of the same page.
  *
  * The frame states the network on every page. A reader who is about to submit
  * an attestation must see which network the submission reaches, and that reader
@@ -42,6 +44,8 @@ export function Layout(input: {
   title: string;
   children: ReactNode;
   refreshSeconds?: number | undefined;
+  /** The address that the refresh reads. The page reloads its own address without one. */
+  refreshTarget?: string | undefined;
 }) {
   const frame = useContext(FrameContext);
   if (frame === undefined) {
@@ -55,7 +59,14 @@ export function Layout(input: {
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         {input.refreshSeconds === undefined ? null : (
-          <meta httpEquiv="refresh" content={String(input.refreshSeconds)} />
+          <meta
+            httpEquiv="refresh"
+            content={
+              input.refreshTarget === undefined
+                ? String(input.refreshSeconds)
+                : `${String(input.refreshSeconds)}; url=${input.refreshTarget}`
+            }
+          />
         )}
         <title>{input.title}</title>
         <link rel="stylesheet" href={ROUTES.style} />

@@ -8,11 +8,18 @@
  */
 
 export const STYLESHEET = `
-/* Two colours carry a meaning, and each carries one meaning. The accent marks
-   the place where the reader can act: a link, the entry of the current page,
-   the focus ring, and the button. The warning marks a failure statement. A
-   result that the registry supports takes neither, so a shortfall reads in the
-   colour of every other result. */
+/* Four colours carry a meaning. The accent marks the place where the reader can
+   act: a link, the entry of the current page, the focus ring, and the button.
+   The warning marks a failure statement.
+
+   The other two mark the result of an attestation. The reserves reach the
+   liabilities, or they fall short. A reader had to read a sentence to find that
+   result, and in the history table the result was a word in the fifth column of
+   six, so a reader had to search the page for it.
+
+   The colour of a shortfall is near the colour of a failure. That is deliberate
+   and it is a cost that this dashboard accepts. The two appear in different
+   places, and the sentence beside each one says which it is. */
 :root {
   color-scheme: light dark;
   --page: #fcfcfb;
@@ -23,6 +30,8 @@ export const STYLESHEET = `
   --edge-strong: #8d8a84;
   --accent: #14555f;
   --warn: #9b2226;
+  --reach: #14663a;
+  --short: #a32226;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -35,6 +44,8 @@ export const STYLESHEET = `
     --edge-strong: #6a6f76;
     --accent: #7ec9d3;
     --warn: #e2807f;
+    --reach: #6fcf95;
+    --short: #e6908f;
   }
 }
 
@@ -277,10 +288,33 @@ thead th {
   text-transform: uppercase;
 }
 
-/* This colour marks a failure of the client or of the network. A shortfall is
-   a result that the registry supports, so a shortfall does not take it. */
+/* This colour marks a failure of the client or of the network. It is near the
+   colour of a shortfall, and the sentence beside each one says which it is. */
 .failure {
   color: var(--warn);
+}
+
+/* The verdict of an attestation takes the colour of its result. The headline
+   states the verdict of the current attestation, and a row of the history table
+   states the verdict of one earlier attestation.
+
+   The colours hold 7.0 to 1 and 7.5 to 1 on the light panel, and 9.1 to 1 and
+   7.2 to 1 on the dark panel. The words state the result as well, so a reader
+   who cannot separate the two colours still reads the answer. */
+#solvency-headline.coverage-reserves-reach-liabilities h2,
+tr.coverage-reserves-reach-liabilities td.verdict {
+  color: var(--reach);
+}
+
+#solvency-headline.coverage-reserves-fall-short h2,
+tr.coverage-reserves-fall-short td.verdict {
+  color: var(--short);
+}
+
+/* The verdict is the answer that a reader came for, so it takes the first
+   column of the row and the weight of a name. */
+td.verdict {
+  font-weight: 600;
 }
 
 form {

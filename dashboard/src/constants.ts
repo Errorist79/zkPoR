@@ -94,6 +94,15 @@ export const RUN_FIELDS = {
 export const RUN_REFRESH_SECONDS = 3;
 
 /**
+ * The identifier of the steps of a run.
+ *
+ * The page of an open run reloads itself, and a reload lands where the address
+ * points. The address of the reload carries this identifier, so the reader
+ * arrives at the steps rather than at the top of the page.
+ */
+export const RUN_STEPS_ID = "run-steps";
+
+/**
  * The runs that one process remembers.
  *
  * A run takes minutes, so this count covers a long day of work. The record of

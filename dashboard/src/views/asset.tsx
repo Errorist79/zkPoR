@@ -211,6 +211,25 @@ function SilentRegistries(input: { blocks: readonly HistoryBlock[] }) {
   );
 }
 
+/**
+ * The attestations of one block, newest first.
+ *
+ * The reader asks when this asset last attested, and how often it attests. The
+ * last attestation answers both, and it was the last row of the table. The
+ * steps of a run read in this direction too, so a reader learns one direction
+ * and keeps it.
+ *
+ * The client library sorts the attestations by ascending ledger and the command
+ * line prints them in that order. That order belongs to the data. This one
+ * belongs to the page, and the two are free to differ.
+ *
+ * No case proves this order. A later edit that maps `block.entries` directly
+ * puts the oldest attestation back at the top, and the suite stays green.
+ */
+function newestFirst(entries: readonly HistoryEntry[]): HistoryEntry[] {
+  return [...entries].reverse();
+}
+
 /** One generation's answer about one asset. */
 function HistoryOfRegistry(input: { block: HistoryBlock }) {
   const { block } = input;
@@ -245,26 +264,26 @@ function HistoryOfRegistry(input: { block: HistoryBlock }) {
         <table>
           <thead>
             <tr>
+              <th scope="col">Result</th>
               <th scope="col">Snapshot ledger</th>
               <th scope="col">Attested ledger</th>
               <th scope="col">Total liabilities</th>
               <th scope="col">Reserves at the attestation</th>
-              <th scope="col">Result</th>
               <th scope="col">Transaction</th>
             </tr>
           </thead>
           <tbody>
-            {block.entries.map((entry: HistoryEntry) => (
-              <tr key={entry.transactionHash}>
-                <td>{entry.snapshotLedger}</td>
-                <td>{entry.attested.attestedLedger}</td>
-                <td className="figure">{groupedDigits(entry.totalLiabilities)}</td>
-                <td className="figure">{groupedDigits(entry.attested.sum)}</td>
-                <td>
+            {newestFirst(block.entries).map((entry: HistoryEntry) => (
+              <tr key={entry.transactionHash} className={`coverage-${entry.coverage}`}>
+                <td className="verdict">
                   {entry.coverage === "reserves-reach-liabilities"
                     ? "Reserves reach"
                     : "Reserves fall short"}
                 </td>
+                <td>{entry.snapshotLedger}</td>
+                <td>{entry.attested.attestedLedger}</td>
+                <td className="figure">{groupedDigits(entry.totalLiabilities)}</td>
+                <td className="figure">{groupedDigits(entry.attested.sum)}</td>
                 <td className="address">{entry.transactionHash}</td>
               </tr>
             ))}
@@ -275,7 +294,24 @@ function HistoryOfRegistry(input: { block: HistoryBlock }) {
   );
 }
 
-/** The whole page of one asset. */
+/**
+ * The whole page of one asset.
+ *
+ * The order of the blocks below is the order a reader wants them. The headline
+ * is the answer, so it comes first. The attested reserves hold the two numbers
+ * that the headline compares, so they stay beside it. The history is the record
+ * of that answer over time, and this page asks the reader to weigh the record
+ * over any single attestation, so the record follows the answer.
+ *
+ * The observed reserves and the registration come after. The observed reserves
+ * state in their own words that no attestation covers the reading and that it
+ * is not part of any solvency claim here, so that section is not the answer.
+ * The registration names the authority and the reserve addresses, which a
+ * reader consults after the answer.
+ *
+ * The limit about the smallest unit governs every figure on this page, so it
+ * stays above the first one.
+ */
 export function AssetPage(input: { view: AssetView; history: HistoryView | undefined }) {
   const { view } = input;
   return (
@@ -301,13 +337,13 @@ export function AssetPage(input: { view: AssetView; history: HistoryView | undef
           </p>
         </>
       )}
+      <History history={input.history} />
       <ObservedReservesSection
         observed={view.observed}
         failure={view.observationFailure}
         diagnosis={view.diagnosis}
       />
       <Registration view={view} />
-      <History history={input.history} />
     </Layout>
   );
 }
