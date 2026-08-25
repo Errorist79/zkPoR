@@ -17,7 +17,10 @@ import { assetRecordXdr, fakeEndpoint } from "../dist/replay.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repository = join(here, "..", "..");
-const packagePath = join(repository, "fixtures", "example_package.zkpor.json");
+// A path on the command line names another package, and the repository commits
+// one that the check refuses. Without a path the example reads the package that
+// the recording attests.
+const packagePath = process.argv[2] ?? join(repository, "fixtures", "example_package.zkpor.json");
 
 // What the registry held when this package was written. The root is the one the
 // attestation put on the chain, and the check recomputes it from the package

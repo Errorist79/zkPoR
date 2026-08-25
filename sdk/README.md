@@ -27,7 +27,8 @@ of per-customer files would double the surface that touches sensitive data.
 
 The check tells one customer whether their balance sits under the root that the
 registry accepted. Two commands run it, and they differ only in where the
-answers come from.
+answers come from. A third command runs it against a package that the check
+refuses.
 
 ### Against a recording, which always works
 
@@ -66,6 +67,33 @@ The package that both commands read is committed, and the run that produced it
 is not reproducible from this repository: it read a master secret that this
 repository does not hold. The balance in it is fictional and already committed,
 in the list of test customers.
+
+### The package the check refuses
+
+```
+npm install && npm run build
+node examples/check-a-package.mjs ../fixtures/example_package_wrong_balance.zkpor.json
+```
+
+A check that only accepts proves half of the claim. So the repository commits a
+second package, and the command above runs the same example against it. The
+answer is that the recomputed root does not equal the attested root, and the
+exit code 7. The example takes any package path, and it reads the included
+package when it gets none.
+
+The two files differ in the balance and in nothing else. The refused one reads
+1001 where the attested balance reads 1000, so the check refuses a package that
+is well formed and plausible, and not a file that is broken.
+
+**The one unit is the point.** It is the smallest change a person can make to
+that field, and no reader of the two files finds it by eye. The root binds the
+exact balance, so the check has no tolerance, and a larger edit would teach the
+weaker lesson that the check catches only a crude one.
+
+Both files describe the same customer of the committed list of test customers,
+`fixtures/test_only_customers.csv`, which describes no real person and no real
+liability. The balance 1001 belongs to no row of that list. Neither file states
+this inside itself, because the format permits no field that it does not name.
 
 ## Call the check from your own program
 

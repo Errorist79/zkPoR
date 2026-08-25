@@ -30,7 +30,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
-import { EXIT_NO_VERDICT, EXIT_USAGE } from "../src/inclusion.js";
+import { EXIT_CODES, EXIT_NO_VERDICT, EXIT_USAGE } from "../src/inclusion.js";
+import { parsePackage } from "../src/inclusion-package.js";
 import { RegistryRefusedError } from "../src/registry.js";
 import { InfrastructureError } from "../src/network.js";
 import { attestAndReport, completeCommand, failureNote, runReport } from "../src/report.js";
@@ -814,36 +815,59 @@ describe("the sentence that follows a failure", () => {
  * committed package fails here.
  */
 describe("the example of the customer check", () => {
-  const EXAMPLE = join(import.meta.dirname, "..", "examples", "check-a-package.mjs");
+  /** The committed package that the recording attests. */
+  const INCLUDED = join(HERE, "..", "..", "fixtures", "example_package.zkpor.json");
 
-  it("answers the verdict of an included package, and the code zero", async () => {
-    const answer = await new Promise<{ code: number; out: string }>((resolve) => {
-      let out = "";
-      const child = spawn(process.execPath, [EXAMPLE], { stdio: ["ignore", "pipe", "pipe"] });
-      child.stdout.on("data", (chunk: Buffer) => (out += chunk.toString()));
-      child.stderr.on("data", (chunk: Buffer) => (out += chunk.toString()));
-      child.on("close", (code) => resolve({ code: code ?? 1, out }));
-    });
-    expect(answer.out).toContain("The leaf is under the attested root.");
-    expect(answer.out).toContain("the exit code 0");
-    expect(answer.code).toBe(0);
-  }, 120_000);
+  /** The committed package that the check refuses. */
+  const REFUSED = join(HERE, "..", "..", "fixtures", "example_package_wrong_balance.zkpor.json");
 
-  it("shows a caller the three answers the library can give", async () => {
-    // The integration example teaches that a verdict is not a boolean, that a
-    // refusal is an answer, and that a failure is not a verdict. A case that
-    // read only the first would pass while the other two stopped working.
-    const answer = await new Promise<{ code: number; out: string }>((resolve) => {
+  /** Runs one example file and reports what it printed and what code it gave. */
+  async function ran(file: string, args: readonly string[] = []) {
+    return await new Promise<{ code: number; out: string }>((resolve) => {
       let out = "";
       const child = spawn(
         process.execPath,
-        [join(import.meta.dirname, "..", "examples", "verify-in-your-program.mjs")],
+        [join(HERE, "..", "examples", file), ...args],
         { stdio: ["ignore", "pipe", "pipe"] },
       );
       child.stdout.on("data", (chunk: Buffer) => (out += chunk.toString()));
       child.stderr.on("data", (chunk: Buffer) => (out += chunk.toString()));
       child.on("close", (code) => resolve({ code: code ?? 1, out }));
     });
+  }
+
+  it("answers the verdict of an included package, and the code zero", async () => {
+    const answer = await ran("check-a-package.mjs");
+    expect(answer.out).toContain("The leaf is under the attested root.");
+    expect(answer.out).toContain("the exit code 0");
+    expect(answer.code).toBe(0);
+  }, 120_000);
+
+  it("answers the verdict of a wrong balance, and the code seven", async () => {
+    // A check that only accepts proves half of the claim. So the package that
+    // the check refuses is committed beside the one it accepts, and this case
+    // runs the same example against it.
+    const answer = await ran("check-a-package.mjs", [REFUSED]);
+    expect(answer.out).toContain("The recomputed root does not equal the attested root.");
+    expect(answer.out).toContain(`the exit code ${EXIT_CODES["root-mismatch"]}`);
+    expect(answer.code).toBe(EXIT_CODES["root-mismatch"]);
+  }, 120_000);
+
+  it("keeps the refused package one field away from the included one", () => {
+    // A refusal proves the check works only while the refused file stays a
+    // well formed package of the same customer. A file that drifted into
+    // another shape would refuse for a reason nobody demonstrates.
+    const included = parsePackage(readFileSync(INCLUDED, "utf8"));
+    const refused = parsePackage(readFileSync(REFUSED, "utf8"));
+    expect(refused.balance).not.toBe(included.balance);
+    expect({ ...refused, balance: included.balance }).toEqual(included);
+  });
+
+  it("shows a caller the three answers the library can give", async () => {
+    // The integration example teaches that a verdict is not a boolean, that a
+    // refusal is an answer, and that a failure is not a verdict. A case that
+    // read only the first would pass while the other two stopped working.
+    const answer = await ran("verify-in-your-program.mjs");
     expect(answer.out).toContain("included: leaf 0 holds 1000");
     expect(answer.out).toContain("root-mismatch");
     expect(answer.out).toContain("which is not a verdict");
