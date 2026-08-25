@@ -250,17 +250,25 @@ function runIn(stage: Run["stage"]): Run {
 }
 
 describe("the page of an open run", () => {
-  it("reloads itself, and needs no script to do it", () => {
+  it("reads itself again, and still does so for a reader who runs no script", () => {
     const markup = framed(<RunPage run={runIn("running")} joined={false} />);
+    // The directive is what a reader who blocks the script keeps, so it stays.
+    // It must name no address: an address that differs from the address of the
+    // page by a fragment alone is a move inside the same document, so the
+    // browser scrolls and fetches nothing, and the page stops reporting.
     expect(markup).toContain('http-equiv="refresh"');
-    expect(markup).not.toMatch(/<script/i);
+    expect(markup).toMatch(/content="\d+"/);
+    expect(markup).not.toMatch(/http-equiv="refresh" content="[^"]*url=/);
+    // The script is the other way the page reads itself, and it comes from
+    // this process.
+    expect(markup).toMatch(new RegExp(`<script src="${ROUTES.runScript}\\?v=[0-9a-f]+" defer`));
   });
 
-  it("stops reloading itself once the run ends", () => {
+  it("stops reading itself once the run ends", () => {
     for (const stage of ["finished", "failed"] as const) {
-      expect(framed(<RunPage run={runIn(stage)} joined={false} />)).not.toContain(
-        'http-equiv="refresh"',
-      );
+      const markup = framed(<RunPage run={runIn(stage)} joined={false} />);
+      expect(markup, stage).not.toContain('http-equiv="refresh"');
+      expect(markup, stage).not.toMatch(/<script/i);
     }
   });
 

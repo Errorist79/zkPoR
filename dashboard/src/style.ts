@@ -351,6 +351,38 @@ thead th {
   color: var(--warn);
 }
 
+/* A sign that the run is working, beside the heading that says it is open. The
+   page renders it while the run is open and removes it when the run ends, so it
+   states the same thing as the heading beside it. It carries no text, because
+   the heading already says the run is open, and a reader who hears the page
+   hears that sentence rather than a description of a moving circle.
+
+   A reader who asks for less motion gets a circle that does not turn. The mark
+   stays, so nothing is hidden from them. */
+.working {
+  animation: turning 1s linear infinite;
+  border: 2px solid var(--edge);
+  border-radius: 50%;
+  border-top-color: var(--accent);
+  display: inline-block;
+  height: 0.7em;
+  margin-right: 0.5rem;
+  vertical-align: baseline;
+  width: 0.7em;
+}
+
+@keyframes turning {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .working {
+    animation: none;
+  }
+}
+
 /* The verdict of an attestation takes the colour of its result. The headline
    states the verdict of the current attestation, and a row of the history table
    states the verdict of one earlier attestation.

@@ -1,10 +1,13 @@
 /**
  * The attestation form and the page of one run.
  *
- * A run takes minutes. The page of an open run carries a pragma directive that
- * reloads it, so the reader watches progress without any script. The directive
- * is present while the run is open and absent once it ends, so a finished page
- * stops reloading itself.
+ * A run takes about a minute. The page of an open run reads itself again while
+ * it is open, and it stops once the run ends.
+ *
+ * It reads itself in two ways. A script that this process serves replaces the
+ * record of the run inside the page, which keeps the place of the reader and
+ * repaints nothing else. A reader who blocks the script keeps a pragma
+ * directive, which reloads the whole page instead. Both stop when the run ends.
  *
  * The form takes two paths on this machine. It takes no key, no balance, and no
  * file content, so nothing sensitive travels in a request body.
@@ -12,14 +15,13 @@
 
 import { groupedDigits, ATTESTATION_MAX_AGE_LEDGERS, toHex } from "@zkpor/sdk";
 import {
-  JOINED_PARAMETER,
-  JOINED_VALUE,
   RUN_FIELDS,
   RUN_REFRESH_SECONDS,
   RUN_STEPS_ID,
   ROUTES,
   SECTION_IDS,
 } from "../constants.js";
+import { RUN_SCRIPT_VERSION } from "../runscript.js";
 import type { Run } from "../runs.js";
 import { Layout } from "./layout.js";
 
@@ -57,11 +59,11 @@ export function AttestationForm(input: { open: Run | undefined; reason?: string 
         <fieldset>
           <legend>What this run does</legend>
           <label className="choice">
-            <input type="radio" name={RUN_FIELDS.action} value="prove" defaultChecked />
+            <input type="radio" name={RUN_FIELDS.action} value="prove" />
             Prove only. The run stops at the proof and submits nothing.
           </label>
           <label className="choice">
-            <input type="radio" name={RUN_FIELDS.action} value="attest" />
+            <input type="radio" name={RUN_FIELDS.action} value="attest" defaultChecked />
             Prove and attest. The run sends the attestation to the generation that holds this
             asset.
           </label>
@@ -187,26 +189,23 @@ function Produced(input: { run: Run }) {
 export function RunPage(input: { run: Run; joined: boolean }) {
   const { run } = input;
   const running = run.stage === "running";
-  // The address that the reload reads. It keeps the marker of a joined
-  // submission, so a reload does not take that statement away from the reader.
-  const reloadTo = `${runPath(run.id)}${
-    input.joined ? `?${JOINED_PARAMETER}=${JOINED_VALUE}` : ""
-  }#${RUN_STEPS_ID}`;
   return (
     <Layout
       title="zkPoR run"
-      // The reader watches an open run without a script. A finished run carries
-      // no directive, so the page stops reloading itself.
-      refreshSeconds={running ? RUN_REFRESH_SECONDS : undefined}
-      // This page cannot know where the reader is, because it runs no script.
-      // So it does not restore the position of the reader. It returns the
-      // reader to the part of the page that changes, which is the steps, and
-      // the newest step is the first one there.
+      // The reader who blocks the script watches the run through this. A
+      // finished run carries no directive, so the page stops reloading itself.
       //
-      // No case proves that the address names the steps. A later edit that
-      // drops this leaves the reader at the top of the page after every reload,
-      // and the suite stays green.
-      refreshTarget={running ? reloadTo : undefined}
+      // The directive names no address on purpose. It named this same page and
+      // a fragment for a while, so that a reload would land on the steps, and
+      // that stopped the reload from happening: an address that differs from
+      // the address of the page by a fragment alone is a move inside the same
+      // document, so the browser scrolled and fetched nothing. The page then
+      // showed the first step until the reader reloaded it by hand.
+      refreshSeconds={running ? RUN_REFRESH_SECONDS : undefined}
+      // The script replaces the record of the run inside the page, so the
+      // reader keeps their place and the frame does not repaint. A finished run
+      // needs no script, because nothing further changes.
+      script={running ? `${ROUTES.runScript}?v=${RUN_SCRIPT_VERSION}` : undefined}
     >
       <h1>{run.action === "attest" ? "Prove and attest" : "Prove only"}</h1>
       {input.joined ? (
@@ -215,8 +214,9 @@ export function RunPage(input: { run: Run; joined: boolean }) {
           was already open.
         </p>
       ) : null}
-      <section id={SECTION_IDS.run} className={`run-${run.stage}`}>
+      <section id={SECTION_IDS.run} className={`run-${run.stage}`} data-stage={run.stage}>
         <h2>
+          {running ? <span className="working" aria-hidden="true" /> : null}
           {running
             ? "The run is open."
             : run.stage === "finished"
@@ -231,7 +231,7 @@ export function RunPage(input: { run: Run; joined: boolean }) {
         </dl>
         {running ? (
           <p className="limit">
-            The proof takes minutes. This page reloads itself every {RUN_REFRESH_SECONDS} seconds.
+            The proof takes about a minute. This page reads itself again while the run is open.
             Leave it open, or come back to this address.
           </p>
         ) : null}

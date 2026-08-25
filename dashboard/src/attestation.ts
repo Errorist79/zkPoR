@@ -76,7 +76,7 @@ export async function afterTheProof(input: {
   // and no other copy of it exists.
   input.recordProof(input.proof);
 
-  // The proof took minutes and the window is finite, so the reading says
+  // The proof took about a minute and the window is finite, so the reading says
   // whether the snapshot could still land, at the ledger it names. It is
   // recorded for the same reason the proof is.
   const window = {
@@ -144,7 +144,7 @@ export interface RunSubmission {
  * Starts one run, or joins the run that is already open.
  *
  * The checks before the run are the cheap ones, and each answers a question the
- * issuer would otherwise wait minutes for: does the context file parse, can the
+ * issuer would otherwise wait a minute for: does the context file parse, can the
  * snapshot still land, and does this process hold the keys the run needs.
  */
 export async function submitRun(input: {
@@ -165,7 +165,7 @@ export async function submitRun(input: {
 
   // The presence of a key is checked here and its value is not read here. The
   // check runs before the network read, because it costs nothing and because a
-  // run that fails on a missing key after minutes of proving wastes the window.
+  // run that fails on a missing key after a minute of proving wastes the window.
   if (!carriesMasterSecret(input.environment)) {
     throw new RunRefusedError(
       `set ${MASTER_SECRET_ENV} or ${MASTER_SECRET_FILE_ENV} in the environment of this process; no form carries the master secret`,

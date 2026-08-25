@@ -51,6 +51,33 @@ export const CONTENT_SECURITY_POLICY = [
 ].join("; ");
 
 /**
+ * The policy of the page of one run, which is the one page that carries a
+ * script.
+ *
+ * A run takes about a minute and the reader must see it advance. A page with no
+ * script can only reload itself whole, which loses the place of the reader and
+ * repaints the frame every time.
+ *
+ * This policy adds two permissions and nothing else. `script-src 'self'` allows
+ * a script that this process serves, and no other. `connect-src 'self'` allows
+ * that script to ask this process for the state of the run, and no other host.
+ * There is no `'unsafe-inline'`, so a script written into the markup is refused
+ * as firmly as a script from another host.
+ *
+ * Every other answer of this process keeps the policy above, which forbids a
+ * script of any kind.
+ */
+export const RUN_CONTENT_SECURITY_POLICY = [
+  "default-src 'none'",
+  "script-src 'self'",
+  "connect-src 'self'",
+  "style-src 'self'",
+  "form-action 'self'",
+  "base-uri 'none'",
+  "frame-ancestors 'none'",
+].join("; ");
+
+/**
  * What a browser may keep of an answer.
  *
  * A page carries balance figures, so a browser keeps no copy of one and asks
@@ -76,6 +103,7 @@ export const ROUTES = {
   attestation: "/attestation",
   run: "/run",
   style: "/style.css",
+  runScript: "/run.js",
 } as const;
 
 /** The query parameter that names the asset on the asset page. */
@@ -112,18 +140,28 @@ export const RUN_FIELDS = {
 export const RUN_REFRESH_SECONDS = 3;
 
 /**
+ * The milliseconds between two readings of an open run, when a script runs.
+ *
+ * The script reads the page again and replaces the record of the run inside it.
+ * That costs one request on the loopback address and no repaint of the frame,
+ * so it happens more often than the reload that a page without a script makes.
+ */
+export const RUN_POLL_MILLISECONDS = 1_000;
+
+/**
  * The identifier of the steps of a run.
  *
- * The page of an open run reloads itself, and a reload lands where the address
- * points. The address of the reload carries this identifier, so the reader
- * arrives at the steps rather than at the top of the page.
+ * It names the heading of the steps, so a reader can hold an address that
+ * points straight at them. The refresh directive does not use it. A directive
+ * that named this page and a fragment stopped the reload entirely, because an
+ * address that differs by a fragment alone moves inside the same document.
  */
 export const RUN_STEPS_ID = "run-steps";
 
 /**
  * The runs that one process remembers.
  *
- * A run takes minutes, so this count covers a long day of work. The record of
+ * A run takes about a minute, so this count covers a long day of work. The record of
  * an accepted attestation is the registry, and not this list, so a dropped run
  * loses no evidence.
  */

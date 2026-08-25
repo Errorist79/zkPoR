@@ -1,5 +1,5 @@
 /**
- * The record of an attestation run, which takes minutes.
+ * The record of an attestation run, which takes about a minute.
  *
  * Three properties decide the shape here.
  *
@@ -58,7 +58,7 @@ export interface Submission {
 /**
  * Whether the snapshot of a run could still be attested when the run ended.
  *
- * A proof takes minutes and the window is finite, so a run that proves
+ * A proof takes about a minute and the window is finite, so a run that proves
  * correctly can finish with a snapshot that can no longer land. The statement
  * names the ledger it read, because it is true at that ledger and at no other.
  */

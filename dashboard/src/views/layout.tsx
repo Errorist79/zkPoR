@@ -1,10 +1,10 @@
 /**
  * The frame of every page.
  *
- * The page carries no script and no remote resource. The stylesheet is the one
- * resource it loads, and it comes from this process. Every address in the
- * markup is a path, so the document names no host at all, and a saved copy of
- * it reaches nothing.
+ * The page carries no remote resource. The stylesheet is one resource it loads
+ * and the page of a run loads a script, and both come from this process. Every
+ * address in the markup is a path, so the document names no host at all, and a
+ * saved copy of it reaches nothing.
  */
 
 import { useContext } from "react";
@@ -29,11 +29,19 @@ function Entry(input: { href: string; current: string; children: ReactNode }) {
 /**
  * The heading and the navigation that every page carries.
  *
- * A page that watches an open run names a refresh interval and an address. The
- * directive reloads that address, which is a navigation and not a fetch, so the
- * policy that blocks every script and every remote resource still holds. The
- * address is a path of this process, and it may carry a fragment that names an
- * element of the same page.
+ * A page that watches an open run names a refresh interval, and it may name a
+ * script. The directive reloads this same address, which is a navigation and
+ * not a fetch.
+ *
+ * The directive names no address. It named one for a while, so that a reload
+ * would land on the steps rather than at the top, and that stopped the reload
+ * from happening at all: the address differed from the address of the page by a
+ * fragment alone, and a browser treats that as a move inside the same document.
+ * The page then sat still and reported nothing.
+ *
+ * A script, when the page carries one, comes from this process and the policy
+ * of that page allows this process alone. Every other page carries the policy
+ * that forbids a script of any kind.
  *
  * The frame states the network on every page. A reader who is about to submit
  * an attestation must see which network the submission reaches, and that reader
@@ -45,8 +53,8 @@ export function Layout(input: {
   title: string;
   children: ReactNode;
   refreshSeconds?: number | undefined;
-  /** The address that the refresh reads. The page reloads its own address without one. */
-  refreshTarget?: string | undefined;
+  /** The address of a script that this process serves. Only the page of a run names one. */
+  script?: string | undefined;
 }) {
   const frame = useContext(FrameContext);
   if (frame === undefined) {
@@ -60,17 +68,11 @@ export function Layout(input: {
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         {input.refreshSeconds === undefined ? null : (
-          <meta
-            httpEquiv="refresh"
-            content={
-              input.refreshTarget === undefined
-                ? String(input.refreshSeconds)
-                : `${String(input.refreshSeconds)}; url=${input.refreshTarget}`
-            }
-          />
+          <meta httpEquiv="refresh" content={String(input.refreshSeconds)} />
         )}
         <title>{input.title}</title>
         <link rel="stylesheet" href={`${ROUTES.style}?v=${STYLESHEET_VERSION}`} />
+        {input.script === undefined ? null : <script src={input.script} defer />}
       </head>
       <body>
         <header>

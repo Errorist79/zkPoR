@@ -25,6 +25,7 @@ import {
   LOOPBACK_AUTHORITIES,
   PACKAGE_PATH_FIELD,
   ROUTES,
+  RUN_CONTENT_SECURITY_POLICY,
   RUN_FIELDS,
 } from "./constants.js";
 import type { Reader } from "./chain.js";
@@ -35,6 +36,7 @@ import type { RunAction, RunStore } from "./runs.js";
 import { renderPage } from "./render.js";
 import type { Frame } from "./render.js";
 import { STYLESHEET } from "./style.js";
+import { RUN_SCRIPT } from "./runscript.js";
 import { registryAnswered } from "@zkpor/sdk";
 import { AssetPage, Home, UnregisteredAssetPage } from "./views/asset.js";
 import { InclusionForm, InclusionVerdictPage } from "./views/inclusion.js";
@@ -75,6 +77,8 @@ export interface DashboardResponse {
   readonly location?: string;
   /** What a browser may keep of this answer. An answer that names none is a page. */
   readonly cacheControl?: string;
+  /** The policy of this answer. An answer that names none takes the policy of every page. */
+  readonly contentSecurityPolicy?: string;
 }
 
 /**
@@ -95,7 +99,7 @@ function frameOf(dashboard: Dashboard, current: string): Frame {
 export function responseHeaders(response: DashboardResponse): Record<string, string> {
   const headers: Record<string, string> = {
     "content-type": response.contentType,
-    "content-security-policy": CONTENT_SECURITY_POLICY,
+    "content-security-policy": response.contentSecurityPolicy ?? CONTENT_SECURITY_POLICY,
     "referrer-policy": "no-referrer",
     "x-content-type-options": "nosniff",
     "cache-control": response.cacheControl ?? CACHE_CONTROL.page,
@@ -108,6 +112,7 @@ export function responseHeaders(response: DashboardResponse): Record<string, str
 
 const HTML = "text/html; charset=utf-8";
 const CSS = "text/css; charset=utf-8";
+const JAVASCRIPT = "text/javascript; charset=utf-8";
 const TEXT = "text/plain; charset=utf-8";
 
 function html(status: number, body: string): DashboardResponse {
@@ -234,6 +239,14 @@ async function answerOf(
         cacheControl: CACHE_CONTROL.stylesheet,
       };
     }
+    if (path === ROUTES.runScript) {
+      return {
+        status: 200,
+        contentType: JAVASCRIPT,
+        body: RUN_SCRIPT,
+        cacheControl: CACHE_CONTROL.stylesheet,
+      };
+    }
     if (path === ROUTES.home) {
       return html(
         200,
@@ -261,13 +274,16 @@ async function answerOf(
       if (run === undefined) {
         return html(404, renderPage(<ForgottenRunPage />, frameOf(dashboard, ROUTES.attestation)));
       }
-      return html(
-        200,
-        renderPage(
-          <RunPage run={run} joined={query.get(JOINED_PARAMETER) === JOINED_VALUE} />,
-          frameOf(dashboard, ROUTES.attestation),
+      return {
+        ...html(
+          200,
+          renderPage(
+            <RunPage run={run} joined={query.get(JOINED_PARAMETER) === JOINED_VALUE} />,
+            frameOf(dashboard, ROUTES.attestation),
+          ),
         ),
-      );
+        contentSecurityPolicy: RUN_CONTENT_SECURITY_POLICY,
+      };
     }
   }
 

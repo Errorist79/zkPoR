@@ -269,9 +269,18 @@ describe("every page", () => {
     }
   });
 
-  it("carries no script and no handler that runs on an event", () => {
+  it("carries no script of its own and no handler that runs on an event", () => {
     for (const page of everyPage()) {
-      expect(page.markup, page.name).not.toMatch(/<script/i);
+      // A page of an open run loads a script, and it is the only one. The rule
+      // was never that a page runs nothing. It was that a page reaches nothing
+      // off this machine, so what this holds is where a script may come from:
+      // an address of this process, and no other. A script written into the
+      // markup is refused as well, because the markup is what a reader audits
+      // and a source file is what they can read on its own.
+      for (const tag of [...page.markup.matchAll(/<script[^>]*>/gi)].map((found) => found[0])) {
+        expect(tag, page.name).toMatch(new RegExp(`src="${ROUTES.runScript}(\\?[^"]*)?"`));
+      }
+      expect(page.markup, page.name).not.toMatch(/<script[^>]*>[^<]/i);
       expect(page.markup, page.name).not.toMatch(/\son[a-z]+="/i);
       expect(page.markup, page.name).not.toMatch(/javascript:/i);
     }
