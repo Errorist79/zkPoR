@@ -69,21 +69,21 @@ const BALANCE_FN: Symbol = symbol_short!("balance");
 /// longer than a short symbol, so it is built at the call.
 const VERIFY_PROOF_FN: &str = "verify_proof";
 
-// The lines below are a documentation comment, so they reach the contract
-// specification inside the wasm and the network stores them. This block
-// costs 516 bytes, which was measured by building with it and without it.
-// Keep a note that only a reader of the source needs in a plain comment
-// like this one, which the build does not carry.
-/// Why the registry refused, as a number.
-///
-/// A refusal reaches a caller as this number and as nothing else. The client
-/// keeps its own copy of the list, and a test of the client compares the two
-/// against this file, so a name that moves to another number fails there.
-///
-/// Give a new error the next free number. Never give an old number to a new
-/// meaning. A client built before the change reports an unknown number
-/// honestly, and it reports a reused number as the error the number used to
-/// mean, which is worse than an unknown one.
+// The lines below are a plain comment, so the build does not carry them. A
+// documentation comment reaches the contract specification inside the wasm
+// and the network stores it. This block costs 516 bytes as a documentation
+// comment, which was measured by building with it and without it. Only a
+// reader of the source needs the rule, so the rule stays a plain comment.
+// Why the registry refused, as a number.
+//
+// A refusal reaches a caller as this number and as nothing else. The client
+// keeps its own copy of the list, and a test of the client compares the two
+// against this file, so a name that moves to another number fails there.
+//
+// Give a new error the next free number. Never give an old number to a new
+// meaning. A client built before the change reports an unknown number
+// honestly, and it reports a reused number as the error the number used to
+// mean, which is worse than an unknown one.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]

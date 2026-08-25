@@ -193,11 +193,13 @@ constructor refuses a verifier that stores another key.
 Two of the three registries cannot be traced to a source state of this
 repository. The documented build reproduces the verifier of every generation,
 and it reproduces the registry of the third generation byte for byte. It
-reproduces the registry of neither the first nor the second. Every commit that
-can change that contract builds a registry of 33,364 bytes, and the two recorded
-registries hold 65,185 bytes. The second generation went on chain forty-one
-minutes before the commit that raises its reserve bound, and that commit
-produces the registry of the third generation rather than its own.
+reproduces the registry of neither the first nor the second. A commit that can
+change that contract builds a registry of 33,364 bytes, and the two recorded
+registries hold 65,185 bytes. The commits that carry the error rule as a
+documentation comment build 33,880 bytes, because the wasm holds the contract
+specification. The second generation went on chain forty-one minutes before the
+commit that raises its reserve bound, and that commit produces the registry of
+the third generation rather than its own.
 
 One candidate cause was tested and refused. A build without the optimize step
 gives the same size and the same hash, so that step accounts for none of the
