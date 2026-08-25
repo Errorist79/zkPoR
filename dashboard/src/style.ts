@@ -7,6 +7,8 @@
  * the markup makes.
  */
 
+import { createHash } from "node:crypto";
+
 export const STYLESHEET = `
 /* Four colours carry a meaning. The accent marks the place where the reader can
    act: a link, the entry of the current page, the focus ring, and the button.
@@ -144,21 +146,6 @@ nav {
   grid-area: 2 / 1 / auto / -1;
 }
 
-/* A narrow screen cannot carry two columns in one row, so the frame returns to
-   one column and each statement takes a row of its own. */
-@media (max-width: 34rem) {
-  header {
-    grid-template-columns: 1fr;
-  }
-
-  header .mark,
-  nav,
-  .deployment,
-  header .local {
-    grid-area: auto;
-  }
-}
-
 nav a {
   border-bottom: 2px solid transparent;
   color: var(--ink-soft);
@@ -203,6 +190,30 @@ header .local {
   grid-area: 3 / 1 / auto / -1;
   line-height: 1.45;
   margin: 0;
+}
+
+/* A narrow screen cannot carry two columns in one row, so the frame returns to
+   one column and each statement takes a row of its own.
+
+   This block sits after every rule that places a part of the frame. The
+   placements above carry the same weight as these, so a placement that came
+   later in the text would win inside this width as well, and the frame would
+   keep two columns on a screen that cannot hold them. */
+@media (max-width: 34rem) {
+  header {
+    grid-template-columns: 1fr;
+  }
+
+  header .mark,
+  nav,
+  .deployment,
+  header .local {
+    grid-area: auto;
+  }
+
+  .deployment {
+    text-align: left;
+  }
 }
 
 /* A limit statement says what the claim beside it does not cover. The rule at
@@ -439,3 +450,16 @@ button {
   padding: 0.55rem 1.1rem;
 }
 `;
+
+/**
+ * The version of the stylesheet, which is a digest of its own text.
+ *
+ * The address of the stylesheet carries this value. A build that changes one
+ * character of the text above changes the address, so a browser that kept the
+ * old text never serves it for the new build. This is what lets a browser keep
+ * the text and never ask for it twice.
+ *
+ * The digest is of the text this process serves, and not of a file on disk, so
+ * it cannot disagree with what the reader receives.
+ */
+export const STYLESHEET_VERSION = createHash("sha256").update(STYLESHEET).digest("hex").slice(0, 16);

@@ -50,6 +50,24 @@ export const CONTENT_SECURITY_POLICY = [
   "frame-ancestors 'none'",
 ].join("; ");
 
+/**
+ * What a browser may keep of an answer.
+ *
+ * A page carries balance figures, so a browser keeps no copy of one and asks
+ * again every time. That is the rule for every answer of this process except
+ * the stylesheet.
+ *
+ * The stylesheet carries no data about anybody and it changes only when the
+ * process is replaced. Its address carries the version of its text, so a new
+ * text always arrives under an address that no browser has seen. A browser can
+ * therefore keep the text for as long as it likes, and it never serves an old
+ * stylesheet for a build that no longer runs.
+ */
+export const CACHE_CONTROL = {
+  page: "no-store",
+  stylesheet: "public, max-age=31536000, immutable",
+} as const;
+
 /** The paths that the dashboard answers. */
 export const ROUTES = {
   home: "/",

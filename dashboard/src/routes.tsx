@@ -18,6 +18,7 @@ import { InfrastructureError, isAcceptedAddress, verifyInclusion } from "@zkpor/
 import type { Environment } from "@zkpor/sdk";
 import {
   ASSET_PARAMETER,
+  CACHE_CONTROL,
   CONTENT_SECURITY_POLICY,
   JOINED_PARAMETER,
   JOINED_VALUE,
@@ -72,6 +73,8 @@ export interface DashboardResponse {
   readonly body: string;
   /** The address of a redirect, which is always a path of this process. */
   readonly location?: string;
+  /** What a browser may keep of this answer. An answer that names none is a page. */
+  readonly cacheControl?: string;
 }
 
 /**
@@ -95,7 +98,7 @@ export function responseHeaders(response: DashboardResponse): Record<string, str
     "content-security-policy": CONTENT_SECURITY_POLICY,
     "referrer-policy": "no-referrer",
     "x-content-type-options": "nosniff",
-    "cache-control": "no-store",
+    "cache-control": response.cacheControl ?? CACHE_CONTROL.page,
   };
   if (response.location !== undefined) {
     headers["location"] = response.location;
@@ -224,7 +227,12 @@ async function answerOf(
 
   if (request.method === "GET") {
     if (path === ROUTES.style) {
-      return { status: 200, contentType: CSS, body: STYLESHEET };
+      return {
+        status: 200,
+        contentType: CSS,
+        body: STYLESHEET,
+        cacheControl: CACHE_CONTROL.stylesheet,
+      };
     }
     if (path === ROUTES.home) {
       return html(

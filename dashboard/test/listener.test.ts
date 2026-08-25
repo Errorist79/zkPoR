@@ -10,7 +10,13 @@
 import { connect } from "node:net";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { CONTENT_SECURITY_POLICY, LOOPBACK_HOST, MAX_BODY_BYTES, ROUTES } from "../src/constants.js";
+import {
+  CACHE_CONTROL,
+  CONTENT_SECURITY_POLICY,
+  LOOPBACK_HOST,
+  MAX_BODY_BYTES,
+  ROUTES,
+} from "../src/constants.js";
 import { openDashboard } from "../src/server.js";
 import { dashboard } from "./support.js";
 
@@ -32,18 +38,33 @@ afterAll(async () => {
   await new Promise((resolve) => server.close(resolve));
 });
 
-/** The headers that every answer must carry. */
+/** The headers that every answer must carry, whatever the answer holds. */
 const REQUIRED = {
   "content-security-policy": CONTENT_SECURITY_POLICY,
   "referrer-policy": "no-referrer",
   "x-content-type-options": "nosniff",
-  "cache-control": "no-store",
 };
 
-function expectRequiredHeaders(answer: Response, what: string): void {
+/**
+ * The headers of one answer, with what a browser may keep of it.
+ *
+ * A page carries balance figures, so every page states that a browser keeps no
+ * copy. The stylesheet holds no data about anybody and its address carries the
+ * version of its text, so a browser may keep it.
+ *
+ * The two values are named here, and each case says which one it expects. A
+ * change to either value fails, and a page that started to permit a copy fails
+ * on the page value rather than passing on a rule that no longer covers it.
+ */
+function expectRequiredHeaders(
+  answer: Response,
+  what: string,
+  cacheControl: string = CACHE_CONTROL.page,
+): void {
   for (const [name, value] of Object.entries(REQUIRED)) {
     expect(answer.headers.get(name), `${what}: ${name}`).toBe(value);
   }
+  expect(answer.headers.get("cache-control"), `${what}: cache-control`).toBe(cacheControl);
 }
 
 /**
@@ -116,7 +137,7 @@ describe("every answer that the listener writes", () => {
   it("carries the policy on the stylesheet", async () => {
     const answer = await fetch(`${origin}${ROUTES.style}`);
     expect(answer.status).toBe(200);
-    expectRequiredHeaders(answer, "the stylesheet");
+    expectRequiredHeaders(answer, "the stylesheet", CACHE_CONTROL.stylesheet);
   });
 
   it("carries the policy on a path it does not serve", async () => {
@@ -131,6 +152,9 @@ describe("every answer that the listener writes", () => {
     for (const [name, value] of Object.entries(REQUIRED)) {
       expect(headersOf(answer).get(name), `a foreign authority: ${name}`).toBe(value);
     }
+    expect(headersOf(answer).get("cache-control"), "a foreign authority: cache-control").toBe(
+      CACHE_CONTROL.page,
+    );
   });
 
   it("carries the policy on a submission from another site", async () => {

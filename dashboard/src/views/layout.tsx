@@ -11,6 +11,7 @@ import { useContext } from "react";
 import type { ReactNode } from "react";
 import { ROUTES } from "../constants.js";
 import { FrameContext } from "../render.js";
+import { STYLESHEET_VERSION } from "../style.js";
 
 /** One entry of the navigation. */
 function Entry(input: { href: string; current: string; children: ReactNode }) {
@@ -69,7 +70,7 @@ export function Layout(input: {
           />
         )}
         <title>{input.title}</title>
-        <link rel="stylesheet" href={ROUTES.style} />
+        <link rel="stylesheet" href={`${ROUTES.style}?v=${STYLESHEET_VERSION}`} />
       </head>
       <body>
         <header>

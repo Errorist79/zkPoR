@@ -281,7 +281,10 @@ describe("every page", () => {
     for (const page of everyPage()) {
       const links = [...page.markup.matchAll(/<link[^>]*>/gi)].map((found) => found[0]);
       expect(links.length, page.name).toBe(1);
-      expect(links[0], page.name).toContain(`href="${ROUTES.style}"`);
+      // The address carries the version of the stylesheet text, so the match
+      // allows a query and still pins the path. A remote address fails, because
+      // the path must follow the quote with nothing before it.
+      expect(links[0], page.name).toMatch(new RegExp(`href="${ROUTES.style}(\\?[^"]*)?"`));
       expect(page.markup, page.name).not.toMatch(/<img|<iframe|<object|<embed|<video|<audio/i);
     }
   });
