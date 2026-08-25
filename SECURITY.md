@@ -149,8 +149,7 @@ honest proofs. All four cases are real confirmed transactions:
 | deflated | `5d06ca66a324db4b4d8f362f5133ec25ae166175798e59464df06c76efddbb01` | 3312958 | FAILED, Error(Contract, #4) |
 | honest (post-attacks) | `b88c7c2b5fb8fa0a20d7b436c3b4657f8109279ab1a75f7d398bc9ddfd93c1a7` | 3313107 | SUCCESS |
 
-This document quoted an instruction figure for that verify. The figure is
-gone, because a reader can no longer check it. The instruction count lives in
+No instruction figure stands for that verify. The instruction count lives in
 the diagnostic events of the applied transaction, and the endpoint that serves
 those keeps a fixed window of ledgers. These transactions left that window, and
 a lookup of the first one answers NOT_FOUND. Horizon still resolves the four
@@ -161,16 +160,13 @@ The two honest accepts bracket the two rejects in ledger order on the same
 contract. This order shows a real gate, and not a deployment that rejects
 everything.
 
-An earlier version of this document said that the transaction result carries the
-structured form `{error: {contract: 4}}`. A measurement on August 26, 2026
-refuted that claim. Horizon serves the result of each rejected transaction, and a
-reader who decodes it reaches `tx_failed` with the operation result
-`invoke_host_function: trapped`. That result carries no contract error number,
-and Horizon serves no transaction meta for these two transactions. The number 4
-comes from the diagnostic events, the endpoint keeps those for a window of
-ledgers, and these transactions left that window. A reader establishes today that
-each transaction failed. A reader cannot establish which error the contract
-returned.
+Horizon serves the result of each rejected transaction, and a reader who decodes
+it reaches `tx_failed` with the operation result `invoke_host_function: trapped`.
+That result carries no contract error number, and Horizon serves no transaction
+meta for these two transactions. The contract error number lives in the
+diagnostic events, the endpoint keeps those for a window of ledgers, and these
+transactions left that window. A reader establishes that each transaction failed.
+A reader cannot establish which error the contract returned.
 
 ### Current artifact, testnet evidence
 
@@ -488,13 +484,12 @@ property of the registry.
 
 A reproducible refusal answers more than a rejected transaction does. The two
 rejected transactions of the superseded artifact tell a reader that they failed.
-They no longer tell a reader which error the contract returned. The two commands
+They do not tell a reader which error the contract returned. The two commands
 above return the error number. They return it now, and they return it for as long
 as the registry holds that asset.
 
 The repository does not record how the two rejected transactions of the
-superseded artifact reached the ledger. That gap is the same class as the gap
-this document already states for that artifact.
+superseded artifact reached the ledger.
 
 `tools/gate/soundness-gate.sh` validates the current artifact. The gate
 builds the production artifacts from the committed sources, and it deploys them
