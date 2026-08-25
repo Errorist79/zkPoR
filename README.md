@@ -102,7 +102,14 @@ Current artifact (validated on the Protocol 27 testnet on August 8, 2026):
 - The soundness gate passed at the release configuration on a Protocol 27
   localnet, with five verdicts: an honest proof accepted; a forged proof, a
   deflated proof, a stale-leaf proof, and a foreign context rejected
-  (`tools/gate/`). A localnet result is not testnet evidence.
+  (`tools/gate/`). A localnet result is not testnet evidence. The honest case
+  lands a transaction, and the four refusals are the verdict that the deployed
+  contract returns under simulation.
+- The deployed testnet registry refuses a stale snapshot with the error
+  `SnapshotOutsideWindow`, and it refuses an invalid proof with the error
+  `ProofRejected`. A reader reproduces both with one command each.
+  [`SECURITY.md`](SECURITY.md) carries the commands and the reason that neither
+  refusal is a transaction.
 
 Written and tested:
 
@@ -212,11 +219,12 @@ export PATH="$HOME/.local/bin:$HOME/.nargo/bin:$HOME/.bb/bin:$HOME/.cargo/bin:$P
 stellar container start local --limits unlimited --image-tag-override nightly --protocol-version 27
 
 # 2. Run the end-to-end soundness gate (builds the production verifier, deploys
-#    it, and checks the on-chain verdicts: one honest ACCEPT, four attack REJECTs)
+#    it, and checks the verdict of the deployed contract for five cases:
+#    one honest ACCEPT, four attack REJECTs)
 bash tools/gate/soundness-gate.sh
 
 # 3. Run the registry attestation gate (registers an asset, proves, attests,
-#    and checks the on-chain verdict of each of the four cases)
+#    and checks the verdict of the deployed contract for each of the four cases)
 bash tools/gate/registry-gate.sh
 ```
 

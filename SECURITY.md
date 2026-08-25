@@ -159,8 +159,18 @@ happened and not what they cost.
 
 The two honest accepts bracket the two rejects in ledger order on the same
 contract. This order shows a real gate, and not a deployment that rejects
-everything. The on-chain XDR carries the structured form
-`{error: {contract: 4}}`.
+everything.
+
+An earlier version of this document said that the transaction result carries the
+structured form `{error: {contract: 4}}`. A measurement on August 26, 2026
+refuted that claim. Horizon serves the result of each rejected transaction, and a
+reader who decodes it reaches `tx_failed` with the operation result
+`invoke_host_function: trapped`. That result carries no contract error number,
+and Horizon serves no transaction meta for these two transactions. The number 4
+comes from the diagnostic events, the endpoint keeps those for a window of
+ledgers, and these transactions left that window. A reader establishes today that
+each transaction failed. A reader cannot establish which error the contract
+returned.
 
 ### Current artifact, testnet evidence
 
@@ -207,9 +217,9 @@ difference. The cause is not established. `scripts/deploy_registry.sh` and
 `scripts/check_deployment.sh` exist for this reason, and the third generation is
 the first that either one produced.
 
-This document carries the evidence of the first two generations. It carries no
-evidence of the third, and a reader must not read the sections below as
-statements about it.
+The sections below carry the evidence of the first two generations. A reader must
+not read them as statements about the third. The section "Third generation, the
+deployed artifact" carries the evidence of the third.
 
 The deployments file names the registry and the verifier of a generation, and it
 names no asset. No query enumerates the assets of a registry, so this document
@@ -356,12 +366,153 @@ inclusion package for each customer of attestation 2, and
 INCLUDED for one of them. The tool read the registry address from
 `scripts/deployments.json`, and not from the package.
 
+### Third generation, the deployed artifact
+
+The third generation is the artifact that runs now. Its registry is
+`CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG` and its verifier is
+`CDNUAFLJPLFM4DSHHQF5SVX2HESQR5GICSKQKZDHXP5NAGG4G2C2QMMM`. It is the first
+generation that the documented deploy path produced, and the documented build
+reproduces its registry byte for byte.
+
+That registry holds the asset
+`CBEHK5VDPAKSY2YAQFQQKN2FWOZ6YU6LKNKYRQ5M6XIDIYJEOBDQRHTT`, under the
+administrator tier, with the authority
+`GBTWIUFV6TF7GDS22K6YUMS65G4TA5UOZNYB4HNBNESWOY6VIWORR6NU` and one reserve
+address. Its record holds an accepted attestation at the snapshot ledger 4274940
+and the attested ledger 4274948.
+
+#### One accepted attestation
+
+| Step | Tx hash | Ledger | Result |
+|---|---|---|---|
+| attestation | `7ed11c70f2911fc9bf46bf815ab11d193a34372d16c72b6bdda58029327ebf5c` | 4263070 | SUCCESS |
+
+This project read the cost of that transaction on August 26, 2026:
+
+| Quantity | Value |
+|---|---|
+| declared instructions | 120,616,259 |
+| share of the cap of 400,000,000 | 30.15 percent |
+| consumed instructions | 115,854,936 |
+| memory | 6,451,294 bytes |
+| fee charged | 246,682 stroops, which is 0.0246682 XLM |
+
+A reader checks the declared instructions and the fee at any time, and the share
+of the cap follows from the declared instructions. Horizon serves the transaction
+result, the transaction envelope, and the fee. The declared instructions stand in
+the envelope, so a reader who decodes it reaches 120,616,259. The fee stands in
+the record, so a reader reads 246,682 stroops.
+
+A reader cannot check the consumed instructions or the memory after the window
+passes. Those two come from the diagnostic events. The endpoint held the ledgers
+4213479 to 4334438 on August 26, 2026, and it keeps 120,960 ledgers, which is
+about seven days. This transaction leaves that window near the ledger 4384030.
+The two figures then stand as this project measured them, and a reader takes them
+on that basis.
+
+#### Two refusals, against the deployed registry
+
+The registry refuses a stale snapshot, and it refuses a proof that does not
+verify. Both refusals are reproducible against the deployed contract. A reader
+runs one command for each and reads the error number that the registry returns.
+
+The stale case names the snapshot ledger 4274940, which the registry already
+holds. The window is 720 ledgers, and the network passed that snapshot long ago.
+
+```
+stellar contract invoke \
+  --id CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG \
+  --source <a funded account> --network testnet --send no \
+  -- submit_attestation \
+  --asset CBEHK5VDPAKSY2YAQFQQKN2FWOZ6YU6LKNKYRQ5M6XIDIYJEOBDQRHTT \
+  --snapshot_ledger 4274940 \
+  --final_root 20554074537088043555280822736271664885243051878812220006918736495728922963448 \
+  --total_liabilities 18446744074315096615 \
+  --proof <any hexadecimal byte string>
+```
+
+The registry answers `Error(Contract, #15)`, which is `SnapshotOutsideWindow`.
+
+The proof case runs the same command with two changes. It names the current
+ledger as the snapshot ledger, so the snapshot stays inside the window. It also
+carries a hexadecimal byte string that is not a valid proof. The registry answers
+`Error(Contract, #16)`, which is `ProofRejected`.
+
+Any funded account reproduces both cases, and the account does not need to be the
+authority of the asset. The stale case never reaches the authority check, because
+the registry checks the snapshot age first. The proof case does reach that check,
+and it passes under simulation, because the endpoint records the authorization
+entries instead of enforcing them. The pinned command line states that default
+under `--auth-mode`.
+
+This project ran the two cases from the authority account. It also ran them from
+an account that is not the authority. Both accounts reached the same two error
+numbers.
+
+The two error numbers differ, and the difference carries the evidence. The
+registry checks the snapshot age before it reads the proof, and
+`contracts/registry/src/lib.rs` shows that order. The stale case answers #15 and
+not #16, so the registry refused on the age and never asked the verifier. A
+reader confirms that order from the source, with no network at all.
+
+Neither refusal writes to the registry. The record of that asset still holds the
+accepted attestation of the attested ledger 4274948, and a reader reads it back
+at any time.
+
+The command above names `--send no`, which simulates and sends nothing. This
+project ran both commands on August 26, 2026 against the deployed registry, and
+it submitted no transaction.
+
+#### Why these two refusals are not transactions
+
+A Soroban transaction reaches the ledger only after a simulation prices it. The
+simulation returns the resources and the footprint, and the transaction carries
+them. A call that the contract refuses returns no resources, so nothing prices
+it. Three measurements on August 26, 2026 establish this:
+
+- `stellar contract invoke --send yes` answers the contract error and sends
+  nothing. The pinned version is 27.0.0.
+- `stellar tx simulate` answers the same contract error.
+- The endpoint answers `simulateTransaction` with the error, with no
+  `transactionData` and with no `minResourceFee`.
+
+`stellar contract invoke --build-only` does write a transaction, and that
+transaction carries no Soroban resources. The network refuses such a transaction
+for its resources, so its record would show a resource failure and not the error
+that the registry returned. That record would mislead a reader, and this project
+did not submit one.
+
+So a refusal of this registry does not reach the ledger by the normal path. This
+is a property of the platform and of the pinned command line. It is not a
+property of the registry.
+
+A reproducible refusal answers more than a rejected transaction does. The two
+rejected transactions of the superseded artifact tell a reader that they failed.
+They no longer tell a reader which error the contract returned. The two commands
+above return the error number. They return it now, and they return it for as long
+as the registry holds that asset.
+
+The repository does not record how the two rejected transactions of the
+superseded artifact reached the ledger. That gap is the same class as the gap
+this document already states for that artifact.
+
 `tools/gate/soundness-gate.sh` validates the current artifact. The gate
-builds the production artifacts from the committed sources, deploys them to
-a Protocol 27 localnet, and gates on the on-chain verdict. It passed at the
-release configuration with five verdicts: an honest proof accepted; a
-forged proof, a deflated proof, a stale-leaf proof, and a foreign
-context rejected. It fails loud on any other outcome, so an infrastructure
+builds the production artifacts from the committed sources, and it deploys them
+to a Protocol 27 localnet. It then reads the verdict of the deployed verifier for
+five cases. It passed at the release configuration with these verdicts:
+
+- it accepted an honest proof;
+- it refused a forged proof;
+- it refused a deflated proof;
+- it refused a stale-leaf proof;
+- it refused a foreign context.
+
+The honest case lands a transaction on that localnet. The four refusals land
+nothing, for the reason above: the command line refuses to submit a call whose
+simulation fails. Each refusal is the verdict that the deployed contract returns
+under simulation. `tools/gate/registry-gate.sh` reads its refusals the same way.
+
+The gate fails loud on any other outcome, so an infrastructure
 failure never reads as a soundness REJECT. It runs in CI
 (`.github/workflows/soundness-gate.yml`) on a self-hosted runner, and CI
 fails when a rebuild changes the manifest, the committed key, or a

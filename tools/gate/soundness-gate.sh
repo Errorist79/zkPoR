@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# soundness-gate.sh: end-to-end on-chain soundness gate for the PRODUCTION
+# soundness-gate.sh: end-to-end soundness gate for the PRODUCTION
 # recursive-aggregation Proof-of-Reserves pipeline.
 #
 # Exercises the production artifacts only:
@@ -12,8 +12,11 @@
 #      deferred pairing-point accumulator on-chain)
 #   - adversarial scaffolding (this gate only):   tools/gate/attacks + cheats.py
 #
-# It then PROVES soundness by breaking it, GATED ON THE ON-CHAIN VERIFY RESULT:
-#   honest   -> on-chain ACCEPT
+# It then PROVES soundness by breaking it, GATED ON THE VERDICT OF THE DEPLOYED
+# VERIFIER. The honest case lands a transaction. Each refusal is the verdict that
+# the contract returns under simulation, because the command line refuses to
+# submit a call whose simulation fails:
+#   honest   -> ACCEPT
 #   forged   -> foreign inner proof under the PINNED vk array (passes the
 #               in-circuit key_hash assert + folds; nargo execute succeeds),
 #               caught ONLY by the completed pairing at the verifier -> REJECT
@@ -221,7 +224,8 @@ CID=$(stellar contract deploy --wasm "$OPT" --source alice --network "$NET" \
 echo "CONTRACT_ID=$CID"
 
 # -----------------------------------------------------------------------------
-# 7. Build each terminal aggregator proof + verify it ON-CHAIN
+# 7. Build each terminal aggregator proof + read the verdict of the deployed
+#    verifier for it
 # -----------------------------------------------------------------------------
 build_terminal() { # kind  -> writes $ATGT/proof + $ATGT/public_inputs
   python3 "$PY" agg-prover "$1" > "$AGG/Prover.toml" || return 1
@@ -255,7 +259,7 @@ PI_COUNT=$(manifest_field public_input_count) || die "the manifest does not carr
 declare -A GOT
 record() { # label result expected extra
   GOT["$1"]="$2"
-  echo ">>> CASE $1 ($4): on-chain=$2 ; expected=$3"
+  echo ">>> CASE $1 ($4): verdict=$2 ; expected=$3"
   case "$2" in INFRA:*) die "$1 hit an infrastructure error, not a verifier verdict: $2" ;; esac
 }
 
@@ -277,7 +281,7 @@ run_foreign_context_case() {
     REJECT "the honest proof, context_hash at index $CTX_IDX changed by one bit"
 }
 
-echo "--- ON-CHAIN SOUNDNESS GATE (deployed production verifier) ---"
+echo "--- SOUNDNESS GATE (verdict of the deployed production verifier) ---"
 run_case honest       honest       ACCEPT
 # The honest artifacts must survive the later cases, which overwrite them.
 run_foreign_context_case
@@ -303,7 +307,7 @@ FAIL=0
 [[ "${GOT[staleleaf]}" == REJECT* ]] || { echo "EXPECTATION UNMET: staleleaf must REJECT"; FAIL=1; }
 
 if [ "$FAIL" -ne 0 ]; then
-  die "the production artifact is NOT sound on-chain (see expectations above)"
+  die "the deployed artifact is NOT sound (see expectations above)"
 fi
 echo "=== SOUNDNESS-GATE PASS at B=$B K=$K: honest ACCEPT, forged REJECT, \
 deflated REJECT, foreigncontext REJECT, staleleaf REJECT $(date -u) ==="
