@@ -104,26 +104,59 @@ h3 {
   margin: 1.5rem 0 0.5rem;
 }
 
+/* The frame stands above every page, so each row that the frame takes is a row
+   that the page below it loses. A reader who opens an asset page must meet the
+   asset and not four rows of frame.
+
+   The frame holds four statements and it now takes three rows. The mark and the
+   network share the first row, because both name where the reader is rather than
+   what the page says. The navigation takes the second row. The statement about
+   this machine takes the third.
+
+   The navigation carries no rule of its own. The rule under the frame already
+   closes the block, and two rules that sit twelve pixels apart read as an error.
+   The entry of the current page keeps its own underline, which is the mark that
+   states the entry. */
 header {
+  align-items: baseline;
   border-bottom: 1px solid var(--edge);
-  margin-bottom: 2rem;
-  padding-bottom: 1rem;
+  column-gap: 1.5rem;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  margin-bottom: 1.25rem;
+  padding-bottom: 0.6rem;
+  row-gap: 0.5rem;
 }
 
 header .mark {
   color: var(--ink-soft);
   font-size: 0.78rem;
   font-weight: 700;
+  grid-area: 1 / 1;
   letter-spacing: 0.14em;
-  margin: 0 0 0.75rem;
+  margin: 0;
   text-transform: uppercase;
 }
 
 nav {
-  border-bottom: 1px solid var(--edge);
   display: flex;
   gap: 1.5rem;
-  margin-bottom: 0.85rem;
+  grid-area: 2 / 1 / auto / -1;
+}
+
+/* A narrow screen cannot carry two columns in one row, so the frame returns to
+   one column and each statement takes a row of its own. */
+@media (max-width: 34rem) {
+  header {
+    grid-template-columns: 1fr;
+  }
+
+  header .mark,
+  nav,
+  .deployment,
+  header .local {
+    grid-area: auto;
+  }
 }
 
 nav a {
@@ -145,8 +178,10 @@ nav a[aria-current="page"] {
 
 .deployment {
   color: var(--ink-soft);
-  font-size: 0.85rem;
-  margin-bottom: 0.25rem;
+  font-size: 0.78rem;
+  grid-area: 1 / 2;
+  margin: 0;
+  text-align: right;
 }
 
 .deployment strong {
@@ -157,6 +192,17 @@ nav a[aria-current="page"] {
 .limit {
   color: var(--ink-soft);
   font-size: 0.85rem;
+}
+
+/* The statement that this dashboard sends nothing anywhere stands on every page,
+   and a reader reads it once. It keeps every word and it stays in the reading
+   order, so it is still there and a reader can still find it. It gives up the
+   size of body text, which is what it costs the page under it. */
+header .local {
+  font-size: 0.78rem;
+  grid-area: 3 / 1 / auto / -1;
+  line-height: 1.45;
+  margin: 0;
 }
 
 /* A limit statement says what the claim beside it does not cover. The rule at
