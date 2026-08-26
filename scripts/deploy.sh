@@ -1,17 +1,31 @@
 #!/usr/bin/env bash
-# Build circuits, build + optimize the verifier contract, deploy it with the
-# circuit VK set at construction.
+# Build + optimize the verifier contract and deploy it with the release
+# aggregator verification key set at construction.
+#
+# It deploys the key that the generated manifest records, and nothing else. A
+# development artifact has no manifest, so it cannot reach a contract here.
 #
 # NOTE: On Stellar CLI 27.0.0, `stellar contract build --optimize` optimizes the
 # wasm in place (the standalone `stellar contract optimize` is deprecated here).
 set -e
 source "$(dirname "${BASH_SOURCE[0]}")/config.sh"
 
-echo -e "${BLUE}1. Ensuring $STELLAR_SOURCE_ACCOUNT is funded...${NC}"
-"$ROOT_DIR/scripts/fund_account.sh"
+echo -e "${BLUE}1. Checking the release artifact against the manifest...${NC}"
+[ -f "$MANIFEST_FILE" ] || {
+  echo -e "${RED}no manifest at $MANIFEST_FILE: this tree holds no release artifact${NC}"; exit 1; }
+[ -f "$RELEASE_KEY" ] || {
+  echo -e "${RED}no verification key at $RELEASE_KEY${NC}"; exit 1; }
+KEY_SHA256=$(python3 -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$RELEASE_KEY")
+[ "$KEY_SHA256" = "$(manifest_field aggregator_key_sha256)" ] || {
+  echo -e "${RED}the key to deploy is not the key the manifest records${NC}"; exit 1; }
+[ "$(wc -c < "$RELEASE_KEY")" -eq "$(manifest_field aggregator_key_bytes)" ] || {
+  echo -e "${RED}the key length does not match the manifest${NC}"; exit 1; }
+echo "  batch_b=$(manifest_field batch_b) num_batches_k=$(manifest_field num_batches_k)"
+echo "  bb=$(manifest_field bb_version) nargo=$(manifest_field nargo_version)"
+echo "  aggregator key sha256=$KEY_SHA256"
 
-echo -e "${BLUE}2. Building circuit '$CIRCUIT' (proof / vk / public_inputs)...${NC}"
-bash "$BUILD_CIRCUITS_SCRIPT" "$CIRCUIT"
+echo -e "${BLUE}2. Ensuring $STELLAR_SOURCE_ACCOUNT is funded...${NC}"
+"$ROOT_DIR/scripts/fund_account.sh"
 
 echo -e "${BLUE}3. Building + optimizing the verifier contract (wasm)...${NC}"
 stellar contract build --optimize
@@ -25,7 +39,7 @@ for attempt in $(seq 1 "$STELLAR_DEPLOY_RETRIES"); do
     --source "$STELLAR_SOURCE_ACCOUNT" \
     --network "$STELLAR_NETWORK_NAME" \
     -- \
-    --vk_bytes-file-path "$DATASET_DIR/vk"); then
+    --vk_bytes-file-path "$RELEASE_KEY"); then
     DEPLOY_OK=1; break
   fi
   echo -e "${RED}  deploy failed, retrying in ${STELLAR_DEPLOY_RETRY_INTERVAL}s...${NC}"

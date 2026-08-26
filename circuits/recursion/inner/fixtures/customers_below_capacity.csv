@@ -1,0 +1,15 @@
+# Test data. The tree of the development configuration holds 16 leaves.
+# Case: the customer count is below the capacity, so the generator pads.
+id,balance
+1001,500
+1002,1200
+1003,750
+1004,3300
+1005,90
+1006,4200
+1007,615
+1008,128
+1009,2750
+1010,860
+1011,1990
+1012,40

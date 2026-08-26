@@ -1,7 +1,19 @@
 #!/usr/bin/env bash
-# Verifier check on $CIRCUIT: a valid proof must be ACCEPTED; a tampered proof
-# and tampered public inputs (e.g. a wrong total L) must be REJECTED.
-# Reads CONTRACT_ID from $1 or .contract_id.$CIRCUIT.
+# Checks a deployed verifier against the release artifact.
+#
+# Three questions, in order:
+#   1. Does the contract hold the key that the manifest records? The contract
+#      stores its key at deployment and has no upgrade path, so this answers
+#      which circuit the address verifies for. A contract address alone proves
+#      nothing.
+#   2. Does it accept the terminal proof? (the positive case)
+#   3. Does it reject the same proof when one public input changes? (the
+#      negative case)
+#
+# The proof and the public input byte string come from the aggregator target
+# directory, where the prover writes them.
+#
+# Reads CONTRACT_ID from $1 or from the file that deploy.sh writes.
 set -e
 source "$(dirname "${BASH_SOURCE[0]}")/config.sh"
 
@@ -13,9 +25,13 @@ else
   echo -e "${RED}Usage: $0 <CONTRACT_ID>  (or run deploy.sh first)${NC}"; exit 1
 fi
 
-PUBLIC_INPUTS="$DATASET_DIR/public_inputs"
-PROOF="$DATASET_DIR/proof"
-[ -f "$PUBLIC_INPUTS" ] && [ -f "$PROOF" ] || { echo -e "${RED}Missing artifacts in $DATASET_DIR${NC}"; exit 1; }
+[ -f "$MANIFEST_FILE" ] || {
+  echo -e "${RED}no manifest at $MANIFEST_FILE: this tree holds no release artifact${NC}"; exit 1; }
+
+PUBLIC_INPUTS="$AGG_TARGET/public_inputs"
+PROOF="$AGG_TARGET/proof"
+[ -f "$PUBLIC_INPUTS" ] && [ -f "$PROOF" ] || {
+  echo -e "${RED}no proof in $AGG_TARGET. Prove the aggregator first.${NC}"; exit 1; }
 
 invoke() { # $1 = public_inputs file, $2 = proof file
   stellar contract invoke \
@@ -29,44 +45,37 @@ invoke() { # $1 = public_inputs file, $2 = proof file
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-echo -e "${BLUE}[1/3] VALID proof -> expect ACCEPT${NC}"
+echo -e "${BLUE}[1/3] The stored key must be the key the manifest records${NC}"
+stellar contract invoke --id "$CONTRACT_ID" --source "$STELLAR_SOURCE_ACCOUNT" \
+  --network "$STELLAR_NETWORK_NAME" -- vk_bytes > "$TMP/vk.json"
+STORED_SHA256=$(python3 -c "
+import hashlib, json, sys
+print(hashlib.sha256(bytes.fromhex(json.load(open(sys.argv[1])))).hexdigest())
+" "$TMP/vk.json")
+if [ "$STORED_SHA256" = "$(manifest_field aggregator_key_sha256)" ]; then
+  echo -e "${GREEN}  PASS: the contract holds the release key ($STORED_SHA256)${NC}"
+else
+  echo -e "${RED}  FAIL: the contract holds another key ($STORED_SHA256)${NC}"; exit 1
+fi
+
+echo -e "${BLUE}[2/3] VALID proof -> expect ACCEPT${NC}"
 if invoke "$PUBLIC_INPUTS" "$PROOF"; then
   echo -e "${GREEN}  PASS: valid proof accepted${NC}"
 else
   echo -e "${RED}  FAIL: valid proof was rejected${NC}"; exit 1
 fi
 
-echo -e "${BLUE}[2/3] TAMPERED proof -> expect REJECT${NC}"
-cp "$PROOF" "$TMP/proof_bad"
-python3 - "$TMP/proof_bad" <<'PY'
-import sys
-d = bytearray(open(sys.argv[1], "rb").read())
-for i in (5000, 5001, 7000, 9000):
-    if i < len(d):
-        d[i] ^= 0xFF
-open(sys.argv[1], "wb").write(d)
-PY
-if invoke "$PUBLIC_INPUTS" "$TMP/proof_bad" 2>/dev/null; then
-  echo -e "${RED}  FAIL: tampered proof was accepted${NC}"; exit 1
+echo -e "${BLUE}[3/3] The same proof with a changed context_hash -> expect REJECT${NC}"
+# The circuit does not constrain context_hash. Only its place in the proof
+# transcript rejects this, which is the binding this case exists to check.
+python3 "$TAMPER_SCRIPT" "$PUBLIC_INPUTS" "$TMP/pi_foreign" \
+  "$(manifest_position context_hash)" \
+  "$(manifest_field public_input_bytes)" \
+  "$(manifest_field public_input_count)"
+if invoke "$TMP/pi_foreign" "$PROOF" 2>/dev/null; then
+  echo -e "${RED}  FAIL: a foreign context was accepted${NC}"; exit 1
 else
-  echo -e "${GREEN}  PASS: tampered proof rejected${NC}"
+  echo -e "${GREEN}  PASS: a foreign context rejected${NC}"
 fi
 
-echo -e "${BLUE}[3/3] TAMPERED public inputs (wrong total) -> expect REJECT${NC}"
-cp "$PUBLIC_INPUTS" "$TMP/pi_bad"
-# Flip a byte in the LAST 32-byte field of the public inputs, corrupting the
-# last committed value so verification must reject.
-python3 - "$TMP/pi_bad" <<'PY'
-import sys
-d = bytearray(open(sys.argv[1], "rb").read())
-assert len(d) >= 32 and len(d) % 32 == 0, f"unexpected public_inputs length {len(d)}"
-d[len(d) - 1] ^= 0x01  # perturb the last public-input field
-open(sys.argv[1], "wb").write(d)
-PY
-if invoke "$TMP/pi_bad" "$PROOF" 2>/dev/null; then
-  echo -e "${RED}  FAIL: tampered public inputs were accepted${NC}"; exit 1
-else
-  echo -e "${GREEN}  PASS: tampered public inputs rejected${NC}"
-fi
-
-echo -e "\n${GREEN}Checks passed on '$CIRCUIT': valid accepted; tampered proof and tampered public inputs rejected.${NC}"
+echo -e "\n${GREEN}Checks passed on $CONTRACT_ID: the stored key matches the manifest, the proof is accepted, and a foreign context is rejected.${NC}"

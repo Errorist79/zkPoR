@@ -53,10 +53,18 @@ build_recursion() {
   [[ -d "$rec" ]] || { echo "skip recursion (no ${rec})"; return; }
   echo "=== Building recursion circuits (common, inner, agg) ==="
 
-  # Regenerate inner/src/params.nr + inner/Prover_<k>.toml from params.toml +
-  # fixtures using the same off-circuit generator the gate uses.
+  # Regenerate common/src/params.nr + inner/Prover_<k>.toml from params.toml +
+  # fixtures using the same off-circuit generator the gate uses. This is a build
+  # check, so it reads the test-only context and the test-only master secret. A
+  # real attestation supplies its own context file and its own secret.
   if command -v cargo >/dev/null 2>&1; then
-    ( cd "${REPO_ROOT}/tools/recursion-gen" && cargo run --release --quiet -- witness )
+    (
+      . "${REPO_ROOT}/fixtures/test_only_master_secret.env"
+      export ZKPOR_MASTER_SECRET="$TEST_ONLY_MASTER_SECRET"
+      cd "${REPO_ROOT}/tools/recursion-gen" && cargo run --release --quiet -- witness \
+        "${REPO_ROOT}/fixtures/test_only_context.toml" \
+        "${REPO_ROOT}/circuits/recursion/inner/fixtures/customers_below_capacity.csv"
+    )
   else
     echo "  (cargo not found. Compiles the committed params, skips the witness regen.)"
   fi

@@ -3,6 +3,8 @@
 [workspace]
 resolver = "2"
 members = [
+    "contracts/context",
+    "contracts/registry",
     "contracts/verifier",
     "contracts/vendor/ultrahonk-soroban-verifier",
 ]
@@ -10,6 +12,10 @@ members = [
 [workspace.dependencies]
 # Exact pin (not caret): the spike verified 26.0.1. Cargo.lock pins the full graph.
 soroban-sdk = { version = "=26.0.1", default-features = false }
+# Poseidon2 over BN254 Fr, with state width 4 and a capacity that encodes the
+# input count. The same version must stay in the host-side tool manifest, and
+# scripts/versions.env records the pin.
+soroban-poseidon = { version = "=26.0.0" }
 
 [profile.release]
 opt-level = "z"

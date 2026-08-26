@@ -72,19 +72,32 @@ The system does not guarantee the following:
   host functions. Their correctness is the responsibility of the protocol, not of
   this project.
 - Protocol. CAP-0080 shipped in Protocol 26. The project validated the path on
-  the real Protocol 27 testnet with a byte-identical verifier. A future protocol
-  change to the host functions or to the proof format needs a new validation.
+  the real Protocol 27 testnet with a byte-identical verifier. That validation
+  used the superseded artifact of the section On-chain validation. A future
+  protocol change to the host functions or to the proof format needs a new
+  validation.
 
 ## On-chain validation
 
-The project validated the sound recursive path end to end on the real Stellar
-testnet (Protocol 27). The validation ran under the real limit of 400,000,000
-instructions for each transaction, on the verifier contract
+### Superseded artifact, testnet evidence
+
+The transactions below verified an earlier artifact, and a later artifact
+supersedes it. The earlier circuits used two-input leaves, no context
+binding, and three public inputs. The current artifact uses different
+circuits, different keys, and a four-element public input vector, so these
+transactions are not evidence for it. The repository did not record the
+commit or the key hashes of the earlier artifact. The deployed contract
+stores its verification key without an upgrade path, so the contract address
+identifies that artifact, and its `vk_bytes` function returns its key.
+
+The validation ran end to end on the real Stellar testnet (Protocol 27),
+under the real limit of 400,000,000 instructions for each transaction, on
+the verifier contract
 `CCADPDEROE6OXGODBMAC7SU3Q3VOUZQAKYAQL67YNBMSTROJSSK7ATZ7`. Two attacks pass
 `nargo execute` and all the in-circuit checks: a forged inner proof under the
-pinned VK, and a no-range inner proof with a balance of -100. Only the completed
-pairing rejects them. The same contract accepts the honest proofs. All four cases
-are real confirmed transactions:
+pinned VK of that artifact, and a no-range inner proof with a balance of
+-100. Only the completed pairing rejects them. The same contract accepts the
+honest proofs. All four cases are real confirmed transactions:
 
 | Case | Tx hash | Ledger | Result |
 |---|---|---|---|
@@ -99,13 +112,27 @@ contract. This order shows a real gate, and not a deployment that rejects
 everything. The on-chain XDR carries the structured form
 `{error: {contract: 4}}`.
 
-`tools/gate/soundness-gate.sh` reproduces this result. The gate builds the
-production artifacts, deploys them to a Protocol 27 localnet, and gates on the
-on-chain verdict: honest ACCEPT, forged REJECT, deflated REJECT. It fails loud on
-any other outcome, so an infrastructure failure never reads as a soundness
-REJECT. It runs in CI (`.github/workflows/soundness-gate.yml`) on a self-hosted
-runner. The gate is a regression guard and a demonstration. It is not a proof and
-it is not an audit.
+### Current artifact, localnet evidence
+
+The current artifact adds the context binding and the salted three-input
+leaves, at the release configuration of 1024 leaves for each batch and 4
+batches. `circuits/recursion/manifest.json` records its identity: the batch
+values, the inner key hash, the SHA-256 of the committed aggregator key
+`circuits/recursion/agg/vk`, the public input count and positions, and the
+toolchain versions. No testnet transaction covers this artifact.
+
+`tools/gate/soundness-gate.sh` validates the current artifact. The gate
+builds the production artifacts from the committed sources, deploys them to
+a Protocol 27 localnet, and gates on the on-chain verdict. It passed at the
+release configuration with five verdicts: an honest proof accepted; a
+forged proof, a deflated proof, an unsalted-leaf proof, and a foreign
+context rejected. It fails loud on any other outcome, so an infrastructure
+failure never reads as a soundness REJECT. It runs in CI
+(`.github/workflows/soundness-gate.yml`) on a self-hosted runner, and CI
+fails when a rebuild changes the manifest, the committed key, or a
+generated parameter file. A localnet result is not testnet evidence. The
+gate is a regression guard and a demonstration. It is not a proof and it is
+not an audit.
 
 ## Audit status and scope
 

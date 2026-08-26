@@ -41,3 +41,15 @@ jobs:
         env:
           START_LOCALNET: "1"
         run: bash tools/gate/soundness-gate.sh
+
+      # The gate rebuilds the pin chain, the manifest, and the aggregator key
+      # from the committed sources. A difference here means a committed
+      # artifact no longer matches what the tooling produces.
+      - name: Compare the regenerated artifacts with the committed ones
+        run: |
+          git diff --exit-code --stat -- \
+            circuits/recursion/manifest.json \
+            circuits/recursion/agg/vk \
+            circuits/recursion/agg/src/params.nr \
+            circuits/recursion/common/src/params.nr \
+            contracts/registry/src/params.rs

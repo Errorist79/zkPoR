@@ -16,7 +16,7 @@ stellar network add "$STELLAR_NETWORK_NAME" \
 stellar network use "$STELLAR_NETWORK_NAME"
 
 echo -e "${BLUE}Waiting for local network to become healthy...${NC}"
-for i in $(seq 1 "$STELLAR_HEALTH_RETRIES"); do
+for _ in $(seq 1 "$STELLAR_HEALTH_RETRIES"); do
   OUT=$(stellar network health 2>&1 || true)
   [[ "$OUT" == *"Unhealthy"* ]] && { sleep "$STELLAR_HEALTH_RETRY_INTERVAL"; continue; }
   break
@@ -26,7 +26,7 @@ stellar network health --output json
 # Friendbot becomes ready AFTER the RPC reports healthy; fund calls fail with a
 # JSON parse error until it is up. Wait for it explicitly (reference behavior).
 echo -e "${BLUE}Waiting for friendbot...${NC}"
-for i in $(seq 1 "$STELLAR_HEALTH_RETRIES"); do
+for _ in $(seq 1 "$STELLAR_HEALTH_RETRIES"); do
   FB=$(curl -s -o /dev/null -w "%{http_code}" \
     "http://localhost:8000/friendbot?addr=GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHG" 2>/dev/null || echo "000")
   if [ "$FB" != "502" ] && [ "$FB" != "000" ]; then

@@ -1,3 +1,6 @@
+# Test data. The tree of the development configuration holds 16 leaves.
+# Case: the customer count is above the capacity, so the generator must fail
+# and must not cut the list.
 id,balance
 1001,500
 1002,1200

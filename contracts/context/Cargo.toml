@@ -1,0 +1,14 @@
+[package]
+name = "zkpor-context"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# hazmat-address gives Address::to_payload. It returns the 32-byte payload of an
+# account address or a contract address, and it returns None for every other
+# address type, which is the rejection rule this crate must apply.
+soroban-sdk = { workspace = true, features = ["hazmat-address"] }
+soroban-poseidon = { workspace = true }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["hazmat-address", "testutils"] }
