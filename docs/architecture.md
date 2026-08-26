@@ -383,13 +383,6 @@ still forces a specific design:
   stable, and BEFORE project close. When it is done, it MUST pass the same
   soundness gate: honest ACCEPT, forged REJECT, deflated REJECT.
 
-- **Context vectors at the reserve bound.** The committed cross-language
-  vectors in `fixtures/context_vectors.json` hold reserve sets of at most 4
-  addresses. Agreement above 16 addresses currently rests on one live
-  attestation with 17 reserve reads. Before the TypeScript SDK verifies
-  packages, add a committed vector with a reserve set of 32 addresses, so
-  every implementation checks the hash at the bound and not only below it.
-
 ---
 
 ## 11. Risks

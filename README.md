@@ -75,9 +75,9 @@ Current artifact (validated on the Protocol 27 testnet on August 8, 2026):
   custom account contract as the reserve, so it is not evidence for an
   ordinary account that signs its own authorization. The testnet run above
   registers an ordinary account, which signs its authorization entry with
-  `tools/reserve-consent/`.
+  `sdk/`.
 - The one Rust definition of the leaf, the node, the salt, the address
-  encoding, and the context hash (`contracts/context/`), with 16 tests and the
+  encoding, and the context hash (`contracts/context/`), with 18 tests and the
   committed vectors in `fixtures/context_vectors.json`. Every contract and
   every tool reads the hashes from there, so no component holds a second copy.
 - The issuer flow from a customer file to an accepted attestation
@@ -131,7 +131,7 @@ circuits/simple_circuit/ reference circuit for a known-good verify check
 tools/recursion-gen/  off-circuit fold and witness generator
 tools/package/        the inclusion package format, the tree, the deployment records
 tools/inclusion-verify/ the customer check of one inclusion package
-tools/reserve-consent/ the signature of a reserve address on its own authorization entry
+sdk/                  the client library, the reserve consent flow, the customer check
 tools/gate/           end-to-end soundness gate and adversarial harness
 scripts/              toolchain setup, localnet, deploy, register, attest, verify
 fixtures/             test vectors and test-only inputs, never production data
@@ -183,6 +183,47 @@ bash tools/gate/registry-gate.sh
 A green soundness-gate run prints `SOUNDNESS-GATE PASS`. That gate also runs in
 CI on a self-hosted runner. The registry gate runs on demand, and no CI job
 covers it. See [`tools/gate/README.md`](tools/gate/README.md).
+
+## Continuous integration
+
+Two jobs run, and they prove different things.
+
+The `agreement` job runs on a hosted runner. It checks that the three
+implementations agree with each other and with the committed artifacts. It runs
+the format check, the lint, and the tests of every Rust crate, the Noir tests at
+the pinned compiler, and the tests of the client library, which mirror the
+committed vectors. It installs the versions that `scripts/versions.env` pins and
+fails on a drift. It proves no soundness.
+
+Most Rust crates of this repository stand outside the root Cargo workspace, so
+`cargo test --workspace` does not reach them. The job therefore runs each crate
+by name, and `scripts/ci_targets.sh check` compares those names against every
+crate that git tracks. A new crate that nobody adds to the list fails that check
+instead of going unrun. Run it at any time:
+
+```bash
+bash scripts/ci_targets.sh check
+```
+
+That check reads the git index, because the index is what tells a committed
+crate from a scratch directory that somebody left in the tree. It therefore
+needs a clone, and it stops with a message of its own against an exported copy
+of the sources.
+
+The job also refuses a type assertion and the `any` type in every TypeScript
+source. A type assertion tells the compiler what a value is, and a check
+establishes it. Where the two differ, the assertion is a claim that the compiler
+stops questioning, and the claim surfaces later in the data of a caller. The
+scan walks the syntax tree that the TypeScript compiler builds, so a comment
+that holds the word `any` never fails it, and `as const` stays allowed:
+
+```bash
+npm run check:typescript
+```
+
+The `soundness-gate` job runs on a self-hosted runner, because it needs the
+BN254 host functions, the real proving toolchain, and a Protocol 27 local
+network. The hosted job cannot replace it.
 
 ## Attribution
 

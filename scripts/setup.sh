@@ -150,12 +150,12 @@ fi
 echo "PATH must include \$HOME/.local/bin \$HOME/.nargo/bin \$HOME/.bb/bin \$HOME/.cargo/bin"
 "$STELLAR_BIN" --version | head -1
 
-echo "### JavaScript SDK ${STELLAR_JS_SDK_VERSION} (the consent of a reserve address) ###"
-# A reserve address signs its authorization entry with this module, because the
-# command line signs no entry of an address inside a vector argument. The
-# version comes from versions.env, so it stands in one place only.
-CONSENT_DIR="$ROOT_DIR/tools/reserve-consent"
-SDK_MANIFEST="$CONSENT_DIR/node_modules/@stellar/stellar-sdk/package.json"
+echo "### JavaScript SDK ${STELLAR_JS_SDK_VERSION} (the client library and its command line) ###"
+# A reserve address signs its authorization entry through the client library,
+# because the command line signs no entry of an address inside a vector
+# argument. The version comes from versions.env, so it stands in one place only.
+SDK_DIR="$ROOT_DIR/sdk"
+SDK_MANIFEST="$ROOT_DIR/node_modules/@stellar/stellar-sdk/package.json"
 if ! command -v npm >/dev/null 2>&1; then
   echo "npm is absent, so this host cannot sign the consent of a reserve address"
 else
@@ -163,9 +163,9 @@ else
   # manifest must carry the pin of versions.env. The check runs before the
   # install, and a difference stops the run instead of installing another
   # version.
-  declared=$(node -p "require('$CONSENT_DIR/package.json').dependencies['@stellar/stellar-sdk']")
+  declared=$(node -p "require('$SDK_DIR/package.json').dependencies['@stellar/stellar-sdk']")
   [ "$declared" = "$STELLAR_JS_SDK_VERSION" ] || {
-    echo "tools/reserve-consent/package.json asks for @stellar/stellar-sdk ${declared}, and versions.env pins ${STELLAR_JS_SDK_VERSION}"
+    echo "sdk/package.json asks for @stellar/stellar-sdk ${declared}, and versions.env pins ${STELLAR_JS_SDK_VERSION}"
     exit 1
   }
   # The installed version is read from the disk, because the module publishes
@@ -181,7 +181,10 @@ else
   # `npm ci` installs the tree that the lockfile records, so two machines get
   # the same bytes.
   [ "$(sdk_installed)" = "$STELLAR_JS_SDK_VERSION" ] \
-    || npm ci --prefix "$CONSENT_DIR" --no-audit --no-fund
+    || npm ci --prefix "$ROOT_DIR" --no-audit --no-fund
+  # The registration script runs the built command line, so the build runs here.
+  npm run build --prefix "$ROOT_DIR" --workspace sdk >/dev/null \
+    || { echo "the client library did not build"; exit 1; }
   check_js_sdk=1
 fi
 

@@ -33,6 +33,16 @@ An implementation must not substitute another Poseidon variant, another state
 width, or another capacity rule. Any such substitution changes every root and
 every proof in the system.
 
+The width, the rate, and the capacity rule do not identify the function
+alone. The parameter set completes it: the round constants and the matrix
+of the Poseidon2 instance in the library noir-lang/poseidon, version
+v0.2.0, file `src/poseidon2.nr`, over `Fr`. The sponge behavior for an
+input count that the rate does not divide also comes from that instance.
+An implementation in another language must select a library that matches
+this instance, and the test vectors of section 1.3 decide the match. This
+document does not copy the constant tables, because a copied table can go
+stale against the named source.
+
 Two hashes with the same input count share one hash domain. This protocol
 has one such meeting: a tree node of section 5 and a one-address reserve
 set hash of section 3.3 both take two inputs. No substitution path exists
@@ -62,6 +72,17 @@ vector files. The Noir and TypeScript implementations must reproduce those
 vectors exactly, and their test suites must fail on any mismatch. The
 vectors cover computed values only. They do not fix the identity of a
 reported error, in agreement with section 3.3.
+
+The vector file must cover each fixed input count of this protocol: 2,
+3, 4, and 7. The reserve set hash of section 3.3 has a variable count,
+`2N` inputs for `N` addresses, and the file must sample it as follows. The sponge absorbs
+the inputs in groups of the rate, so the remainder of the count divided
+by the rate selects the shape of the final absorb. The file must
+therefore contain reserve sets of the sizes 1, 2, and 3, and of the
+three largest sizes that `MAX_RESERVE_ADDRESSES` permits. These six
+sizes cover each remainder at the small end and at the bound. The file
+must also contain one set that is not in sorted order, so the file pins
+the sort rule.
 
 ### 1.4 Configuration parameters
 
@@ -206,8 +227,14 @@ Stellar SDK for JavaScript, the `Address` class parses and holds all five
 types (`js-stellar-base`, `src/address.js`). A muxed strkey (`M...`)
 parses there normally. An implementation must not drop the rejection
 because another implementation cannot trigger it. Every implementation
-must have a negative test that submits each rejected address type and
-confirms the rejection.
+must have a negative test for each of the three rejected types. Each
+test must submit a well-formed address of that type, with a valid
+checksum, so the test proves a rejection by type and not a parse
+failure. One further test must take the ed25519 key of an accepted
+account address and must build a muxed account from that key. The test
+must confirm two outcomes: the implementation accepts the account form,
+and it rejects the muxed form. This pair proves that the implementation
+inspects the type and does not read only the key.
 
 If a future protocol version accepts an additional address type, the
 accepted tag list changes. That changes the meaning of the preimage, so the
@@ -768,13 +795,17 @@ deploy a registry.
 ## 9. The attestation event and history
 
 The entry of an asset holds only the latest attestation. Each accepted
-attestation also emits the `AttestationAccepted` contract event. The event
-stream is the only record of the earlier attestations.
+attestation also emits one contract event. The event stream is the only
+record of the earlier attestations.
 
-The event carries the asset address as a topic. The event data carries the
-five fields of the attestation record: `final_root`, `total_liabilities`,
-`snapshot_ledger`, `reserve_sum`, and `attested_ledger`. The values equal
-the values that the registry stored for that attestation.
+The event carries exactly two topics, in this order: the symbol
+`attestation_accepted`, then the asset address. The event data is a map
+with five keys, the field names of the attestation record:
+`attested_ledger`, `final_root`, `reserve_sum`, `snapshot_ledger`, and
+`total_liabilities`. The values equal the values that the registry stored
+for that attestation. A consumer must read each value by its key, never
+by its position. The host orders the keys of a map, and that order is
+not part of this specification.
 
 The `getEvents` method answers only from a bounded window of retained
 ledgers. The `history-retention-window` setting controls the window, and
@@ -793,6 +824,38 @@ permanent in the history archives, but `getEvents`, the one method that
 serves the attestation events, does not reach it. A reader who needs the
 complete attestation record uses a data indexer, or captures the events
 continuously inside the window.
+
+### 9.1 The read interface
+
+The registry exposes two read functions. `entry` returns the record of a
+registered asset. `observe_reserves` returns the reading of section 6.3.
+Both encode their results as contract values of soroban-sdk 26.0.1.
+
+`entry` returns a map with five keys: `authority`, `tier`, `reserves`,
+`reserve_set_hash`, and `attestation`. `observe_reserves` returns a map
+with two keys: `observed_ledger` and `observed_sum`. A consumer must read
+each value by its key, never by its position.
+
+A value that names one case of a closed set arrives as a vector. The
+first element is the symbol of the case. The second element, when the
+case carries data, is that data. `tier` is `["ClassicIssuer"]` or
+`["ContractAdministrator"]`. `attestation` is `["Empty"]` or
+`["Filled", record]`, where `record` is the map of the attestation
+record, with the five keys of the event data above. A client must reject
+a case that this section does not name, because a later registry version
+can add one, and a silent guess about an unknown case would misreport
+the chain.
+
+A refusal carries an error code and no address. The `Error` enum in the
+registry contract source defines the codes, and this document does not
+copy the numbers, so the enum stays the single definition. The code that
+reports no record of an asset is an answer, not a failure. A client that
+must name the address which broke a rule reads each address on its own.
+
+The file `fixtures/registry_returns.json` pins these encodings. The
+registry crate generates it from contract calls. A client implementation
+must decode every value in the file and must match the expected fields
+exactly, and its test suite must fail on any mismatch.
 
 ## 10. The inclusion package
 
@@ -838,7 +901,9 @@ field element then has exactly one string, so two implementations
 compare and hash the same bytes. The layout freedom below covers
 whitespace and line structure only, never the form of a value. `balance` is a decimal string because `u64`
 exceeds the exact integer range of a JSON number; a parser must reject a
-value above the `u64` maximum. `siblings` runs from the leaf level to the
+value above the `u64` maximum. The string has no sign, no space, and no
+leading zero, and the value zero is the single digit `0`; a parser must
+reject any other form. `siblings` runs from the leaf level to the
 level below the root, per section 5.4. The sibling count must equal the
 tree depth of the deployment generation, which the deployments file
 records; a package with another count is malformed. A `leaf_index` at or

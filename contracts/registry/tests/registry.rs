@@ -109,7 +109,10 @@ fn a_twelve_character_asset_code_registers_as_well() {
         &addresses(&env, 1),
     );
 
-    assert_eq!(registry.entry(&classic.asset).tier, AssetTier::ClassicIssuer);
+    assert_eq!(
+        registry.entry(&classic.asset).tier,
+        AssetTier::ClassicIssuer
+    );
 }
 
 #[test]
@@ -399,12 +402,7 @@ fn a_reserve_set_of_the_wrong_shape_is_rejected() {
         (duplicate, Error::DuplicateReserveAddress),
     ] {
         expect_error(
-            registry.try_register_asset(
-                &classic.asset,
-                &classic.issuer,
-                &authenticity,
-                &reserves,
-            ),
+            registry.try_register_asset(&classic.asset, &classic.issuer, &authenticity, &reserves),
             expected,
         );
     }
@@ -459,12 +457,7 @@ fn a_reserve_address_that_did_not_authorize_is_rejected() {
 
     // The same call with the second consent in place is accepted.
     env.mock_all_auths();
-    registry.register_asset(
-        &token.address(),
-        &administrator,
-        &authenticity,
-        &reserves,
-    );
+    registry.register_asset(&token.address(), &administrator, &authenticity, &reserves);
 }
 
 #[test]
@@ -506,12 +499,7 @@ fn a_passive_contract_cannot_be_a_reserve_address() {
     // Recorded consent for every party makes the same call pass, so the
     // rejection came from the consent that the passive contract cannot give.
     env.mock_all_auths();
-    registry.register_asset(
-        &token.address(),
-        &administrator,
-        &authenticity,
-        &reserves,
-    );
+    registry.register_asset(&token.address(), &administrator, &authenticity, &reserves);
 }
 
 /// One authorization entry, and three calls that must not accept it: the same
@@ -604,12 +592,7 @@ fn a_consent_binds_to_the_call_it_was_given_for() {
     // The same call with every consent in place is accepted, so the three
     // rejections above came from the consent and from nothing else.
     env.mock_all_auths();
-    registry.register_asset(
-        &token.address(),
-        &administrator,
-        &authenticity,
-        &reserves,
-    );
+    registry.register_asset(&token.address(), &administrator, &authenticity, &reserves);
 }
 
 #[test]

@@ -1,0 +1,41 @@
+{
+  "name": "@zkpor/sdk",
+  "version": "0.1.0",
+  "description": "Client library and command line for the zkPoR registry, the reserve consent flow, and the customer inclusion check.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "bin": {
+    "zkpor": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@stellar/stellar-sdk": "16.2.0",
+    "@zkpassport/poseidon2": "0.6.2"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "tsup": "8.5.1",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  },
+  "engines": {
+    "node": ">=22 <23"
+  }
+}
