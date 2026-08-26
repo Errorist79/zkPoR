@@ -360,6 +360,41 @@ thead th {
   text-transform: uppercase;
 }
 
+/* The record of the attestations grows by one row every time anybody attests,
+   and the section grew the page with it. The rows now sit in a region of their
+   own that scrolls.
+
+   This is not a rule that hides an element, and the statement at the top of
+   this file still holds. Every row stays in the markup, every row stays
+   reachable, and nothing is truncated, collapsed, or put behind a control that
+   a reader has to find. The region only stops the section from growing without
+   bound. A reader who prints the page or reads it without this stylesheet sees
+   every row, as before.
+
+   The height shows the heading row and about four rows of the record, and it
+   cuts the row after them in half. A reader therefore sees at once that this is
+   a record of several attestations rather than one line, and the half row is
+   what says that more of it lies below.
+
+   The rows keep their three lines. The transaction hash is 64 characters in a
+   column of about 216 pixels, so it wraps to three lines, and a smaller size
+   does not save a line: at 0.8rem it still wraps to three. Two lines would need
+   307 pixels for that column, which leaves 375 for the other five, and the two
+   figures alone cannot go below 250 of it because a figure must not break. So
+   the wrap stays and the region carries the height instead. */
+#attestation-history .attestations {
+  max-height: 26rem;
+  overflow: auto;
+}
+
+/* The names of the columns stay while the rows move under them. The ground is
+   the ground of the section, so a row never shows through the name above it. */
+#attestation-history .attestations thead th {
+  background: var(--panel);
+  position: sticky;
+  top: 0;
+}
+
 /* This colour marks a failure of the client or of the network. It is near the
    colour of a shortfall, and the sentence beside each one says which it is. */
 .failure {

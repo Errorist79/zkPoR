@@ -261,6 +261,9 @@ function HistoryOfRegistry(input: { block: HistoryBlock }) {
             : "The query saw no attestation before the endpoint stopped."}
         </p>
       ) : (
+        // The region scrolls, so it takes the keyboard. Without this a reader
+        // who does not use a pointer cannot reach the rows below the fold.
+        <div className="attestations" tabIndex={0}>
         <table>
           <thead>
             <tr>
@@ -289,6 +292,7 @@ function HistoryOfRegistry(input: { block: HistoryBlock }) {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );
