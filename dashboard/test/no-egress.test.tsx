@@ -4,8 +4,8 @@
  * The property is structural, so the tests are structural. They do not check
  * that today's markup happens to avoid a remote host. They render every page in
  * every state and refuse any address that is not a path of this process, refuse
- * any script, and refuse a listener that a setting could move off the loopback
- * address. A later page that added a font from a network would fail here
+ * a script that comes from anywhere but this process, and refuse a listener
+ * that a setting could move off the loopback address. A later page that added a font from a network would fail here
  * without anybody remembering the rule.
  *
  * One outbound connection is inherent and stays: the process reads the registry

@@ -155,9 +155,11 @@ Components:
    issuer controls (`dashboard/`). It serves the loopback address only. The
    issuer names the path of the balance file, and the process proves and
    submits in its own process and shows the status. The customer verifies their
-   own inclusion on the same interface. The browser is the display, and the
-   page carries no script. No project-operated service receives a raw balance, a
-   salt, a path, a witness, or a key.
+   own inclusion on the same interface. The browser is the display. Every page
+   except the page of a run carries no script. The page of a run loads one
+   script from this process, and that script follows the run. No
+   project-operated service receives a raw balance, a salt, a path, a witness,
+   or a key.
 6. **TypeScript SDK.** A library that wraps the proof generation flow and the
    verification flow, for other teams to integrate.
 

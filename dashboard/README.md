@@ -64,12 +64,16 @@ forget.
   setting overrides it, so there is no address to misconfigure. A test refuses a
   new setting whose name suggests a host.
 - Every answer carries `default-src 'none'`, which is the fallback of the fetch
-  directives. A page therefore cannot load a script, an image, a font, or a
-  frame, and it cannot open a connection. The stylesheet comes from this
-  process, under `style-src 'self'`.
-- No page carries a script. Every page renders here, and a run page follows its
-  progress with a pragma directive that reloads it. A test refuses a script tag
-  and an event handler on every page.
+  directives. A page therefore cannot load an image, a font, or a frame. The
+  stylesheet comes from this process, under `style-src 'self'`. The entry below
+  states the two permissions that the page of a run adds.
+- Every page except the page of a run carries no script, and its policy forbids
+  a script of any kind. The page of a run loads one script from this process,
+  under `script-src 'self'`. That script asks this process for the state of the
+  run, under `connect-src 'self'`. Neither policy names `'unsafe-inline'`, so a
+  script written into the markup is refused. A test reads every page, and it
+  refuses a script tag whose source is not that one address. It also refuses a
+  script written into the markup, an event handler, and a `javascript:` address.
 - No page names a host. Every address in the markup is a path of this process, so
   a saved copy of a page reaches nothing.
 - A request that names another authority stops with the status 421. A remote
