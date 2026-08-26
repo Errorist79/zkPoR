@@ -18,7 +18,11 @@ on-chain validation.
 Three stages of work meet in this repository, and this section separates
 them. The first stage is superseded, with on-chain evidence that a reader
 can check. The second stage is the current artifact, and confirmed testnet
-transactions cover it. The third stage is not implemented.
+transactions cover it. The third stage is written and tested, and no testnet
+run covers it yet.
+
+Each heading below states the evidence that covers the work under it. Do not
+read the transaction hashes of one heading as evidence for another.
 
 Superseded (on-chain evidence dated June 27, 2026):
 
@@ -36,16 +40,23 @@ Superseded (on-chain evidence dated June 27, 2026):
 
 Current artifact (validated on the Protocol 27 testnet on August 8, 2026):
 
-- The full flow ran on the real testnet: the verifier
+- The full flow ran on the real testnet on August 8 and 9, 2026: the verifier
   `CDUEQOM2AQ54ZZ3EZA2Q4D32C7DBVQ5D45TFMBSC2RCE6ZMX32T44JC2` and the registry
   `CC4MA6FWDBG3Y4YXYGDHYEZ36O3YSP7DREGOLBWKP6ZTQQ6IYFFX3KQK`, one classic
   asset registered, one reserve account that signed its own
-  authorization entry, two accepted attestations, and one customer package
+  authorization entry, three accepted attestations, and one customer package
   checked against the registry. A second generation followed, with the
   verifier `CDICJW5B5VYT3GD3VTDWFYCQG6N4ONLUXKHPQSJVAN5QYPGCTOG7PIXE` and the
   registry `CCHUTDKUPWXVUIX6D26SE5NZ5STP74VV4DY2CNVCMNJYOU5PTROLA7MY`. It
   registered one asset with 17 reserve accounts, which the first generation
-  refuses, and a package of the first generation still verifies. The confirmed
+  refuses, and a package of the first generation still verifies. A third
+  generation followed, with the verifier
+  `CDNUAFLJPLFM4DSHHQF5SVX2HESQR5GICSKQKZDHXP5NAGG4G2C2QMMM` and the registry
+  `CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG`, which is the
+  first generation that the documented deploy path produced. Its registry holds
+  accepted attestations, among them the transaction
+  `7ed11c70f2911fc9bf46bf815ab11d193a34372d16c72b6bdda58029327ebf5c` at ledger
+  4263070. The confirmed
   transaction hashes are in
   [`SECURITY.md`](SECURITY.md), and the addresses are in
   [`scripts/deployments.json`](scripts/deployments.json). The attestation
@@ -67,7 +78,7 @@ Current artifact (validated on the Protocol 27 testnet on August 8, 2026):
 - The asset registry contract (`contracts/registry/`). It registers an asset
   against the authority that the chain authenticates, it collects the consent
   of every reserve address, it builds the public inputs from its own state,
-  and it records one attestation for each asset. It holds 41 tests, and the
+  and it records one attestation for each asset. It holds 43 tests, and the
   registry gate passed on a Protocol 27 localnet
   (`tools/gate/registry-gate.sh`) with four cases: an honest attestation
   accepted and recorded, a proof of another context refused, an asset with no
@@ -90,15 +101,32 @@ Current artifact (validated on the Protocol 27 testnet on August 8, 2026):
   deployments file, and never from the package.
 - The soundness gate passed at the release configuration on a Protocol 27
   localnet, with five verdicts: an honest proof accepted; a forged proof, a
-  deflated proof, an unsalted-leaf proof, and a foreign context rejected
-  (`tools/gate/`). A localnet result is not testnet evidence.
+  deflated proof, a stale-leaf proof, and a foreign context rejected
+  (`tools/gate/`). A localnet result is not testnet evidence. The honest case
+  lands a transaction, and the four refusals are the verdict that the deployed
+  contract returns under simulation.
+- The deployed testnet registry refuses a stale snapshot with the error
+  `SnapshotOutsideWindow`, and it refuses an invalid proof with the error
+  `ProofRejected`. A reader reproduces both with one command each.
+  [`SECURITY.md`](SECURITY.md) carries the commands and the reason that neither
+  refusal is a transaction.
 
-Under construction (specified in [`docs/protocol.md`](docs/protocol.md), not
-implemented):
+Written and tested:
 
 - The TypeScript SDK, which writes and checks a package from the same
-  specification.
-- The issuer dashboard.
+  specification ([`sdk/README.md`](sdk/README.md)). A run on August 17, 2026
+  exercised every path of the package that needs a network. That run
+  provisioned its own disposable asset, and `sdk/README.md` states that it is
+  not evidence for the artifact above.
+- The issuer dashboard, a local process that serves the loopback address only
+  ([`dashboard/README.md`](dashboard/README.md)). It shows the solvency result
+  of one asset, it runs the proof and the attestation in its own process, and it
+  checks a customer package. It holds no cryptographic definition of its own.
+
+Both items hold their own tests, and the agreement job runs them. A test is not
+a network run. The run of the software development kit provisioned its own
+disposable asset, so it is not evidence for the artifact above. The testnet
+revalidation of the final artifact will cover them.
 
 ## How it works
 
@@ -141,8 +169,27 @@ docs/architecture.md  system design
 
 ## Pinned versions
 
-Single source of truth: [`scripts/versions.env`](scripts/versions.env) and
-[`rust-toolchain.toml`](rust-toolchain.toml).
+[`scripts/versions.env`](scripts/versions.env) and
+[`rust-toolchain.toml`](rust-toolchain.toml) are the files that
+`scripts/setup.sh` and the agreement job read when they install a toolchain.
+They are not the only place these numbers live. The Cargo manifests, the Nargo
+manifests, and the table below each carry a copy, and every copy agrees today.
+
+The agreement job compares them with `scripts/versions.env`. Three are compared
+directly: the Rust compiler, `nargo`, and the JavaScript client library against
+`sdk/package.json`. The dependencies of the Rust and Noir manifests are compared
+by `scripts/check_pins.py`, which reads the git index rather than the directory,
+so a scratch manifest that somebody left in the tree is not read as a rule.
+
+That check carries a list of which manifests may name which dependency. A
+manifest that names one it does not list fails, so a crate cannot start
+depending on the Soroban library without somebody reading the pinned version.
+Absence is not a failure, because most manifests legitimately name most of these
+nowhere.
+
+`bb` is compared by neither job and does not need to be. Every proving run
+compares the installed `bb` with the pin before it proves, and refuses to prove
+on a drift, so the tool is checked wherever it is actually used.
 
 | Component | Version | Notes |
 |---|---|---|
@@ -172,17 +219,73 @@ export PATH="$HOME/.local/bin:$HOME/.nargo/bin:$HOME/.bb/bin:$HOME/.cargo/bin:$P
 stellar container start local --limits unlimited --image-tag-override nightly --protocol-version 27
 
 # 2. Run the end-to-end soundness gate (builds the production verifier, deploys
-#    it, and checks the on-chain verdicts: one honest ACCEPT, four attack REJECTs)
+#    it, and checks the verdict of the deployed contract for five cases:
+#    one honest ACCEPT, four attack REJECTs)
 bash tools/gate/soundness-gate.sh
 
 # 3. Run the registry attestation gate (registers an asset, proves, attests,
-#    and checks the on-chain verdict of each of the four cases)
+#    and checks the verdict of the deployed contract for each of the four cases)
 bash tools/gate/registry-gate.sh
 ```
 
 A green soundness-gate run prints `SOUNDNESS-GATE PASS`. That gate also runs in
 CI on a self-hosted runner. The registry gate runs on demand, and no CI job
 covers it. See [`tools/gate/README.md`](tools/gate/README.md).
+
+## Deploy, and show what was deployed
+
+Two contracts go on a network, in this order. The registry constructor asks the
+verifier for its verification key and refuses unless that key hashes to the
+value the registry build expects, so the verifier goes first.
+
+```bash
+export ZKPOR_NETWORK=testnet
+
+# 1. The verifier, with the release key that the manifest records.
+bash scripts/deploy.sh
+
+# 2. The registry, against that verifier.
+bash scripts/deploy_registry.sh
+
+# 3. Later, from any clone: does the network still run what this tree builds?
+bash scripts/check_deployment.sh
+```
+
+Each deploy reads back the wasm that the network runs and compares it with the
+wasm it just built, so the command states the result rather than assuming it. It
+writes the contract id and that hash side by side, and it prints the record to
+add to [`scripts/deployments.json`](scripts/deployments.json).
+
+Step 3 needs no argument beyond the network. It reads the current generation
+from the deployments file, rebuilds both contracts, and reads back what the
+network runs. A mismatch there says that nobody can rebuild what the network
+runs. It does not say that what the network runs is wrong.
+
+Each record in the deployments file states the wasm hash of both contracts it
+names, so what follows is checkable rather than remembered.
+
+The documented build reproduces both contracts of generation 3, which is the
+first generation deployed through the path above. It reproduces the verifier of
+generations 1 and 2, and the registry of neither of those two.
+
+How those two registries were built is not established. Each is 65,185 bytes
+where the command above produces 33,364, and no candidate accounts for it: the
+documented command, the same command without its optimize pass, a plain cargo
+release build and a debug build produce 33,364, 38,309, 38,224 and 4,332,126
+bytes. Building at the revision where the registry source last changed produces
+the same wasm as building at the tip.
+
+The two are 65,185 bytes each and their contents differ, so whatever produced
+them was a procedure that stayed the same across two deployments rather than a
+single accident. A reader who finds that procedure closes this.
+
+That is a reproducibility gap and not a behaviour gap, and two measurements say
+so. The deployed registry and a fresh build declare the same interface and
+export the same six functions. `overflow-checks` is on in the release profile of
+this workspace and on by default in a debug build, so the arithmetic guards hold
+under every candidate above. Nobody can rebuild what those two contracts run,
+which is the reason to deploy again through the path above rather than a reason
+to distrust the answers they give.
 
 ## Continuous integration
 
@@ -220,6 +323,18 @@ that holds the word `any` never fails it, and `as const` stays allowed:
 ```bash
 npm run check:typescript
 ```
+
+A test result is evidence about the build that the run read, and about no other
+build. Cargo and npm decide for themselves whether their output is current. The
+bundler does not: it builds when a caller asks it, and never on its own. So a
+build directory that moves between machines, or that survives a copy of the
+sources, can make a run answer from code that the tree no longer holds. That
+result looks exactly like a verdict.
+
+The remedy is to remove the built directories and to let the caller build again.
+A missing file stops a run, and an old answer does not. The test script of the
+dashboard builds the client library before it runs, because the dashboard tests
+import that library and nothing else in the dashboard package builds it.
 
 The `soundness-gate` job runs on a self-hosted runner, because it needs the
 BN254 host functions, the real proving toolchain, and a Protocol 27 local

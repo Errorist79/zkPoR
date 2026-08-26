@@ -1,12 +1,12 @@
 # Gates
 
-This directory holds two on-chain gates. `soundness-gate.sh` attacks the
+This directory holds two gates. `soundness-gate.sh` attacks the
 verifier. `registry-gate.sh` exercises the registry end to end. Each gate
 exits non-zero and loud on any failure, including an infrastructure error.
 
 # Soundness gate
 
-`soundness-gate.sh` is the end-to-end on-chain soundness gate for the production
+`soundness-gate.sh` is the end-to-end soundness gate for the production
 Proof-of-Reserves pipeline. It builds the production artifacts. It deploys the
 production verifier to a Protocol-27 Soroban localnet. It then tries to break the
 system, to show that the system is sound. It exits non-zero and loud on any
@@ -33,16 +33,26 @@ failure, including an infrastructure error.
 
 ## Verdict
 
-- `honest`: on-chain ACCEPT.
+- `honest`: ACCEPT.
 - `foreigncontext` (the honest proof, with one changed `context_hash` and the
-  other three public inputs untouched): on-chain REJECT. This case shows that
+  other three public inputs untouched): REJECT. This case shows that
   the unconstrained public parameter enters the proof transcript.
-- `forged` (a foreign inner proof under the pinned VK array): on-chain REJECT.
+- `forged` (a foreign inner proof under the pinned VK array): REJECT.
 - `deflated` (a foreign inner proof without the range check, balance -100):
-  on-chain REJECT.
+  REJECT.
+- `staleleaf` (a batch proof from a circuit that keeps the old two-input leaf
+  and ignores the salt, placed in slot 0 under the pinned VK array):
+  REJECT. Its total is honest and its proof verifies under its own circuit, so
+  nothing about the numbers gives it away. The pinned inner key hash is what
+  rejects it, which makes this the case that covers the salted leaf.
 
 A green run means that the deployed verifier accepts the honest case and rejects
-all three attacks.
+all four attacks.
+
+The honest case lands a transaction on the localnet. The four refusals land
+nothing. The command line refuses to submit a call whose simulation fails, so
+each refusal is the verdict that the deployed contract returns under simulation.
+`SECURITY.md` states why a contract refusal does not reach the ledger.
 
 ## Running locally
 

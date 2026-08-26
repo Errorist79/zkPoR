@@ -1,17 +1,25 @@
 /**
- * The master secret channel.
+ * The two secret channels of this client.
  *
- * The secret derives every salt of every leaf. A leaked secret exposes every
- * leaf of every context that used it. It therefore never travels in an
- * argument vector, where the process list of the machine shows it, and it never
- * reaches a log.
+ * The master secret derives every salt of every leaf, and a leaked one exposes
+ * every leaf of every context that used it. The authority key signs the
+ * attestation, and a leaked one lets another party attest for the asset. Both
+ * are secrets and both follow one rule: they never travel in an argument
+ * vector, where the process list of the machine shows them, and they never
+ * reach a log or a page.
  *
- * The two accepted channels are an environment variable and a file whose mode
- * gives no access to another user.
+ * A reader here returns the secret and never stores it. A caller passes the
+ * result straight into the call that needs it, so no front end holds either
+ * secret in a name of its own, where a later line could render or log it.
+ *
+ * The master secret has two accepted channels: an environment variable, and a
+ * file whose mode gives no access to another user.
  */
 
+import { Keypair } from "@stellar/stellar-sdk";
 import { readFile, stat } from "node:fs/promises";
 import { MASTER_SECRET_ENV, MASTER_SECRET_FILE_ENV, SECRET_FILE_MODE } from "./constants.js";
+import { AUTHORITY_SECRET_ENV, RESERVE_SECRET_ENV } from "./config.js";
 import { bytesFromHex, reduce } from "./fr.js";
 import { FR_BYTES } from "./constants.js";
 
@@ -71,4 +79,78 @@ export async function readMasterSecret(
     );
   }
   return fromText(await readFile(path, "utf8"), path);
+}
+
+/** True when the environment carries the master secret through one of its channels. */
+export function carriesMasterSecret(environment: NodeJS.ProcessEnv = process.env): boolean {
+  return (
+    environment[MASTER_SECRET_ENV] !== undefined ||
+    environment[MASTER_SECRET_FILE_ENV] !== undefined
+  );
+}
+
+/** True when the environment carries the authority key. */
+export function carriesAuthoritySecret(environment: NodeJS.ProcessEnv = process.env): boolean {
+  return environment[AUTHORITY_SECRET_ENV] !== undefined;
+}
+
+/**
+ * Reads the secret key of the authority from the environment.
+ *
+ * The reader exists so a caller passes the key straight into the call that
+ * signs with it, exactly as it does for the master secret. A caller that bound
+ * the key to a name of its own could later render it, log it, or interpolate it
+ * into a progress message, and the two secrets would then be held to different
+ * rules.
+ */
+export function readAuthoritySecret(environment: NodeJS.ProcessEnv = process.env): string {
+  const secret = environment[AUTHORITY_SECRET_ENV];
+  if (secret === undefined || secret.length === 0) {
+    throw new SecretError(
+      `set ${AUTHORITY_SECRET_ENV} in the environment of this process; no argument carries the authority key`,
+    );
+  }
+  return secret;
+}
+
+/**
+ * Reads the key of the transaction source and returns the signer it makes.
+ *
+ * A caller that needs a signer would otherwise read the secret into a name of
+ * its own in order to build one, which is the thing the readers here exist to
+ * avoid. The secret enters and the signer leaves, so no front end holds the key.
+ */
+export function readAuthorityKeypair(environment: NodeJS.ProcessEnv = process.env): Keypair {
+  const secret = readAuthoritySecret(environment);
+  try {
+    return Keypair.fromSecret(secret);
+  } catch {
+    throw new SecretError(`${AUTHORITY_SECRET_ENV} does not carry a Stellar secret key`);
+  }
+}
+
+/** True when the environment carries the key of a reserve holder. */
+export function carriesReserveSecret(environment: NodeJS.ProcessEnv = process.env): boolean {
+  return environment[RESERVE_SECRET_ENV] !== undefined;
+}
+
+/**
+ * Reads the key of a reserve holder and returns the signer it makes.
+ *
+ * The third secret of this client follows the rule of the other two. A reserve
+ * holder runs this on its own machine, so its key is as sensitive there as the
+ * authority key is on the machine of an authority.
+ */
+export function readReserveKeypair(environment: NodeJS.ProcessEnv = process.env): Keypair {
+  const secret = environment[RESERVE_SECRET_ENV];
+  if (secret === undefined || secret.length === 0) {
+    throw new SecretError(
+      `set ${RESERVE_SECRET_ENV} in the environment of this process; no argument carries the key of a reserve holder`,
+    );
+  }
+  try {
+    return Keypair.fromSecret(secret);
+  } catch {
+    throw new SecretError(`${RESERVE_SECRET_ENV} does not carry a Stellar secret key`);
+  }
 }

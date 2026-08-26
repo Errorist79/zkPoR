@@ -12,11 +12,11 @@ import {
   Address,
   BASE_FEE,
   Contract,
+  Keypair,
   TransactionBuilder,
   nativeToScVal,
   rpc,
 } from "@stellar/stellar-sdk";
-import type { Keypair } from "@stellar/stellar-sdk";
 import { ATTESTATION_MAX_AGE_LEDGERS, MAX_U32 } from "./constants.js";
 import { InfrastructureError, latestLedger } from "./network.js";
 import type { NetworkConfig } from "./network.js";
@@ -123,4 +123,49 @@ export async function submitAttestation(
   const ready = rpc.assembleTransaction(transaction, answer).build();
   ready.sign(input.authoritySigner);
   return sendAndSettle(server, ready);
+}
+
+/** The values of one attestation, without the keys that sign it. */
+export interface AttestationValues {
+  readonly registry: string;
+  readonly asset: string;
+  readonly snapshotLedger: number;
+  readonly finalRoot: bigint;
+  readonly totalLiabilities: bigint;
+  readonly proof: Uint8Array;
+}
+
+/**
+ * Submits one attestation with the secret key of the authority.
+ *
+ * The authority is the source of the transaction and its only signer, so the
+ * account and the signer come from one key. Every front end of this client
+ * needs the same three steps, so they live here and not in one of them.
+ */
+export async function attestWithAuthority(
+  server: rpc.Server,
+  config: NetworkConfig,
+  authoritySecret: string,
+  values: AttestationValues,
+): Promise<SubmitResult> {
+  let authority: Keypair;
+  try {
+    authority = Keypair.fromSecret(authoritySecret);
+  } catch {
+    throw new AttestationInputError("the authority secret key is not a Stellar secret key");
+  }
+  let account;
+  try {
+    account = await server.getAccount(authority.publicKey());
+  } catch (cause) {
+    throw new InfrastructureError(
+      `the client cannot read the account ${authority.publicKey()}`,
+      { cause },
+    );
+  }
+  return await submitAttestation(server, config, {
+    sourceAccount: new Account(account.accountId(), account.sequenceNumber()),
+    authoritySigner: authority,
+    ...values,
+  });
 }

@@ -12,6 +12,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
+    },
+    "./replay": {
+      "types": "./dist/replay.d.ts",
+      "import": "./dist/replay.js",
+      "require": "./dist/replay.cjs"
     }
   },
   "bin": {
@@ -22,8 +27,12 @@
   ],
   "scripts": {
     "build": "tsup",
+    "prepare": "npm run build",
+    "pretest": "npm run build",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "example": "npm run build && node examples/check-a-package.mjs",
+    "example:library": "npm run build && node examples/verify-in-your-program.mjs"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "16.2.0",

@@ -15,7 +15,7 @@ echo -e "${BLUE}1. Checking the release artifact against the manifest...${NC}"
   echo -e "${RED}no manifest at $MANIFEST_FILE: this tree holds no release artifact${NC}"; exit 1; }
 [ -f "$RELEASE_KEY" ] || {
   echo -e "${RED}no verification key at $RELEASE_KEY${NC}"; exit 1; }
-KEY_SHA256=$(python3 -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$RELEASE_KEY")
+KEY_SHA256=$(file_sha256 "$RELEASE_KEY")
 [ "$KEY_SHA256" = "$(manifest_field aggregator_key_sha256)" ] || {
   echo -e "${RED}the key to deploy is not the key the manifest records${NC}"; exit 1; }
 [ "$(wc -c < "$RELEASE_KEY")" -eq "$(manifest_field aggregator_key_bytes)" ] || {
@@ -30,14 +30,14 @@ echo -e "${BLUE}2. Ensuring $STELLAR_SOURCE_ACCOUNT is funded...${NC}"
 echo -e "${BLUE}3. Building + optimizing the verifier contract (wasm)...${NC}"
 stellar contract build --optimize
 
-echo -e "${BLUE}4. Deploying to $STELLAR_NETWORK_NAME...${NC}"
+echo -e "${BLUE}4. Deploying to $ZKPOR_NETWORK...${NC}"
 DEPLOY_OK=0
 for attempt in $(seq 1 "$STELLAR_DEPLOY_RETRIES"); do
   echo "  deploy attempt $attempt/$STELLAR_DEPLOY_RETRIES..."
   if CONTRACT_ID=$(stellar contract deploy \
     --wasm "$CONTRACT_WASM" \
     --source "$STELLAR_SOURCE_ACCOUNT" \
-    --network "$STELLAR_NETWORK_NAME" \
+    --network "$ZKPOR_NETWORK" \
     -- \
     --vk_bytes-file-path "$RELEASE_KEY"); then
     DEPLOY_OK=1; break

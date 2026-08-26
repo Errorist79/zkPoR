@@ -1,0 +1,27 @@
+Captured on 2026-08-22, from the client at commit 40c6037, against testnet.
+This file shows what that client printed. A client at another commit may
+print something else, so a reader who finds this file behind the current
+sources should run the commands again rather than trust the lines below.
+
+The record of a contract token, and the tier it registered under
+
+The registry accepts an asset under one of two tiers. A classic asset registers
+under the issuer account of that asset. A contract token registers under the
+administrator that the token itself names, and the registry asks the token for
+that address at registration.
+
+The record below is a contract token. The line that names the tier is the one
+that separates the two cases.
+
+The command reads. It sends no transaction.
+
+$ node sdk/dist/cli.js entry CA276G7NQOG6KK3EMWR7UPRECFPCRFJWGM2W5I3ZKH74AX4IAIH734YO
+The registry is CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG.
+The authority is GD3UBRA5DEICWMGLOVVKDZJX5JW3KCIMHZBUTHQ7NDSVAZ4T4WM6S37D.
+The tier is the contract administrator tier, and the authority is the administrator that the token names.
+The reserve addresses are GBECKPT3IZISTTYN4QYINA2GWKUFQQ4OJOSD2D2U72EILCSUBWKBDE5N, GB72MILLG5PF3EB7BEYFQMQUOB7AQR5HOVU6XMUNYZZBZKOJFOOM4VHE, GDZKQ7PLOJPMGFZUONWY3RUDS7RDBIKKCKOVATTZQSGYIPVEDENG2MEG.
+The snapshot ledger is 4262101.
+The total liabilities are 8000.
+The reserves at the attestation, at ledger 4262111, were 5400.
+The solvency claim has lapsed at the current ledger 4263205.
+exit 0

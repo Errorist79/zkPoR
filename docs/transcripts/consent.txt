@@ -1,0 +1,121 @@
+Captured on 2026-08-22, from the client at commit 40c6037, against testnet.
+This file shows what that client printed. A client at another commit may
+print something else, so a reader who finds this file behind the current
+sources should run the commands again rather than trust the lines below.
+
+The consent of every reserve address
+
+This file holds two things and they are not the same kind of thing. The first
+part is evidence: it reads back the record that a real registration wrote, and
+it shows the answer the registry gives to any attempt to register that asset
+again. The second part is a demonstration: it runs the consent flow against an
+asset that nobody registered, so a reader can see what the act of signing looks
+like and can run it themselves.
+
+The acts of the real registration were not captured when it ran. That is why the
+second part exists. It is the same flow, and it is not a record of what happened.
+
+How to read this file. A line that starts with `$` is a command. Every line
+under it is what that command printed, with two exceptions that this file marks.
+A line that ends with `(abbreviated: N characters)` is a long value that this
+file shortened, and N is the length the command printed. A line that starts with
+`note:` is this file speaking and no command printed it.
+
+Nothing in this file sends a transaction.
+
+
+PART ONE, EVIDENCE. The record that the real registration wrote.
+
+The registry records one asset under one authority, and it accepts the record
+only when every reserve address signs its own entry. The record below names the
+five addresses that signed. The registration itself ran once, and it cannot run
+a second time. The registry answers AssetAlreadyRegistered to any further
+attempt for the same asset. The second command shows that answer. It reaches the
+network, and the error is the answer of the registry rather than a check of the
+client.
+
+$ node sdk/dist/cli.js entry CBSQOEUZDBCKO4NYNRJJSPOLEIXVWZZ66CZXWRSVUNZTNZK7IKHNNRY3
+The registry is CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG.
+The authority is GCJUJ3IGBAARLLEGMVVIZASHZQAMYGOVUN7JNEFECFB7PAZELIA3TDMD.
+The tier is the classic issuer tier, and the authority is the issuer of the asset.
+The reserve addresses are GDV6PLWPYPPTB2HLCI5TAJPEXD6UY3NTLGI5R3GHOQ4ZYMZ4VCSFL5WI, GBRM7A5SBSFYIGJXWKGPOFNDNHZANDCRWPUE5NOCNOU5R4532C6FF65A, GB3K4C7YCA7ZV3I7E6VCXRGEZO5KBEZZVYT64ORAZ56KNGNSACBOQIOT, GDIYQ3TJUKPG3RRAHNX73F6UHKRRNSOJ3SQAKCDOCA7P5PH3FNG4D2ZH, GBE72LFCSRNC6CHDJUZDO5JOD3M4MP2R4E25DEAKT5S5FI4LHR37PKLU.
+The snapshot ledger is 4263061.
+The total liabilities are 100000000000.
+The reserves at the attestation, at ledger 4263070, were 150000000000.
+The solvency claim is current at ledger 4263204.
+exit 0
+
+$ node sdk/dist/cli.js prepare-registration CBSQOEUZDBCKO4NYNRJJSPOLEIXVWZZ66CZXWRSVUNZTNZK7IKHNNRY3 GCJUJ3IGBAARLLEGMVVIZASHZQAMYGOVUN7JNEFECFB7PAZELIA3TDMD GDV6PLWPYPPTB2HLCI5TAJPEXD6UY3NTLGI5R3GHOQ4ZYMZ4VCSFL5WI
+the registry returned AssetAlreadyRegistered, error code 6
+The registry answered this. It is the answer of the contract about the request, and not a verdict of the inclusion check.
+exit 8
+
+
+PART TWO, DEMONSTRATION. The same flow, against an unregistered asset.
+
+The registry accepts an asset only when every reserve address signs its own
+entry. The command line collects a signer for a top level address argument only,
+and a reserve address sits inside a vector, so the flow has three steps. One
+command builds the call and exports one entry for each address. Each address
+signs its own entry, on its own machine if it wants to. One command reassembles
+the whole and sends it.
+
+The steps below are the first two. Nothing here sends a transaction, so no
+registration happens and the asset stays unregistered.
+
+The asset is DEMOSHARE, issued by GCJUJ3IGBAARLLEGMVVIZASHZQAMYGOVUN7JNEFECFB7PAZELIA3TDMD.
+A classic asset needs no deployed contract for this, because its contract
+address is a derivation of the asset. The address is CB5YTXY6TSSKY43UURQYP2LPODCJQYEU3GAFEZNNVZN4TY7AKUKJRK5F.
+
+$ zkpor prepare-registration <asset> <authority> <five reserve addresses> <asset-xdr>
+{ "transactionXdr": "AAAAAgAAAACTRO0GCAEVrIZlaoyCR8wAzBnV..." (abbreviated: 5912 characters),
+  "entries": [
+    { "address": "GDV6PLWPYPPTB2HLCI5TAJPEXD6UY3NTLGI5R3GHOQ4ZYMZ4VCSFL5WI",
+      "entryXdr": "AAAAAQAAAAAAAAAA..." (abbreviated: 712 characters),
+      "expirationLedger": 4265061, "signed": false },
+    { "address": "GBRM7A5SBSFYIGJXWKGPOFNDNHZANDCRWPUE5NOCNOU5R4532C6FF65A",
+      "entryXdr": "AAAAAQAAAAAAAAAA..." (abbreviated: 712 characters),
+      "expirationLedger": 4265061, "signed": false },
+    { "address": "GB3K4C7YCA7ZV3I7E6VCXRGEZO5KBEZZVYT64ORAZ56KNGNSACBOQIOT",
+      "entryXdr": "AAAAAQAAAAAAAAAA..." (abbreviated: 712 characters),
+      "expirationLedger": 4265061, "signed": false },
+    { "address": "GDIYQ3TJUKPG3RRAHNX73F6UHKRRNSOJ3SQAKCDOCA7P5PH3FNG4D2ZH",
+      "entryXdr": "AAAAAQAAAAAAAAAA..." (abbreviated: 712 characters),
+      "expirationLedger": 4265061, "signed": false },
+    { "address": "GBE72LFCSRNC6CHDJUZDO5JOD3M4MP2R4E25DEAKT5S5FI4LHR37PKLU",
+      "entryXdr": "AAAAAQAAAAAAAAAA..." (abbreviated: 712 characters),
+      "expirationLedger": 4265061, "signed": false }
+  ] }
+exit 0
+
+note: the entries above are unsigned. Each address signs its own.
+
+$ zkpor sign-entry GDV6PLWPYPPTB2HLCI5TAJPEXD6UY3NTLGI5R3GHOQ4ZYMZ4VCSFL5WI < entry-01.xdr
+AAAAAQAAAAAAAAAA6+euz8PfMOjrEjswJeS4/Uxts1mR2OzHdDmcMzyo... (abbreviated: 941 characters)
+exit 0
+note: the entry held 712 characters before this command, so the
+note: signature added 229.
+
+$ zkpor sign-entry GBRM7A5SBSFYIGJXWKGPOFNDNHZANDCRWPUE5NOCNOU5R4532C6FF65A < entry-02.xdr
+AAAAAQAAAAAAAAAAYs+DsgyLhBk3soz3FaNp8gaMUbPoTrXCa6nY87vQ... (abbreviated: 941 characters)
+exit 0
+note: the entry held 712 characters before this command, so the
+note: signature added 229.
+
+$ zkpor sign-entry GB3K4C7YCA7ZV3I7E6VCXRGEZO5KBEZZVYT64ORAZ56KNGNSACBOQIOT < entry-03.xdr
+AAAAAQAAAAAAAAAAdq4L+BA/mu0fJ6orxMTLuqCTOa4n7jogz3ymmbIA... (abbreviated: 941 characters)
+exit 0
+note: the entry held 712 characters before this command, so the
+note: signature added 229.
+
+$ zkpor sign-entry GDIYQ3TJUKPG3RRAHNX73F6UHKRRNSOJ3SQAKCDOCA7P5PH3FNG4D2ZH < entry-04.xdr
+AAAAAQAAAAAAAAAA0YhuaaKebcYgO2/9l9Q6oxbJydygBQhuED7+vPsr... (abbreviated: 941 characters)
+exit 0
+note: the entry held 712 characters before this command, so the
+note: signature added 229.
+
+$ zkpor sign-entry GBE72LFCSRNC6CHDJUZDO5JOD3M4MP2R4E25DEAKT5S5FI4LHR37PKLU < entry-05.xdr
+AAAAAQAAAAAAAAAASf0sopRaLwjjTTI3dS4e2cY/UeE10ZAKn2XSo4s8... (abbreviated: 941 characters)
+exit 0
+note: the entry held 712 characters before this command, so the
+note: signature added 229.

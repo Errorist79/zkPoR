@@ -9,9 +9,18 @@
 # machine is one transaction: the four public inputs, which are two hashes,
 # one root and one total, and the proof bytes.
 #
-# An accepted attestation ends with the removal of the balances, the salts,
-# and the witnesses. A run that stops early leaves them on disk for the
-# diagnosis, and the issuer owns their disposal from that point.
+# Every run removes the balances, the salts, and the witnesses when it ends,
+# and every ending does it: a return, a failure, and an interrupt, a
+# termination, or a hang-up signal. The tools of the run stop first, because a
+# sweep is worth nothing while a tool that writes those files is still running.
+#
+# A kill that cannot be caught and a power loss run nothing at all, so they
+# reach neither the stop nor the sweep. The sweep at the start of the next run
+# covers what they leave, and until a run starts, it stays on disk. A tool that
+# outlives such a kill also keeps writing, and nothing here reaches it.
+#
+# Nothing is kept on disk for a diagnosis, because the files hold the salt of
+# every customer in the snapshot.
 #
 # The context file describes the attestation:
 #
@@ -23,6 +32,10 @@
 # The values must equal the entry that the registry holds, because the
 # registry derives the context hash from its own state, and a proof of another
 # context does not verify.
+#
+# scripts/context.template.toml is a template to copy. Copy it outside this
+# repository and fill it in: this client refuses a context whose path holds a
+# fixtures directory, because the material there is public.
 #
 # The master secret arrives as a file that the issuer keeps, and never in a
 # file of this repository. It never enters a witness. A run without it fails,
@@ -47,7 +60,7 @@
 #                             random bytes as hexadecimal.
 #   ZKPOR_REGISTRY       the registry contract, or .contract_id.registry
 #   STELLAR_SOURCE_ACCOUNT  the identity of the authority
-#   STELLAR_NETWORK_NAME    local (default), testnet, or mainnet
+#   ZKPOR_NETWORK    local (default), testnet, or mainnet
 #   ZKPOR_WORK           where the run keeps its files
 #   ZKPOR_PACKAGES_OUT   where the packages of the customers land
 #   ZKPOR_DEPLOYMENTS    the deployment records, or scripts/deployments.json
@@ -71,16 +84,88 @@ FIXTURE_SECRET_FILE="$ROOT_DIR/fixtures/test_only_master_secret.env"
 # file, because a guard that a deleted file switches off is no guard. The
 # check below compares the file with this copy, so the two cannot drift.
 FIXTURE_SECRET="0x7a6b706f722d746573742d6f6e6c792d6d61737465722d736563726574212121"
-# The proof of the release configuration takes minutes, and a network closes a
-# ledger every few seconds. A run that starts with less than this much window
-# left would prove a snapshot that expires before the transaction arrives, so
-# it stops instead.
+# The proof of the release configuration took 47 to 66 seconds in four measured
+# runs, on an AMD Ryzen 9 5950X with 16 cores. A slower machine takes longer,
+# and a network closes a ledger every few seconds. A run that starts with less
+# than this much window left would prove a snapshot that expires before the
+# transaction arrives, so it stops instead.
 PROVING_MARGIN_LEDGERS=120
 
 die() { echo -e "\n${RED}attest: $*${NC}" >&2; exit 1; }
 note() { echo -e "${BLUE}[attest]${NC} $*"; }
 
+# The tools of a run are started and stopped by one shared file, which a test
+# sources and drives with a tool of its own. The guarantees live there with the
+# reasoning behind them.
+source "$(dirname "${BASH_SOURCE[0]}")/run_tools.sh"
+
+# The prover inputs hold the identifier, the balance, and the salt of every
+# customer in the snapshot. The sweep therefore runs on every ending that lets
+# this script run anything: a return, a failure through die, and an interrupt,
+# a termination, or a hang-up signal. A kill that cannot be caught and a power
+# loss run nothing, and the sweep at the start of the next run covers those.
+#
+# The proof and the public inputs stay in the work directory, because a
+# resubmission needs them and neither one carries a salt.
+clear_witnesses() {
+  rm -f "$INNER"/Prover.toml "$INNER"/Prover_*.toml "$AGG/Prover.toml"
+  rm -rf "$OUT" "$INNER/target" "$ATGT"
+}
+
+# The witness paths belong to the machine and not to one process, so the lock
+# does too. The client library takes the same lock, in the same file and in the
+# same format, so the two tools refuse to run over each other.
+LOCK="$REC/.run.lock"
+lock_owner() { tr -d '[:space:]' < "$LOCK" 2>/dev/null; }
+take_lock() {
+  # noclobber makes the redirection fail when the file exists, so the check and
+  # the creation are one step.
+  if ! (set -o noclobber; echo "$$" > "$LOCK") 2>/dev/null; then
+    owner=$(lock_owner)
+    # A lock file that names nobody is not evidence that nobody holds it. The
+    # creation and the write are two steps for the operating system, so a run
+    # that is taking the lock right now leaves it empty for a moment. Treating
+    # that moment as a stale lock lets two runs believe they hold one lock. The
+    # read therefore repeats before it concludes anything.
+    if [ -z "$owner" ]; then
+      for _ in 1 2 3 4 5 6 7 8 9 10; do
+        sleep 0.05
+        owner=$(lock_owner)
+        [ -n "$owner" ] && break
+      done
+    fi
+    if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
+      die "another proving run holds the lock on this repository, under the process $owner; wait for it or stop it"
+    fi
+    # The owner is gone, or no run ever named itself, so the lock is stale.
+    rm -f "$LOCK"
+    (set -o noclobber; echo "$$" > "$LOCK") 2>/dev/null \
+      || die "the run cannot take the lock $LOCK"
+  fi
+}
+release_lock() { [ "$(lock_owner)" = "$$" ] && rm -f "$LOCK"; return 0; }
+
 [ $# -eq 2 ] || die "usage: attest.sh <context.toml> <customers.csv>"
+
+# The order of the three steps below matters. The lock comes first, because a
+# run that does not own the lock must never sweep: the files it would remove
+# belong to the run that does own it. The trap comes next, so every later
+# ending sweeps and releases. The sweep comes last, and it reaches the files of
+# a run that stopped without running anything.
+#
+# A signal that arrives between the lock and the trap leaves the lock file
+# behind. The next run reads the identifier, finds no such process, and clears
+# it, so that window costs a stale file and not a blocked machine.
+take_lock
+# The handler for a signal ends the run. Bash resumes the script after a
+# handler returns, so a handler that only swept would leave the run going with
+# its lock released, still writing the paths that the lock protects. The exit
+# trap sweeps again, and both sweeps are safe to repeat.
+on_signal() { stop_tools; clear_witnesses; release_lock; exit 130; }
+trap 'stop_tools; clear_witnesses; release_lock' EXIT
+trap on_signal INT TERM HUP
+clear_witnesses
+
 # Each step runs from its own directory, so a relative path would resolve
 # somewhere else.
 absolute() {
@@ -171,14 +256,15 @@ mkdir -p "$WORK"
 # -----------------------------------------------------------------------------
 # The registry derives the context hash from its own state, so a context that
 # differs anywhere produces a proof that the registry refuses. The comparison
-# runs before the proof, which takes minutes. It needs the network, and so does
-# the window check above, so an unreachable chain already stopped this run.
+# runs before the proof, which takes about a minute on a 16-core machine. It
+# needs the network, and so does the window check above, so an unreachable
+# chain already stopped this run.
 ASSET=$(sed -nE 's/^asset *= *"(.*)".*/\1/p' "$CONTEXT_FILE")
 [ -n "$ASSET" ] || die "the context file names no asset"
 # The answer of the registry arrives on the output, and the notes of the
 # command line arrive on the error stream, so the two do not mix.
 ENTRY=$(stellar contract invoke --id "$REGISTRY" --source "$STELLAR_SOURCE_ACCOUNT" \
-  --network "$STELLAR_NETWORK_NAME" -- entry --asset "$ASSET" 2>"$WORK/entry.error") \
+  --network "$ZKPOR_NETWORK" -- entry --asset "$ASSET" 2>"$WORK/entry.error") \
   || die "the registry holds no entry for $ASSET:\n$(cat "$WORK/entry.error")"
 # The comparison stops the run when it finds a difference and when it cannot
 # read either side, so a silent answer never passes for agreement.
@@ -190,21 +276,21 @@ note "context=$CONTEXT_FILE customers=$ROWS of $CAPACITY snapshot=$SNAPSHOT wind
 # -----------------------------------------------------------------------------
 # 3. Salts, witnesses, and one proof per batch
 # -----------------------------------------------------------------------------
-( cd "$GEN" && cargo run --release --quiet -- witness "$CONTEXT_FILE" "$CUSTOMERS_FILE" ) \
+run_tool env -C "$GEN" cargo run --release --quiet -- witness "$CONTEXT_FILE" "$CUSTOMERS_FILE" \
   || die "the generator did not write the witnesses"
 cd "$INNER" || die "no inner circuit directory"
-rm -rf target out; nargo compile || die "the inner circuit did not compile"
+rm -rf target out; run_tool nargo compile || die "the inner circuit did not compile"
 for k in $(seq 0 $((K - 1))); do
   cp "Prover_${k}.toml" Prover.toml
-  nargo execute "wit${k}" >/dev/null 2>&1 || die "batch $k did not execute"
+  run_tool nargo execute "wit${k}" >/dev/null 2>&1 || die "batch $k did not execute"
   mkdir -p "$OUT/batch_${k}"
-  bb prove --scheme "$PROOF_SCHEME" --oracle_hash "$INNER_ORACLE_HASH" --honk_recursion 1 \
+  run_tool bb prove --scheme "$PROOF_SCHEME" --oracle_hash "$INNER_ORACLE_HASH" --honk_recursion 1 \
     --bytecode_path target/recursion_inner.json --witness_path "target/wit${k}.gz" \
     --output_path "$OUT/batch_${k}" --output_format bytes_and_fields >/dev/null 2>&1 \
     || die "batch $k did not prove"
   note "batch $k of $K proved"
 done
-bb write_vk --scheme "$PROOF_SCHEME" --oracle_hash "$INNER_ORACLE_HASH" --honk_recursion 1 \
+run_tool bb write_vk --scheme "$PROOF_SCHEME" --oracle_hash "$INNER_ORACLE_HASH" --honk_recursion 1 \
   --verifier_type standalone --bytecode_path target/recursion_inner.json \
   --output_path "$OUT" --output_format bytes_and_fields >/dev/null 2>&1 \
   || die "the inner key did not write"
@@ -212,12 +298,12 @@ bb write_vk --scheme "$PROOF_SCHEME" --oracle_hash "$INNER_ORACLE_HASH" --honk_r
 # -----------------------------------------------------------------------------
 # 4. Fold the batches and produce the terminal proof
 # -----------------------------------------------------------------------------
-( cd "$GEN" && cargo run --release --quiet -- assemble "$CONTEXT_FILE" "$OUT" ) \
+run_tool env -C "$GEN" cargo run --release --quiet -- assemble "$CONTEXT_FILE" "$OUT" \
   || die "the generator did not assemble the aggregator input"
 cd "$AGG" || die "no aggregator directory"
-rm -rf target; nargo compile || die "the aggregator did not compile"
-nargo execute aggwit >/dev/null 2>&1 || die "the aggregator did not execute"
-bb prove --scheme "$PROOF_SCHEME" --oracle_hash "$TERMINAL_ORACLE_HASH" \
+rm -rf target; run_tool nargo compile || die "the aggregator did not compile"
+run_tool nargo execute aggwit >/dev/null 2>&1 || die "the aggregator did not execute"
+run_tool bb prove --scheme "$PROOF_SCHEME" --oracle_hash "$TERMINAL_ORACLE_HASH" \
   --bytecode_path "$ATGT/recursion_agg.json" --witness_path "$ATGT/aggwit.gz" \
   --output_path "$ATGT" --output_format bytes_and_fields >/dev/null 2>&1 \
   || die "the terminal proof did not prove"
@@ -235,9 +321,9 @@ note "final_root=$FINAL_ROOT total_liabilities=$TOTAL"
 # -----------------------------------------------------------------------------
 # 5. Submit. The registry builds the public inputs from its own state.
 # -----------------------------------------------------------------------------
-note "submitting to $REGISTRY as $STELLAR_SOURCE_ACCOUNT on $STELLAR_NETWORK_NAME"
+note "submitting to $REGISTRY as $STELLAR_SOURCE_ACCOUNT on $ZKPOR_NETWORK"
 SUBMISSION=$(stellar contract invoke --id "$REGISTRY" --source "$STELLAR_SOURCE_ACCOUNT" \
-  --network "$STELLAR_NETWORK_NAME" --send yes -- submit_attestation \
+  --network "$ZKPOR_NETWORK" --send yes -- submit_attestation \
   --asset "$(sed -nE 's/^asset *= *"(.*)".*/\1/p' "$CONTEXT_FILE")" \
   --snapshot_ledger "$SNAPSHOT" --final_root "$FINAL_ROOT" \
   --total_liabilities "$TOTAL" --proof-file-path "$WORK/proof" 2>&1) \
@@ -255,26 +341,36 @@ TRANSACTION=$(echo "$SUBMISSION" | sed -nE 's/.*Signing transaction: ([0-9a-f]{6
 # attestation. The deletion below waits for that proof, because the salts are
 # the only other way to reach the packages.
 ATTESTED=$(stellar contract invoke --id "$REGISTRY" --source "$STELLAR_SOURCE_ACCOUNT" \
-  --network "$STELLAR_NETWORK_NAME" -- entry --asset "$ASSET" 2>"$WORK/entry.error") \
+  --network "$ZKPOR_NETWORK" -- entry --asset "$ASSET" 2>"$WORK/entry.error") \
   || die "the registry holds no entry after the attestation:\n$(cat "$WORK/entry.error")"
 ATTESTED_ROOT=$(echo "$ATTESTED" | python3 -c "
 import json,sys
 print('%064x' % int(json.load(sys.stdin)['attestation']['Filled']['final_root']))") \
   || die "the registry entry carries no attested root:\n$ATTESTED"
 
-PACKAGES=$( cd "$GEN" && cargo run --release --quiet -- packages \
+# The output goes through a file rather than a command substitution. A
+# substitution runs in a subshell, and a tool started there would leave no
+# record in this shell for the stop to reach.
+run_tool env -C "$GEN" cargo run --release --quiet -- packages \
   "$CONTEXT_FILE" "$CUSTOMERS_FILE" "$PACKAGES_OUT" \
-  --network "$STELLAR_NETWORK_NAME" --registry "$REGISTRY" \
+  --network "$ZKPOR_NETWORK" --registry "$REGISTRY" \
   --attested-root "$ATTESTED_ROOT" --attested-snapshot "$SNAPSHOT" \
-  --transaction "$TRANSACTION" --deployments "$DEPLOYMENTS" 2>&1 ) \
-  || die "the packages of the customers did not reach $PACKAGES_OUT, so the salts stay on disk:\n$PACKAGES"
-echo "$PACKAGES"
+  --transaction "$TRANSACTION" --deployments "$DEPLOYMENTS" \
+  --report-file "$WORK/packages.path" \
+  > "$WORK/packages.out" 2>&1 \
+  || die "the packages of the customers did not reach $PACKAGES_OUT, so the salts stay on disk:\n$(cat "$WORK/packages.out")"
+cat "$WORK/packages.out"
+# The generator names the directory it filled in a file this script chose. It
+# also prints that directory for a reader, and a script that read the printed
+# line would turn a sentence into an interface.
+PACKAGES=$(cat "$WORK/packages.path" 2>/dev/null)
+[ -n "$PACKAGES" ] || die "the generator wrote the packages and named no directory for them"
 
 # The balances, the salts, and the witnesses have no use after the packages
-# exist, so the run removes them. The proof and the public inputs stay in the
-# work directory, because a resubmission needs them.
-rm -f "$INNER"/Prover.toml "$INNER"/Prover_*.toml "$AGG/Prover.toml"
-rm -rf "$OUT" "$INNER/target" "$ATGT"
+# exist. The trap above removes them on every ending, and the call here removes
+# them now, so they do not sit on disk for the rest of a long run.
+clear_witnesses
 note "the balances, the salts, and the witnesses are removed"
 
 echo -e "\n${GREEN}The registry accepted the attestation of snapshot $SNAPSHOT.${NC}"
+echo "the packages of the customers are under $PACKAGES"

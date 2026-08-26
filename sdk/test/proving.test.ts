@@ -7,7 +7,9 @@
  * each of those decides whether a run can land at all.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { captureOf, valueOf } from "./fixture-guards.js";
@@ -19,6 +21,7 @@ import {
 import {
   ProvingError,
   inputsAreNotFixtures,
+  packagesDirectoryOf,
   parseShape,
   windowAllowsProving,
 } from "../src/proving.js";
@@ -31,6 +34,7 @@ import {
   serializePublicInputs,
 } from "../src/manifest.js";
 import { parseVersions } from "../src/versions.js";
+import { BUILT_INS, namedModulesOf } from "./sources.js";
 import { toBytes } from "../src/fr.js";
 
 const ROOT = join(import.meta.dirname, "..", "..");
@@ -218,5 +222,153 @@ describe("the refusal of the test material", () => {
       throw new Error("the fixture file states no secret");
     }
     expect(BigInt(captureOf(found, 0, "secret of the fixture file"))).toBe(FIXTURE_MASTER_SECRET);
+  });
+});
+
+/**
+ * What a proving run can reach, which is nothing outside this package.
+ *
+ * A run reads the customer file and it derives every salt from the master
+ * secret. It needs no network for any step: it reads the pins, it starts the
+ * pinned tools, and it reads what the tools write. The rule for the modules of
+ * a run is therefore the strict one. They name no module outside this package,
+ * not even the library that the client uses to talk to the registry.
+ *
+ * That is stronger than the rule that holds over the whole package, which
+ * allows the declared dependency that reaches the registry and is checked over
+ * every module in another file. Both are kept, and the reason is measurable
+ * rather than tidy: the wider rule passes for a driver that imports the
+ * library, and a driver that imports the library holds the master secret and a
+ * way out at the same moment.
+ *
+ * The scope here comes from the property. This set is the modules that a run
+ * loads, because the property is about what a run holds. The wider property is
+ * about what this package ships, and it names every module.
+ *
+ * The rule is written as the specifiers that are allowed, in the same shape as
+ * the wider one: a local module, or a built-in that this package uses. A list
+ * of network modules to refuse would be one entry behind the runtime. The forms
+ * come from the parser of the language, so the rule holds every form that names
+ * a module rather than the forms somebody wrote a pattern for.
+ *
+ * The instrument reads source, which is weaker than an observation, so this
+ * states the limit rather than letting the name of the test carry more than it
+ * earns. Two things it cannot see: code that the source does not carry, which
+ * means a string that the runtime evaluates, and a connection that a dependency
+ * opens inside itself. A name that reaches past an import is read by the wider
+ * rule, over every module of this package, so it is not read again here.
+ */
+describe("the modules a proving run loads", () => {
+  /** Every local module the driver reaches, through every local import. */
+  function loadedByProving(): string[] {
+    const directory = join(import.meta.dirname, "..", "src");
+    const seen = new Set<string>();
+    const queue = ["proving.ts"];
+    while (queue.length > 0) {
+      const name = queue.pop();
+      if (name === undefined || seen.has(name)) {
+        continue;
+      }
+      seen.add(name);
+      const path = join(directory, name);
+      if (!existsSync(path)) {
+        continue;
+      }
+      for (const found of readFileSync(path, "utf8").matchAll(/from\s+"\.\/([^"]+)"/g)) {
+        const specifier = found[1];
+        if (specifier !== undefined) {
+          queue.push(specifier.replace(/\.js$/, ".ts"));
+        }
+      }
+    }
+    return [...seen];
+  }
+
+  it("reaches a plausible set, because a walk that reached none checks nothing", () => {
+    const loaded = loadedByProving();
+    expect(loaded.length).toBeGreaterThanOrEqual(8);
+    // The driver itself and the sweep must be in any correct walk. A walk that
+    // returned only its starting point would satisfy a count alone.
+    expect(loaded).toContain("proving.ts");
+    expect(loaded).toContain("witnesses.ts");
+    expect(loaded).toContain("runlifecycle.ts");
+  });
+
+  it("names no module outside this package, so a run reaches no network at all", () => {
+    let counted = 0;
+    for (const name of loadedByProving()) {
+      if (!existsSync(join(import.meta.dirname, "..", "src", name))) {
+        continue;
+      }
+      for (const named of namedModulesOf(name)) {
+        counted += 1;
+        if (named.specifier === undefined) {
+          throw new Error(`${name} names a module with a value rather than with a literal`);
+        }
+        if (named.specifier.startsWith(".")) {
+          continue;
+        }
+        // No dependency at all, which is what makes this stricter than the
+        // rule that holds over the whole package.
+        expect(BUILT_INS.includes(named.specifier), `${name} names ${named.specifier}`).toBe(true);
+      }
+    }
+    // A read that found no module at all would pass the loop above without
+    // looking at anything.
+    expect(counted, "the read found almost no import, so it read almost nothing").toBeGreaterThan(
+      15,
+    );
+  });
+});
+
+/**
+ * What the generator reports, read as a value.
+ *
+ * The report file exists because the printed sentence used to be the interface,
+ * and a reader of that sentence lost a path that held a space and took an older
+ * line when the run printed two. The cases below hold the answer to each, and
+ * they read a file rather than a process, so the decision is testable and the
+ * start of the generator stays where it is.
+ */
+describe("the directory that the generator reports", () => {
+  async function reportOf(content: string): Promise<string> {
+    const directory = await mkdtemp(join(tmpdir(), "zkpor-report-"));
+    const file = join(directory, "directory");
+    await writeFile(file, content);
+    return file;
+  }
+
+  it("names the directory that the file holds", async () => {
+    await expect(packagesDirectoryOf(await reportOf("/run/out/packages/CBSQ/4263061\n"))).resolves.toBe(
+      "/run/out/packages/CBSQ/4263061",
+    );
+  });
+
+  it("keeps a path that holds a space", async () => {
+    // An operator chooses where the packages go. The reader this replaced
+    // stopped at the first space and turned this into "/run/my".
+    await expect(packagesDirectoryOf(await reportOf("/run/my packages/CBSQ/4263061\n"))).resolves.toBe(
+      "/run/my packages/CBSQ/4263061",
+    );
+  });
+
+  it("drops the final newline and no other space", async () => {
+    await expect(packagesDirectoryOf(await reportOf("/run/out/trailing \n"))).resolves.toBe(
+      "/run/out/trailing ",
+    );
+  });
+
+  it("refuses a report that names nothing", async () => {
+    // The packages exist by now. An empty answer would send a reader to the
+    // root of the file system and would read as a run that wrote nothing.
+    await expect(packagesDirectoryOf(await reportOf(""))).rejects.toBeInstanceOf(ProvingError);
+    await expect(packagesDirectoryOf(await reportOf("\n"))).rejects.toBeInstanceOf(ProvingError);
+  });
+
+  it("refuses a report that the generator never wrote", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "zkpor-report-"));
+    await expect(packagesDirectoryOf(join(directory, "absent"))).rejects.toBeInstanceOf(
+      ProvingError,
+    );
   });
 });

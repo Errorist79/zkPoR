@@ -23,6 +23,104 @@ tests compare against the committed vectors. The package also writes no
 customer file: the generation gate lives in the generator, and a second writer
 of per-customer files would double the surface that touches sensitive data.
 
+## Run the customer check
+
+The check tells one customer whether their balance sits under the root that the
+registry accepted. Two commands run it, and they differ only in where the
+answers come from. A third command runs it against a package that the check
+refuses.
+
+### Against a recording, which always works
+
+```
+npm install && npm run example
+```
+
+The example runs `zkpor verify-inclusion` against a recorded answer of the
+registry, and prints the verdict and the exit code. It needs no key, no funding,
+no proving toolchain, and no network.
+
+**A recording is not the chain.** Every answer is one this repository wrote
+down, so a check that passes against it proves that the client reads and refuses
+correctly. It proves nothing about what any network holds now.
+
+### Against the test network, while the record stands
+
+```
+ZKPOR_NETWORK=testnet ZKPOR_RPC_URL=https://soroban-testnet.stellar.org \
+  npx zkpor verify-inclusion ../fixtures/example_package.zkpor.json \
+  ../scripts/deployments.json
+```
+
+This reads the chain. It answers a verdict while the registry still holds the
+attestation that the committed package rests on.
+
+**It will stop working, and here is how to read it when it does.** The test
+network is cleared two to four times a year, and a clearing removes every
+contract. After one, the command answers that the registry holds no record of
+the asset. If somebody attests this asset again, the command answers that the
+package names one snapshot ledger and the registry attests another. Neither is a
+defect in the client. Both mean the record moved, and the recording above still
+runs.
+
+The package that both commands read is committed, and the run that produced it
+is not reproducible from this repository: it read a master secret that this
+repository does not hold. The balance in it is fictional and already committed,
+in the list of test customers.
+
+### The package the check refuses
+
+```
+npm install && npm run build
+node examples/check-a-package.mjs ../fixtures/example_package_wrong_balance.zkpor.json
+```
+
+A check that only accepts proves half of the claim. So the repository commits a
+second package, and the command above runs the same example against it. The
+answer is that the recomputed root does not equal the attested root, and the
+exit code 7. The example takes any package path, and it reads the included
+package when it gets none.
+
+The two files differ in the balance and in nothing else. The refused one reads
+1001 where the attested balance reads 1000, so the check refuses a package that
+is well formed and plausible, and not a file that is broken.
+
+**The one unit is the point.** It is the smallest change a person can make to
+that field, and no reader of the two files finds it by eye. The root binds the
+exact balance, so the check has no tolerance, and a larger edit would teach the
+weaker lesson that the check catches only a crude one.
+
+Both files describe the same customer of the committed list of test customers,
+`fixtures/test_only_customers.csv`, which describes no real person and no real
+liability. The balance 1001 belongs to no row of that list. Neither file states
+this inside itself, because the format permits no field that it does not name.
+
+## Call the check from your own program
+
+```
+npm install && npm run example:library
+```
+
+The example above runs the command line. This one calls the library, which is
+what a team integrating the flow does. It shows the three things a caller has to
+get right and nothing else.
+
+- **A verdict is not a boolean.** The check answers one of seven kinds, and six
+  of them are refusals that each mean something different.
+- **A refusal is an answer.** A package that is not under the attested root is
+  the check working. The verdict carries the recomputed root and the attested
+  one, so a caller shows a customer what happened.
+- **A failure is not a verdict.** When the network cannot be read, the call
+  raises `InfrastructureError`. A caller that turned that into "not included"
+  would tell a customer their balance is missing because a request timed out.
+
+It runs against a recording, and the same sentence applies: a recording is not
+the chain. Give the configuration the address of a network endpoint to read one.
+
+The example leaves out proving, attestation, registration, and the signing of a
+reserve consent. Those belong to the issuer, who runs them from the command line
+of this package, and no integrating team performs them.
+
 ## The Poseidon2 dependency
 
 The protocol names the Poseidon2 instance of `noir-lang/poseidon` v0.2.0, file
@@ -37,6 +135,12 @@ and computes another function. This package calls the fixed-length hash only,
 through one wrapper in `src/poseidon.ts`.
 
 ## Commands
+
+From a clone of the repository, run `npm install` at the root once. That install
+builds this package and puts `zkpor` on the path of the workspace, so every
+command below runs as `npx zkpor ...` from the root. An install of the published
+package puts the same command on the path of the machine, and it then runs as
+`zkpor ...`.
 
 ```
 zkpor verify-inclusion <package.zkpor.json> [deployments.json]
@@ -65,8 +169,13 @@ the codes of the Rust reference of the same checks.
 | 5 | the package points at a registry this verifier does not trust |
 | 6 | the registry holds no attestation that matches the package |
 | 7 | the recomputed root does not equal the attested root |
-| 8 | a failure of the client or of the network, which is not a verdict |
+| 8 | no verdict of this check |
 | 9 | the deployments file of this verifier contradicts itself |
+
+The code 8 covers two answers, and neither is a verdict of this check. One is a
+failure of the client or of the network. The other is an answer of a registry
+about the request, such as a refusal to say whether it holds an asset. The last
+line of the command says which of the two it met.
 
 ## Configuration
 
@@ -74,6 +183,22 @@ The client takes its endpoint and its registry addresses from its own
 configuration and from its own copy of the deployments file, never from a
 package. A package value may select a record inside data that the client already
 trusts. It must never select where the trusted data comes from.
+
+No setting names a registry. A network carries more than one registry over
+time, and the asset decides which one answers about it: the client asks the
+recorded generations, newest first, and stops at the first that holds the
+asset. The inclusion check is the one command that resolves another way,
+because a package names its own registry and the check reads that one.
+
+A generation that answers neither a record nor `AssetNotRegistered` stops the
+command. The client cannot tell a registry that holds nothing from one that
+failed, and stepping past the failure would let an older generation answer
+while the newer one also held the asset. **This makes the cost positional.** A
+read about an asset succeeds only when every generation newer than the one
+holding it answers, so an asset on the oldest of several generations depends on
+all the newer registries for every read, and for the attestation, which
+resolves before it proves. Adding a generation adds one such dependency for
+every asset older than it.
 
 | variable | content |
 |----------|---------|

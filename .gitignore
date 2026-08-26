@@ -15,6 +15,7 @@ circuits/*/target
 circuits/recursion/.key-check/
 circuits/recursion/.registry-gate/
 circuits/recursion/.registry-gate-context.toml
+circuits/recursion/.run.lock
 circuits/recursion/.attest/
 circuits/recursion/inner/out/
 circuits/recursion/inner/Prover.toml
@@ -39,6 +40,9 @@ node_modules
 # Scratch directory of a review run. It never reaches a commit.
 tmp-audit/
 
-# Node dependencies and the built client library
+# Node dependencies, the built client library, and the built dashboard
 node_modules
 sdk/dist
+sdk/.test-build
+dashboard/.test-build
+dashboard/dist

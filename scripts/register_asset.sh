@@ -33,7 +33,7 @@
 # Environment:
 #   ZKPOR_REGISTRY          the registry contract, or .contract_id.registry
 #   STELLAR_SOURCE_ACCOUNT  the identity of the authority
-#   STELLAR_NETWORK_NAME    local (default), testnet, or mainnet
+#   ZKPOR_NETWORK    local (default), testnet, or mainnet
 source "$(dirname "${BASH_SOURCE[0]}")/config.sh"
 # The shared configuration turns on exit-on-error. This script reports every
 # failure with its own reason instead, so it turns that off again.
@@ -111,11 +111,11 @@ trap 'rm -f "$NOTES"' EXIT
 # address that the call needs. The entry of the authority uses source-account
 # credentials, and the entry of a reserve address waits for a signature.
 TX=$(stellar contract invoke --id "$REGISTRY" --source "$STELLAR_SOURCE_ACCOUNT" \
-  --network "$STELLAR_NETWORK_NAME" --build-only -- register_asset \
+  --network "$ZKPOR_NETWORK" --build-only -- register_asset \
   --asset "$ASSET" --authority "$AUTHORITY" --authenticity "$AUTHENTICITY" \
   --reserves "$LIST" 2>"$NOTES") || die "cannot build the registration:\n$(cat "$NOTES")"
 TX=$(echo "$TX" | stellar tx simulate --source-account "$STELLAR_SOURCE_ACCOUNT" \
-  --network "$STELLAR_NETWORK_NAME" 2>"$NOTES") || die "the simulation failed:\n$(cat "$NOTES")"
+  --network "$ZKPOR_NETWORK" 2>"$NOTES") || die "the simulation failed:\n$(cat "$NOTES")"
 
 for index in "${!RESERVE_ADDRESSES[@]}"; do
   address="${RESERVE_ADDRESSES[$index]}"
@@ -130,21 +130,28 @@ for index in "${!RESERVE_ADDRESSES[@]}"; do
 done
 
 TX=$(echo "$TX" | stellar tx sign --sign-with-key "$STELLAR_SOURCE_ACCOUNT" \
-  --network "$STELLAR_NETWORK_NAME" 2>"$NOTES") \
+  --network "$ZKPOR_NETWORK" 2>"$NOTES") \
   || die "the authority did not sign:\n$(cat "$NOTES")"
 # The signature covers the transaction, so the hash that the signing step
 # reports is the hash of the submitted transaction. A reader of this run needs
 # it to find that transaction on the chain.
 TRANSACTION=$(sed -nE 's/.*Signing transaction: ([0-9a-f]{64}).*/\1/p' "$NOTES" | tail -1)
 
-RESULT=$(echo "$TX" | stellar tx send --network "$STELLAR_NETWORK_NAME" 2>"$NOTES") \
+RESULT=$(echo "$TX" | stellar tx send --network "$ZKPOR_NETWORK" 2>"$NOTES") \
   || die "the registration failed:\n$(cat "$NOTES")\n$RESULT"
-[ -n "$TRANSACTION" ] && note "transaction $TRANSACTION"
+if [ -n "$TRANSACTION" ]; then
+  note "transaction $TRANSACTION"
+else
+  # The hash is a convenience for a reader and no input to the
+  # registration, so a parse that finds none must not stop a run that the
+  # chain accepted. It must also not look like a run that printed nothing.
+  note "the signing step named no transaction hash, so this run reports none"
+fi
 
 # The registry answers with its own record, so this reads the result from the
 # chain and never from the output of the submission.
 ENTRY=$(stellar contract invoke --id "$REGISTRY" --source "$STELLAR_SOURCE_ACCOUNT" \
-  --network "$STELLAR_NETWORK_NAME" -- entry --asset "$ASSET" 2>/dev/null) \
+  --network "$ZKPOR_NETWORK" -- entry --asset "$ASSET" 2>/dev/null) \
   || die "the registry holds no entry for $ASSET after the registration"
 echo "$ENTRY"
 echo -e "\n${GREEN}The registry holds the entry of $ASSET.${NC}"

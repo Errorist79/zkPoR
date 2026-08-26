@@ -224,7 +224,7 @@ EOF
 
 HONEST=$(ZKPOR_MASTER_SECRET_FILE="$GATE_SECRET_FILE" ZKPOR_REGISTRY="$REGISTRY" \
   ZKPOR_WORK="$WORK" STELLAR_SOURCE_ACCOUNT=registry-gate-issuer \
-  STELLAR_NETWORK_NAME="$NET" ZKPOR_DEPLOYMENTS="$WORK/deployments.json" \
+  ZKPOR_NETWORK="$NET" ZKPOR_DEPLOYMENTS="$WORK/deployments.json" \
   bash "$REPO_ROOT/scripts/attest.sh" "$CONTEXT_FILE" "$GATE_CUSTOMERS" 2>&1) \
   || die "the issuer flow did not reach an accepted attestation: $HONEST"
 note "honest ACCEPT through scripts/attest.sh"

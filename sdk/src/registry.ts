@@ -380,23 +380,56 @@ export interface AttestationHistory {
   readonly latestLedger: number;
   /** True when the query started at the oldest retained ledger of the endpoint. */
   readonly reachesTheRetentionLimit: boolean;
+  /**
+   * True when the query read every ledger from the start of the range to the
+   * latest ledger.
+   *
+   * The endpoint reads a bounded count of ledgers for one request, so a page
+   * that carries no event can mean that the read stopped before the end of the
+   * range. When this is false, the result does not say whether an attestation
+   * exists, and a caller must not report it as an absence.
+   */
+  readonly coversTheWholeRange: boolean;
+}
+
+/**
+ * The ledger that one event cursor names, or `undefined` for a cursor that this
+ * function cannot read.
+ *
+ * The cursor holds an event identifier and a field number, and the identifier
+ * holds the ledger sequence in its high 32 bits. The caller compares the answer
+ * with the latest ledger to learn whether the read reached the end of the
+ * range.
+ */
+function ledgerOfEventCursor(cursor: string): number | undefined {
+  const identifier = cursor.split("-")[0];
+  if (identifier === undefined || !/^[0-9]+$/.test(identifier)) {
+    return undefined;
+  }
+  return Number(BigInt(identifier) >> 32n);
 }
 
 /**
  * Reads the attestation history of one asset from the event stream.
  *
  * The asset entry holds the latest attestation only, so the events are the one
- * record of the earlier attestations. The query starts at the requested ledger
- * or at the oldest retained ledger, whichever is later.
+ * record of the earlier attestations.
+ *
+ * A caller that names no ledger gets the whole window that the endpoint keeps.
+ * That boundary is the endpoint's and not ours, which is the reason to take it:
+ * every other start ledger is a count that somebody chooses, and a reader who
+ * did not choose it reads a part of the record as the record. A caller that
+ * names a ledger gets that ledger or the boundary, whichever is later.
  */
 export async function readAttestationHistory(
   server: rpc.Server,
   registry: string,
   asset: string,
-  fromLedger: number,
+  fromLedger?: number,
 ): Promise<AttestationHistory> {
   const retained = await retainedLedgers(server);
-  const startLedger = Math.max(fromLedger, retained.oldestLedger);
+  const startLedger =
+    fromLedger === undefined ? retained.oldestLedger : Math.max(fromLedger, retained.oldestLedger);
   const topicFilter = [
     xdr.ScVal.scvSymbol(ATTESTATION_EVENT_TOPIC).toXDR("base64"),
     nativeToScVal(Address.fromString(asset)).toXDR("base64"),
@@ -408,6 +441,7 @@ export async function readAttestationHistory(
   let cursor: string | undefined;
   let oldestLedgerRetained = retained.oldestLedger;
   let latest = retained.latestLedger;
+  let coversTheWholeRange = false;
   for (;;) {
     let page: rpc.Api.GetEventsResponse;
     try {
@@ -436,7 +470,28 @@ export async function readAttestationHistory(
         transactionHash: event.txHash,
       });
     }
-    if (page.events.length < HISTORY_PAGE_LIMIT) {
+    // The endpoint reads a bounded count of ledgers for one request and returns
+    // a cursor at the ledger where it stopped. A page that carries no event
+    // therefore means "the read found nothing so far", and not "the range holds
+    // nothing". A loop that stops on a short page reports an asset that has six
+    // attestations as an asset that has none. On the public test endpoint a
+    // request that starts 17,288 ledgers back returns no event, a request that
+    // starts 12,160 ledgers back returns no event, and a request that starts
+    // 7,160 ledgers back returns all six, because one request reads about
+    // 10,000 ledgers. That count is a property of the endpoint, so the loop
+    // reads the cursor instead of naming the count.
+    const reached = ledgerOfEventCursor(page.cursor);
+    if (reached === undefined) {
+      // The cursor is unreadable, so the loop cannot establish the coverage.
+      // It stops, and the result says that it did not cover the whole range.
+      break;
+    }
+    if (reached >= latest) {
+      coversTheWholeRange = true;
+      break;
+    }
+    if (page.cursor === cursor) {
+      // The cursor does not advance, so another request repeats this one.
       break;
     }
     cursor = page.cursor;
@@ -448,6 +503,7 @@ export async function readAttestationHistory(
     oldestLedgerRetained,
     latestLedger: latest,
     reachesTheRetentionLimit: startLedger <= oldestLedgerRetained,
+    coversTheWholeRange,
   };
 }
 

@@ -28,11 +28,12 @@ pub const ADDRESS_TAG_CONTRACT: u32 = 1;
 /// bound. It is not a technical ceiling, and no reader must take it for one.
 /// The instruction budget does not fix it: one added reserve address costs one
 /// balance read, which measures about 0.10M declared instructions for a classic
-/// asset and about 0.36M for a contract token near the code size limit, on the
-/// Protocol 27 testnet. A set of 32 classic addresses therefore declares about
-/// 125M instructions against a cap of 400,000,000 for each transaction, so the
-/// budget affords hundreds of reads. Registration collects the consent of every
-/// address, and that coordination is the cost this bound limits.
+/// asset on the Protocol 27 testnet. A contract token costs more to read, and
+/// the cost of one added token read is not measured. A set of 32 classic
+/// addresses therefore declares about 125M instructions against a cap of
+/// 400,000,000 for each transaction, so the budget affords hundreds of reads.
+/// Registration collects the consent of every address, and that coordination is
+/// the cost this bound limits.
 pub const MAX_RESERVE_ADDRESSES: u32 = 32;
 /// Age window of an attestation, in ledgers. The registry enforces it.
 pub const ATTESTATION_MAX_AGE_LEDGERS: u32 = 720;

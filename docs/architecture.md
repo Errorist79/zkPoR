@@ -151,9 +151,15 @@ Components:
    verifier, which yugocabrio wrote. The deploy step sets the VK.
 4. **Asset Registry contract.** It reads the balances of the reserve addresses of
    the issuer on Stellar and computes the total assets (A).
-5. **Issuer dashboard and customer view.** The issuer uploads the balances,
-   generates a proof, submits it, and sees the status. The customer verifies
-   their own inclusion.
+5. **Issuer dashboard and customer view.** A local process on a machine the
+   issuer controls (`dashboard/`). It serves the loopback address only. The
+   issuer names the path of the balance file, and the process proves and
+   submits in its own process and shows the status. The customer verifies their
+   own inclusion on the same interface. The browser is the display. Every page
+   except the page of a run carries no script. The page of a run loads one
+   script from this process, and that script follows the run. No
+   project-operated service receives a raw balance, a salt, a path, a witness,
+   or a key.
 6. **TypeScript SDK.** A library that wraps the proof generation flow and the
    verification flow, for other teams to integrate.
 
@@ -333,16 +339,27 @@ settings of the testnet and of the mainnet, read on 2026-08-09, both set
 400,000,000 instructions for each transaction and 580,000,000 instructions
 for each ledger. One ledger budget
 therefore holds 4 such declarations. The reserve count moves the cost very
-little. Simulations against the live registry measured one added balance read.
-The read costs about 0.10M declared instructions for a classic asset. It costs
-about 0.36M for a contract token with 101,195 bytes of code, near the size
-limit of 131,072 bytes. At the limit of 32
-reserve addresses the declaration rises to about 125M for a classic asset, and
-to about 137M for such a contract token. The token figure carries the parse of
-the token code once, and the marginal cost of the read for each address after
-that. Proof of Reserves submits one
-attestation for each epoch, so this is headroom and not a binding limit. It
-still forces a specific design:
+little for a classic asset. Two entries of one registry, read with
+`observe_reserves` on 2026-08-21, give the cost of one added balance read. The
+entry with one reserve address declared 2,039,526 instructions, and the entry
+with five declared 2,450,555, so one added read declares about 0.10M. The
+attestation of one reserve address declared 122,268,806, so at the limit of 32
+addresses the declaration rises to about 125M, which stays under the cap.
+
+A contract token costs more to read than a classic asset. On the same registry
+and the same day, three token balances declared 3,237,192 instructions and
+consumed 3,069,931, while five classic balances declared 2,450,555 and consumed
+2,250,490. Three reads of the dearer kind cost more than five of the cheaper
+kind.
+
+The cost of one added token read is not measured. One entry gives one point, and
+one point does not separate the fixed cost of the call from the cost of each
+read. A figure for a token needs two token entries of one code size with
+different reserve counts, and this project holds none. This document therefore
+gives no projection to 32 token addresses.
+
+Proof of Reserves submits one attestation for each epoch, so this is headroom
+and not a binding limit. It still forces a specific design:
 
 - One root and one batch attestation for each reporting period. Not one
   verification for each customer.
@@ -484,9 +501,14 @@ aggregator, and the project validated it on the real Protocol 27 testnet.
 
 **Inclusion, asset side, and dashboard.** The customer inclusion flow. The Asset
 Registry contract with the reserve total and the ownership check. The issuer
-dashboard: upload the balances, generate a proof, submit it, see the status.
+dashboard: name the balance file, generate a proof, submit it, see the status.
 Output: the dashboard generates and submits a proof, and a customer verifies
-their own inclusion.
+their own inclusion. Status: written and tested, with no testnet run that covers
+it. The dashboard runs the proof in its own process on the issuer's machine, and
+it serves the loopback address only. Its tests and the tests of the client
+library run in the agreement job. A test is not a network run, so neither
+carries testnet evidence today, and `README.md` records that in its status
+section.
 
 **Solvency, packaging, and delivery.** The solvency comparison proof. At least
 two scenarios: a stablecoin issuer and a tokenized fund. Decide and implement the

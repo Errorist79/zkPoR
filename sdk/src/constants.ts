@@ -120,9 +120,6 @@ export const CONSENT_EXPIRY_WARNING_LEDGERS = 60;
  */
 export const PROVING_MARGIN_LEDGERS = 120;
 
-/** The environment variable through which the generator reads the secret. */
-export const GENERATOR_SECRET_ENV = "ZKPOR_MASTER_SECRET";
-
 /**
  * The master secret of the fixtures of this repository.
  *
@@ -136,8 +133,8 @@ export const FIXTURE_MASTER_SECRET =
 /** The directory name that holds the test inputs of this repository. */
 export const FIXTURE_DIRECTORY = "fixtures";
 
-/** The default ledger count that an attestation history query reaches back. */
-export const HISTORY_DEFAULT_LEDGERS = 17280;
+/** The name of the directory that holds the packages of the customers. */
+export const PACKAGES_DIRECTORY_NAME = "packages";
 
 /** The largest event count that one history page requests. */
 export const HISTORY_PAGE_LIMIT = 200;

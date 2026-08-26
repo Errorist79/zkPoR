@@ -36,7 +36,7 @@ PROOF="$AGG_TARGET/proof"
 invoke() { # $1 = public_inputs file, $2 = proof file
   stellar contract invoke \
     --id "$CONTRACT_ID" --source "$STELLAR_SOURCE_ACCOUNT" \
-    --network "$STELLAR_NETWORK_NAME" --send yes \
+    --network "$ZKPOR_NETWORK" --send yes \
     -- verify_proof \
     --public_inputs-file-path "$1" \
     --proof_bytes-file-path "$2"
@@ -47,7 +47,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 echo -e "${BLUE}[1/3] The stored key must be the key the manifest records${NC}"
 stellar contract invoke --id "$CONTRACT_ID" --source "$STELLAR_SOURCE_ACCOUNT" \
-  --network "$STELLAR_NETWORK_NAME" -- vk_bytes > "$TMP/vk.json"
+  --network "$ZKPOR_NETWORK" -- vk_bytes > "$TMP/vk.json"
 STORED_SHA256=$(python3 -c "
 import hashlib, json, sys
 print(hashlib.sha256(bytes.fromhex(json.load(open(sys.argv[1])))).hexdigest())
