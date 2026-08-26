@@ -33,6 +33,14 @@ function Entry(input: { href: string; current: string; children: ReactNode }) {
  * script. The directive reloads this same address, which is a navigation and
  * not a fetch.
  *
+ * The directive sits inside a `noscript` element, so only a browser that runs
+ * no script ever schedules it. A browser that runs scripts parses the contents
+ * of that element as text and builds no element from them, so there is nothing
+ * to schedule and nothing to cancel. A browser schedules a refresh when the
+ * parser meets the tag, and removing the element afterwards does not cancel the
+ * navigation that is already pending, so a page that carried the directive
+ * openly reloaded itself under the script that was already updating it.
+ *
  * The directive names no address. It named one for a while, so that a reload
  * would land on the steps rather than at the top, and that stopped the reload
  * from happening at all: the address differed from the address of the page by a
@@ -68,7 +76,9 @@ export function Layout(input: {
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         {input.refreshSeconds === undefined ? null : (
-          <meta httpEquiv="refresh" content={String(input.refreshSeconds)} />
+          <noscript>
+            <meta httpEquiv="refresh" content={String(input.refreshSeconds)} />
+          </noscript>
         )}
         <title>{input.title}</title>
         <link rel="stylesheet" href={`${ROUTES.style}?v=${STYLESHEET_VERSION}`} />

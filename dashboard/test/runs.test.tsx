@@ -253,11 +253,20 @@ describe("the page of an open run", () => {
   it("reads itself again, and still does so for a reader who runs no script", () => {
     const markup = framed(<RunPage run={runIn("running")} joined={false} />);
     // The directive is what a reader who blocks the script keeps, so it stays.
+    //
+    // It sits inside a `noscript` element. A browser schedules a refresh when
+    // the parser meets the tag, and removing the element afterwards does not
+    // cancel a navigation that is already pending, so a directive outside
+    // `noscript` reloads the page under the script that is already updating it.
+    // A browser that runs scripts parses the contents of `noscript` as text and
+    // builds no element from them, so nothing is ever scheduled.
+    expect(markup).toMatch(/<noscript><meta http-equiv="refresh" content="\d+"\/><\/noscript>/);
+    // Nothing schedules a refresh for a reader who runs the script.
+    const outside = markup.replace(/<noscript>[\s\S]*?<\/noscript>/g, "");
+    expect(outside).not.toMatch(/http-equiv="refresh"/);
     // It must name no address: an address that differs from the address of the
     // page by a fragment alone is a move inside the same document, so the
     // browser scrolls and fetches nothing, and the page stops reporting.
-    expect(markup).toContain('http-equiv="refresh"');
-    expect(markup).toMatch(/content="\d+"/);
     expect(markup).not.toMatch(/http-equiv="refresh" content="[^"]*url=/);
     // The script is the other way the page reads itself, and it comes from
     // this process.

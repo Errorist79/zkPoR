@@ -216,6 +216,21 @@ header .local {
   }
 }
 
+/* A step of a run and a refusal both carry a path that somebody gave, and a
+   path is an address rather than a figure. The rule above says what that means:
+   an address has no groups, so it may break anywhere rather than leave the page.
+   These two follow it.
+
+   A figure keeps the opposite rule and must not break, which is why neither of
+   these names one. The longest figure this dashboard prints is a 66 character
+   root, and a root fits the line it sits on. A path does not: the directory of
+   the packages carries the address of the asset inside it, which is over a
+   hundred characters with no space in them, and it left the page. */
+#attestation-run li,
+.failure {
+  overflow-wrap: anywhere;
+}
+
 /* A limit statement says what the claim beside it does not cover. The rule at
    its edge separates it from the claim without moving it out of the reading
    order and without making it smaller than a reader can read. */

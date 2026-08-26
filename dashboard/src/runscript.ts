@@ -7,9 +7,11 @@
  * reaches, and it can show nothing that the page would not show without it.
  *
  * The page works with the script disabled. The markup carries a refresh
- * directive, which reloads the whole page every few seconds, and the script
- * removes that directive when it starts. A reader who blocks the script keeps
- * the reload and loses only the place they were reading.
+ * directive inside a `noscript` element, which reloads the whole page every few
+ * seconds. A browser that runs this script never builds that element, so this
+ * script has no directive to cancel and never competes with one. A reader who
+ * blocks the script keeps the reload and loses only the place they were
+ * reading.
  *
  * The script replaces one section rather than the document, so the frame never
  * repaints and the reader never loses their scroll position.
@@ -25,14 +27,6 @@ export const RUN_SCRIPT = `"use strict";
   var section = document.getElementById(id);
   if (section === null) {
     return;
-  }
-
-  // The directive reloads the whole page. This script does the same work
-  // without losing the place of the reader, so the directive goes. A browser
-  // that ignores the removal reloads the page, which is what it did before.
-  var directive = document.querySelector('meta[http-equiv="refresh"]');
-  if (directive !== null) {
-    directive.remove();
   }
 
   var timer = null;
