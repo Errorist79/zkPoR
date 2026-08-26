@@ -3,19 +3,22 @@
 ZK Proof of Reserves on Stellar (Soroban). An issuer proves that its reserves
 cover the customer liabilities. The proof does not reveal the individual
 balances. The proof is an UltraHonk zero-knowledge proof. A Soroban contract
-verifies the proof on-chain with the CAP-0080 BN254 host functions. An earlier
-artifact validated the recursive path on the real Stellar testnet at Protocol
-27. The Status section separates that evidence from the current work.
+verifies the proof on-chain with the CAP-0080 BN254 host functions. The
+current artifact validated the recursive path on the real Stellar testnet at
+Protocol 27. The Status section separates that evidence from the evidence of
+the earlier artifact.
 
-See [`docs/architecture.md`](docs/architecture.md) for the design. See
-[`SECURITY.md`](SECURITY.md) for the security model and the on-chain validation.
+See [`docs/protocol.md`](docs/protocol.md) for the specification, which is
+authoritative. See [`docs/architecture.md`](docs/architecture.md) for the
+design. See [`SECURITY.md`](SECURITY.md) for the security model and the
+on-chain validation.
 
 ## Status
 
 Three stages of work meet in this repository, and this section separates
 them. The first stage is superseded, with on-chain evidence that a reader
-can check. The second stage is the current artifact, which no testnet
-transaction covers yet. The third stage is not implemented.
+can check. The second stage is the current artifact, and confirmed testnet
+transactions cover it. The third stage is not implemented.
 
 Superseded (on-chain evidence dated June 27, 2026):
 
@@ -23,15 +26,33 @@ Superseded (on-chain evidence dated June 27, 2026):
   Protocol 27 testnet: the verifier contract
   `CCADPDEROE6OXGODBMAC7SU3Q3VOUZQAKYAQL67YNBMSTROJSSK7ATZ7` accepted the
   honest proofs and rejected the forged and the deflated proofs. The four
-  confirmed transaction hashes are in [`SECURITY.md`](SECURITY.md). The
-  honest verify used 106,670,237 instructions.
+  confirmed transaction hashes are in [`SECURITY.md`](SECURITY.md). No
+  instruction figure stands for that verify, because no public source
+  returns it today.
 - That artifact used two-input leaves, no context binding, and three public
   inputs. The current artifact uses different circuits and different keys.
   The transactions above are evidence for that artifact only, not for the
   current one.
 
-Current artifact (passed the soundness gate, not yet validated on testnet):
+Current artifact (validated on the Protocol 27 testnet on August 8, 2026):
 
+- The full flow ran on the real testnet: the verifier
+  `CDUEQOM2AQ54ZZ3EZA2Q4D32C7DBVQ5D45TFMBSC2RCE6ZMX32T44JC2` and the registry
+  `CC4MA6FWDBG3Y4YXYGDHYEZ36O3YSP7DREGOLBWKP6ZTQQ6IYFFX3KQK`, one classic
+  asset registered, one reserve account that signed its own
+  authorization entry, two accepted attestations, and one customer package
+  checked against the registry. A second generation followed, with the
+  verifier `CDICJW5B5VYT3GD3VTDWFYCQG6N4ONLUXKHPQSJVAN5QYPGCTOG7PIXE` and the
+  registry `CCHUTDKUPWXVUIX6D26SE5NZ5STP74VV4DY2CNVCMNJYOU5PTROLA7MY`. It
+  registered one asset with 17 reserve accounts, which the first generation
+  refuses, and a package of the first generation still verifies. The confirmed
+  transaction hashes are in
+  [`SECURITY.md`](SECURITY.md), and the addresses are in
+  [`scripts/deployments.json`](scripts/deployments.json). The attestation
+  transaction declared 122,268,806 instructions, about 30.6 percent of the cap
+  of 400,000,000 for each transaction. The network enforces the cap against
+  the declaration, so the declaration bounds the headroom. The transaction
+  consumed 117,524,415 instructions.
 - The circuits with context binding and salted three-input leaves, at the
   release configuration of 1024 leaves for each batch and 4 batches
   (`circuits/recursion/`, `tools/recursion-gen/`).
@@ -43,6 +64,30 @@ Current artifact (passed the soundness gate, not yet validated on testnet):
   file.
 - The host-accelerated verifier contract with the completed pairing
   (`contracts/verifier/`, `contracts/vendor/`).
+- The asset registry contract (`contracts/registry/`). It registers an asset
+  against the authority that the chain authenticates, it collects the consent
+  of every reserve address, it builds the public inputs from its own state,
+  and it records one attestation for each asset. It holds 41 tests, and the
+  registry gate passed on a Protocol 27 localnet
+  (`tools/gate/registry-gate.sh`) with four cases: an honest attestation
+  accepted and recorded, a proof of another context refused, an asset with no
+  entry refused, and the read-only reserve reading. That gate registers a
+  custom account contract as the reserve, so it is not evidence for an
+  ordinary account that signs its own authorization. The testnet run above
+  registers an ordinary account, which signs its authorization entry with
+  `tools/reserve-consent/`.
+- The one Rust definition of the leaf, the node, the salt, the address
+  encoding, and the context hash (`contracts/context/`), with 16 tests and the
+  committed vectors in `fixtures/context_vectors.json`. Every contract and
+  every tool reads the hashes from there, so no component holds a second copy.
+- The issuer flow from a customer file to an accepted attestation
+  (`scripts/attest.sh`). It refuses a run whose salts anybody can recompute,
+  and it stops when the snapshot window holds too few ledgers for the proof.
+- The inclusion package of one customer, and the customer check of it
+  (`tools/package/`, `tools/inclusion-verify/`). The check rebuilds the leaf,
+  walks the authentication path, and compares the result with the root that
+  the registry holds. It reads the registry address from the committed
+  deployments file, and never from the package.
 - The soundness gate passed at the release configuration on a Protocol 27
   localnet, with five verdicts: an honest proof accepted; a forged proof, a
   deflated proof, an unsalted-leaf proof, and a foreign context rejected
@@ -51,9 +96,8 @@ Current artifact (passed the soundness gate, not yet validated on testnet):
 Under construction (specified in [`docs/protocol.md`](docs/protocol.md), not
 implemented):
 
-- The asset registry contract.
-- Per-customer inclusion paths and inclusion packages.
-- The TypeScript SDK.
+- The TypeScript SDK, which writes and checks a package from the same
+  specification.
 - The issuer dashboard.
 
 ## How it works
@@ -78,13 +122,20 @@ See [`SECURITY.md`](SECURITY.md).
 ## Layout
 
 ```
+contracts/context/    one definition of the leaf, the node, the salt, the context hash
+contracts/registry/   asset registry, attestation record, reserve readings
 contracts/verifier/   host-accelerated UltraHonk verifier contract
 contracts/vendor/     vendored verifier crate, completed-pairing patch (see VENDOR.md)
 circuits/recursion/   inner batch circuit, hardened aggregator, shared lib
 circuits/simple_circuit/ reference circuit for a known-good verify check
 tools/recursion-gen/  off-circuit fold and witness generator
+tools/package/        the inclusion package format, the tree, the deployment records
+tools/inclusion-verify/ the customer check of one inclusion package
+tools/reserve-consent/ the signature of a reserve address on its own authorization entry
 tools/gate/           end-to-end soundness gate and adversarial harness
-scripts/              toolchain setup, localnet, deploy, verify
+scripts/              toolchain setup, localnet, deploy, register, attest, verify
+fixtures/             test vectors and test-only inputs, never production data
+docs/protocol.md      the specification, which is authoritative
 docs/architecture.md  system design
 ```
 
@@ -123,10 +174,15 @@ stellar container start local --limits unlimited --image-tag-override nightly --
 # 2. Run the end-to-end soundness gate (builds the production verifier, deploys
 #    it, and checks the on-chain verdicts: one honest ACCEPT, four attack REJECTs)
 bash tools/gate/soundness-gate.sh
+
+# 3. Run the registry attestation gate (registers an asset, proves, attests,
+#    and checks the on-chain verdict of each of the four cases)
+bash tools/gate/registry-gate.sh
 ```
 
-A green run prints `SOUNDNESS-GATE PASS`. The gate also runs in CI on a
-self-hosted runner. See [`tools/gate/README.md`](tools/gate/README.md).
+A green soundness-gate run prints `SOUNDNESS-GATE PASS`. That gate also runs in
+CI on a self-hosted runner. The registry gate runs on demand, and no CI job
+covers it. See [`tools/gate/README.md`](tools/gate/README.md).
 
 ## Attribution
 

@@ -1,3 +1,9 @@
+# Gates
+
+This directory holds two on-chain gates. `soundness-gate.sh` attacks the
+verifier. `registry-gate.sh` exercises the registry end to end. Each gate
+exits non-zero and loud on any failure, including an infrastructure error.
+
 # Soundness gate
 
 `soundness-gate.sh` is the end-to-end on-chain soundness gate for the production
@@ -84,3 +90,56 @@ The permanent always-on self-hosted runner is live on the toolchain box. It runs
 as a systemd service with the labels `self-hosted, zkpor`. A push to a watched
 path triggers the workflow automatically, and the runner runs the gate end to end
 on a Protocol 27 localnet. The gate and the workflow need no credentials.
+
+# Registry gate
+
+`registry-gate.sh` is the end-to-end attestation gate for the registry
+contract. The unit tests of `contracts/registry` run against a stub verifier
+and a stub token, so they cannot show that a real proof passes a real
+verifier through the registry, or that a real balance read behaves as the
+specification says. This gate shows both on a Protocol-27 localnet.
+
+## What it exercises
+
+- `contracts/registry`: registration of a classic asset under its issuer,
+  a real attestation through `scripts/attest.sh`, and the stored record.
+- `contracts/verifier`: the production verifier, deployed with the committed
+  key, behind a real cross-contract call from the registry.
+- The reserve balance read, against a funded reserve address.
+
+The reserve address is a custom account contract that accepts every
+signature. That is a localnet convenience: the pinned command line collects
+a signer only for a top-level Address argument, and a reserve sits inside a
+`Vec<Address>`. A pass of this gate is not evidence for the real consent
+path, in which an ordinary account signs its authorization entry. The gate
+header states the same limit.
+
+## Verdict
+
+- `honest`: a proof produced for the context that the registry holds is
+  accepted on chain, and the registry records the attestation.
+- `foreigncontext`: the same proof under another snapshot ledger is
+  refused with `ProofRejected`.
+- `unregistered`: an attestation for an asset with no registry entry is
+  refused with `AssetNotRegistered`.
+- `observation`: the read-only reading answers the minted amount.
+
+A green run means the registry accepts the honest case, refuses both
+attack cases with the named errors, and serves the record and the
+observation.
+
+## Running locally
+
+```sh
+bash tools/gate/registry-gate.sh
+```
+
+The gate needs the same pinned toolchain and localnet as the soundness
+gate, and it accepts the same `SOROBAN_RPC` and `START_LOCALNET`
+variables.
+
+## No CI job
+
+No continuous integration job runs this gate. The soundness-gate workflow
+does not include it, and no other workflow names it. Until a workflow
+covers it, a green run exists only when someone runs the gate by hand.

@@ -1,0 +1,24 @@
+[package]
+name = "zkpor-inclusion-verify"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone: detached from the contract workspace so its host build does not
+# inherit the wasm/release profile.
+[workspace]
+
+[[bin]]
+name = "verify-inclusion"
+path = "src/main.rs"
+
+[dependencies]
+soroban-sdk = { version = "=26.0.1", features = ["testutils"] }
+num-bigint = "0.4"
+serde_json = "1"
+# The leaf hash and the node hash of the chain, and the format of the file
+# that the customer holds.
+zkpor-context = { path = "../../contracts/context" }
+zkpor-package = { path = "../package" }
+# The number of the registry error that says an asset has no entry. The tool
+# reads that number from the contract that defines it.
+zkpor-registry = { path = "../../contracts/registry" }

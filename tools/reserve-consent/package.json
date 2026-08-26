@@ -1,0 +1,10 @@
+{
+  "name": "zkpor-reserve-consent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The signature of a reserve address on its own authorization entry.",
+  "dependencies": {
+    "@stellar/stellar-sdk": "16.2.0"
+  }
+}

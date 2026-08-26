@@ -24,28 +24,33 @@
 # registry derives the context hash from its own state, and a proof of another
 # context does not verify.
 #
-# The master secret arrives in ZKPOR_MASTER_SECRET and never in a file of this
-# repository. It never enters a witness. A run without it fails, and a run
-# with the test fixture secret fails, because those salts are public.
+# The master secret arrives as a file that the issuer keeps, and never in a
+# file of this repository. It never enters a witness. A run without it fails,
+# and a run with the test fixture secret fails, because those salts are public.
+# The run writes the package of every customer before it removes the salts, so
+# a secret that this shell alone holds stops the run instead of stranding the
+# customers.
 #
 # This script is one step of the work. The issuer still does these by hand:
 #
-#   - deploy the verifier and the registry, register the asset, and record the
-#     registry address. Registration needs the consent of every reserve
-#     address, and a reserve account signs that consent with a wallet;
+#   - deploy the verifier and the registry, and record the registry address.
+#     Registration runs in scripts/register_asset.sh;
 #   - produce the customer file from its own records, and freeze the liability
 #     set at the ledger that the context names;
 #   - generate the master secret from a random source, keep it, and rotate it;
 #   - fund the account that pays the fee, and read the result of the
 #     transaction;
-#   - give each customer an inclusion package. Nothing here writes one yet.
+#   - deliver the inclusion package of each customer to that customer.
 #
 # Environment:
-#   ZKPOR_MASTER_SECRET  required. 32 random bytes as hexadecimal.
+#   ZKPOR_MASTER_SECRET_FILE  required. A file of mode 600 that holds 32
+#                             random bytes as hexadecimal.
 #   ZKPOR_REGISTRY       the registry contract, or .contract_id.registry
 #   STELLAR_SOURCE_ACCOUNT  the identity of the authority
 #   STELLAR_NETWORK_NAME    local (default), testnet, or mainnet
 #   ZKPOR_WORK           where the run keeps its files
+#   ZKPOR_PACKAGES_OUT   where the packages of the customers land
+#   ZKPOR_DEPLOYMENTS    the deployment records, or scripts/deployments.json
 source "$(dirname "${BASH_SOURCE[0]}")/config.sh"
 # The shared configuration turns on exit-on-error. This script reports every
 # failure with its own reason instead, so it turns that off again.
@@ -56,6 +61,11 @@ REC="$ROOT_DIR/circuits/recursion"
 INNER="$REC/inner"; AGG="$REC/agg"; ATGT="$AGG/target"; OUT="$INNER/out"
 GEN="$ROOT_DIR/tools/recursion-gen"
 WORK="${ZKPOR_WORK:-$REC/.attest}"
+PACKAGES_OUT="${ZKPOR_PACKAGES_OUT:-$WORK}"
+# The package points every customer at a registry, and this file is where that
+# address comes from. A localnet harness deploys its own registry, so it names
+# its own file.
+DEPLOYMENTS="${ZKPOR_DEPLOYMENTS:-$ROOT_DIR/scripts/deployments.json}"
 FIXTURE_SECRET_FILE="$ROOT_DIR/fixtures/test_only_master_secret.env"
 # The public secret of the gates. The value stands here, and not only in the
 # file, because a guard that a deleted file switches off is no guard. The
@@ -87,10 +97,25 @@ done
 # -----------------------------------------------------------------------------
 # 1. Refuse a run that would produce salts anybody can recompute
 # -----------------------------------------------------------------------------
-[ -n "${ZKPOR_MASTER_SECRET:-}" ] \
-  || die "ZKPOR_MASTER_SECRET is not set. Every salt comes from it, so a run without it would leak every leaf."
+# The secret arrives as a file, and never as a value. Every salt comes from it,
+# the packages of every customer come from the salts, and the flow writes those
+# packages after the attestation lands. A secret that lives only in the
+# environment of one shell disappears with that shell, and the customers then
+# have no packages and no way to make them.
+[ -n "${ZKPOR_MASTER_SECRET_FILE:-}" ] \
+  || die "ZKPOR_MASTER_SECRET_FILE is not set. Name the file that holds the secret, so the packages of the customers survive this shell."
+[ -r "$ZKPOR_MASTER_SECRET_FILE" ] \
+  || die "cannot read the master secret at $ZKPOR_MASTER_SECRET_FILE"
+SECRET_MODE=$(stat -c '%a' "$ZKPOR_MASTER_SECRET_FILE" 2>/dev/null \
+  || stat -f '%OLp' "$ZKPOR_MASTER_SECRET_FILE" 2>/dev/null)
+[ "$SECRET_MODE" = "600" ] || [ "$SECRET_MODE" = "400" ] \
+  || die "the master secret at $ZKPOR_MASTER_SECRET_FILE carries the mode $SECRET_MODE. Give it 600, because it derives every salt."
+ZKPOR_MASTER_SECRET=$(tr -d ' \n' < "$ZKPOR_MASTER_SECRET_FILE")
+export ZKPOR_MASTER_SECRET
+[ -n "$ZKPOR_MASTER_SECRET" ] \
+  || die "the file $ZKPOR_MASTER_SECRET_FILE holds no secret"
 [ "$ZKPOR_MASTER_SECRET" != "$FIXTURE_SECRET" ] \
-  || die "ZKPOR_MASTER_SECRET is the test fixture. Its salts are in this repository, so anybody can recompute every leaf."
+  || die "the file $ZKPOR_MASTER_SECRET_FILE holds the test fixture secret. Its salts are in this repository, so anybody can recompute every leaf."
 if [ -f "$FIXTURE_SECRET_FILE" ]; then
   # shellcheck source=/dev/null
   . "$FIXTURE_SECRET_FILE"
@@ -203,7 +228,7 @@ note "terminal proof written to $WORK/proof"
 
 # The root and the total come out of the public input string that the prover
 # wrote, so this script states neither of them itself.
-read -r FINAL_ROOT TOTAL < <(python3 "$ROOT_DIR/tools/gate/public_input_fields.py" \
+read -r FINAL_ROOT TOTAL < <(python3 "$ROOT_DIR/scripts/public_input_fields.py" \
   "$WORK/public_inputs" "$MANIFEST_FILE") || die "cannot read the public inputs"
 note "final_root=$FINAL_ROOT total_liabilities=$TOTAL"
 
@@ -218,10 +243,36 @@ SUBMISSION=$(stellar contract invoke --id "$REGISTRY" --source "$STELLAR_SOURCE_
   --total_liabilities "$TOTAL" --proof-file-path "$WORK/proof" 2>&1) \
   || die "the registry refused the attestation:\n$SUBMISSION"
 echo "$SUBMISSION"
+TRANSACTION=$(echo "$SUBMISSION" | sed -nE 's/.*Signing transaction: ([0-9a-f]{64}).*/\1/p' | tail -1)
+[ -n "$TRANSACTION" ] || die "the submission names no transaction hash, so the record of the packages would carry none"
 
-# The balances, the salts, and the witnesses have no use after an accepted
-# attestation, so the run removes them. The proof and the public inputs stay
-# in the work directory, because a resubmission needs them.
+# -----------------------------------------------------------------------------
+# 6. Write the packages of the customers, then remove the secrets of the run
+# -----------------------------------------------------------------------------
+# The generator recomputes every salt from the master secret file and refuses to
+# write a package unless the recomputed root equals the root that the chain
+# holds. The round trip therefore proves that the declared file reproduces this
+# attestation. The deletion below waits for that proof, because the salts are
+# the only other way to reach the packages.
+ATTESTED=$(stellar contract invoke --id "$REGISTRY" --source "$STELLAR_SOURCE_ACCOUNT" \
+  --network "$STELLAR_NETWORK_NAME" -- entry --asset "$ASSET" 2>"$WORK/entry.error") \
+  || die "the registry holds no entry after the attestation:\n$(cat "$WORK/entry.error")"
+ATTESTED_ROOT=$(echo "$ATTESTED" | python3 -c "
+import json,sys
+print('%064x' % int(json.load(sys.stdin)['attestation']['Filled']['final_root']))") \
+  || die "the registry entry carries no attested root:\n$ATTESTED"
+
+PACKAGES=$( cd "$GEN" && cargo run --release --quiet -- packages \
+  "$CONTEXT_FILE" "$CUSTOMERS_FILE" "$PACKAGES_OUT" \
+  --network "$STELLAR_NETWORK_NAME" --registry "$REGISTRY" \
+  --attested-root "$ATTESTED_ROOT" --attested-snapshot "$SNAPSHOT" \
+  --transaction "$TRANSACTION" --deployments "$DEPLOYMENTS" 2>&1 ) \
+  || die "the packages of the customers did not reach $PACKAGES_OUT, so the salts stay on disk:\n$PACKAGES"
+echo "$PACKAGES"
+
+# The balances, the salts, and the witnesses have no use after the packages
+# exist, so the run removes them. The proof and the public inputs stay in the
+# work directory, because a resubmission needs them.
 rm -f "$INNER"/Prover.toml "$INNER"/Prover_*.toml "$AGG/Prover.toml"
 rm -rf "$OUT" "$INNER/target" "$ATGT"
 note "the balances, the salts, and the witnesses are removed"

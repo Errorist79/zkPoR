@@ -241,10 +241,18 @@ because the tag and every payload bit survive in the limb pair.
    sort key of an address is 33 bytes: the tag as one byte, then the 32-byte
    payload.
 3. Reject the set if it contains a duplicate address.
-4. Reject the set if it is empty or larger than `MAX_RESERVE_ADDRESSES` (16).
+4. Reject the set if it is empty or larger than `MAX_RESERVE_ADDRESSES` (32).
 5. Encode each address as `(addr_hi, addr_lo)` per section 3.2.
 6. Concatenate the limb pairs in sorted order into one list of `2N` elements.
 7. `reserve_set_hash = H_2N(list)`.
+
+`MAX_RESERVE_ADDRESSES` is a chosen coordination bound, and not a technical
+ceiling. Registration collects the consent of every reserve address, and the
+bound limits that coordination. The instruction budget does not fix it. One
+added reserve address costs one balance read, which measures about 0.10M
+declared instructions for a classic asset on the Protocol 27 testnet. A set
+of 32 classic addresses declares about 125M instructions, against a cap of
+400,000,000 for each transaction.
 
 The steps define the value and the rejection rules. They do not fix an
 execution order. An implementation may evaluate the rejection rules of
@@ -273,7 +281,11 @@ leaf = H_3([id, balance, salt])
 
 - `id` is an opaque customer identifier as an `Fr` element. It must not be
   raw personal data. The authority keeps the mapping from `id` to the customer
-  outside this protocol.
+  outside this protocol. An identifier must not be zero, because section 4.3
+  reserves zero for padding. An identifier must not appear twice in one
+  liability set, because an inclusion package proves one leaf, and a
+  repeated identifier would let the authority split one liability across
+  two leaves that each show a partial balance.
 - `balance` is the customer liability as a `u64`, embedded into `Fr`. The
   inner circuit must range-check it as `u64`. The sum accumulator must be
   `u128`.
@@ -345,6 +357,37 @@ padding leaf. A generator must reject a count above `B*K`. It must not
 truncate the list, because a silent truncation removes liabilities from
 `L`.
 
+A customer row with `id = 0` and `balance = 0` would produce the exact
+padding leaf of its position, because the salt depends only on the
+position. The rule against a zero identifier in section 4.1 removes that
+collision. The padding construction itself must not change to remove it:
+any in-band padding value collides with some possible identifier, and an
+out-of-band padding mark would add a leaf field, which changes the leaf
+hash and both verification keys.
+
+### 4.4 Enforcement of the identifier rules
+
+An implementation that accepts a liability list must reject the list when
+an identifier is zero, when an identifier appears more than once, or when
+an identifier's integer value is not below the field modulus `r`. The
+range rule is a property of the value, not of its encoding: a decimal
+string, a hexadecimal string, and a byte array that name the same integer
+must all reach the same verdict. An implementation must not reduce an
+out-of-range identifier modulo `r`, because a reduced identifier names a
+different leaf than the value the authority wrote. The rejection must
+happen when the list is accepted, before any tree is built.
+A tree built from an invalid list is already wrong: an attestation over it
+can leave a customer without a provable leaf. The circuits cannot enforce
+these rules, because an inner circuit sees only its own batch and cannot
+see a duplicate in another batch. Every implementation that accepts a
+liability list must have a negative test for each of the three
+rejections.
+
+These rules bind the tooling of an honest authority. A malicious
+authority can construct witnesses without any list, so the rejections
+are not a guarantee about the authority. Section 6.1 states what the
+customer inclusion check detects instead.
+
 ## 5. Tree and authentication path
 
 ### 5.1 One uniform tree
@@ -369,6 +412,22 @@ The leaf of batch `k` at batch-local position `j` has the global index:
 ```
 g = k * B + j        with 0 <= g < B*K
 ```
+
+The liability set that the authority freezes is an ordered list of
+`(id, balance)` rows. The global index of a customer is the position of
+the customer's row in that list, counted from zero. The order is part of
+the frozen set. Padding leaves fill the positions from the row count up to
+`B*K`.
+
+The mapping must guarantee determinism: the same frozen list must give
+every customer the same index in every run. The salt of section 4.2
+depends on the index, so a different index gives a different leaf and a
+different root, and the packages and the attestation would then disagree.
+
+The mapping guarantees nothing across snapshots. Each attestation derives
+fresh salts from its own context, and an inclusion package names its
+snapshot ledger, so no consumer may assume that a customer keeps an index
+when the set changes.
 
 ### 5.3 Depth
 
@@ -435,9 +494,31 @@ snapshot_ledger <= e <= snapshot_ledger + ATTESTATION_MAX_AGE_LEDGERS
 ```
 
 The registry must reject an attestation outside this range. After
-acceptance, an attestation older than the same window counts as stale: the
-inclusion claim under its root still holds, but the solvency claim has
-lapsed until a fresher attestation replaces it.
+acceptance, an attestation counts as stale when the current ledger `c`
+satisfies:
+
+```
+c > snapshot_ledger + ATTESTATION_MAX_AGE_LEDGERS
+```
+
+Staleness counts from `snapshot_ledger`, not from `attested_ledger`. The
+oldest data in the solvency claim is the liability set, and the liability
+set is frozen at `snapshot_ledger`. `attested_ledger` can sit up to 720
+ledgers after the snapshot, so an origin at `attested_ledger` would let a
+claim rest on liability data up to 1440 ledgers old while it still reads
+as fresh. One origin and one constant also serve both rules: the
+acceptance bound above and the staleness bound use the same
+`snapshot_ledger` and the same window.
+
+The current ledger `c` is the latest closed ledger sequence of the
+network that holds the registry. A reader obtains it from its own RPC
+configuration. No package, record, or user input supplies it, because a
+supplied value could hide a lapse. Which tool reads the value is an
+implementation choice; what the value is, is not.
+
+A stale attestation keeps its meaning in two parts: the inclusion claim
+under its root still holds, but the solvency claim has lapsed until a
+fresher attestation replaces it.
 
 ### 6.3 The two reserve readings
 
@@ -641,3 +722,270 @@ address, and a new registry deployment. Nothing is mutable after
 deployment, so there is no rotation authority to trust. Clients read the
 current contract addresses from a committed deployments file in the
 repository.
+
+### 8.1 Migration between deployments
+
+A toolchain change retires a deployment generation. The retired verifier
+and the retired registry stay deployed. They remain the record of the
+attestations that they accepted. No authority exists that can alter them,
+and a migration must not create one.
+
+A migration is a fresh deployment: a new verifier and a new registry. The
+deployments file records the deployment generations in order. Each record
+names the network, the registry address, the verifier address, the
+SHA-256 hash of the verification key, and the tree depth of section 5.3,
+which a package verifier needs (section 10.2). The last record of a
+network is the current generation of that network. New registrations and
+new attestations go to the current generation only.
+
+The pair of a network and a registry address identifies exactly one
+record. A file that holds two records for one pair is invalid, and an
+implementation must refuse the whole file. It must not answer from either
+record, because a silent choice between two records lets two
+implementations reach two answers from one file.
+
+Package generation runs only against the current generation. The
+generator refuses a run whose attestation sits in a retired registry. An
+authority must therefore deliver the packages of an attestation before it
+migrates. When an authority needs packages that a retired generation
+never delivered, it cannot produce them. It must attest afresh under the
+current generation and deliver the packages of that attestation. The
+retired attestation stays on the chain as a record, without packages.
+
+The authority registers each asset again in the new registry. The
+registration collects new authorization from the authority and from every
+reserve address. A consent that a reserve address gave to an earlier
+registry has no effect in a later one, because the authorization binds to
+the contract address (section 7.2). An implementation must not copy an
+entry from an earlier registry into a later one.
+
+A reader who follows an asset across deployments compares the recorded
+authority of the two entries. The chain attributes each registration to
+the addresses that authorized it, so an equal authority connects the two
+records. A registry address alone proves nothing, because any party can
+deploy a registry.
+
+## 9. The attestation event and history
+
+The entry of an asset holds only the latest attestation. Each accepted
+attestation also emits the `AttestationAccepted` contract event. The event
+stream is the only record of the earlier attestations.
+
+The event carries the asset address as a topic. The event data carries the
+five fields of the attestation record: `final_root`, `total_liabilities`,
+`snapshot_ledger`, `reserve_sum`, and `attested_ledger`. The values equal
+the values that the registry stored for that attestation.
+
+The `getEvents` method answers only from a bounded window of retained
+ledgers. The `history-retention-window` setting controls the window, and
+its stock default is 120960 ledgers, which is about seven days
+(developers.stellar.org/docs/data/apis/rpc/api-reference/methods/getEvents).
+The `getHealth` method reports the window and the oldest retained ledger.
+Since Stellar RPC version 23, a node can serve `getLedgers` from an
+external datastore past its own window, but that integration covers
+`getLedgers` only, so it does not extend `getEvents`
+(stellar-rpc changelog, v23.0.0). A consumer that reports history must
+state the oldest ledger that its query covered. It must not present a
+window-bounded result as the complete history.
+
+History past the window is outside this protocol. The ledger history is
+permanent in the history archives, but `getEvents`, the one method that
+serves the attestation events, does not reach it. A reader who needs the
+complete attestation record uses a data indexer, or captures the events
+continuously inside the window.
+
+## 10. The inclusion package
+
+### 10.1 Purpose and delivery
+
+An inclusion package is one file for one customer. It carries what the
+customer needs to verify that their leaf is under an attested root. The
+authority's tooling writes the file, and the authority delivers it over a
+channel it already uses. No hosted service exists anywhere in the flow.
+
+The package reveals the customer's balance to anyone who reads it. Tools
+and documents must state that plainly: the customer shares the file only
+with parties allowed to see the balance.
+
+### 10.2 Schema
+
+The package is a JSON document, UTF-8, with the extension `.zkpor.json`.
+All fields are required, in this order, and no other field is permitted.
+A reader must reject a package that carries a field this table does not
+name. The `format` string is the version gate, so a new field arrives
+only together with a new `format` string; a reader that tolerated unknown
+fields would also tolerate a package that carries a root, which section
+10.3 forbids, and a tolerance rule is very hard to tighten later.
+
+| field | type | content |
+|-------|------|---------|
+| `format` | string | exactly `zkpor-inclusion/1` |
+| `network` | string | the network name, as the deployments file records it |
+| `registry` | string | the registry contract id, StrKey `C...` |
+| `asset` | string | the asset contract id, StrKey `C...` |
+| `snapshot_ledger` | number | the `u32` snapshot ledger of the attestation |
+| `leaf_index` | number | the `u32` global leaf index of section 5.2 |
+| `id` | string | the customer identifier, `Fr` hex |
+| `balance` | string | the `u64` balance as a decimal string |
+| `salt` | string | the leaf salt, `Fr` hex |
+| `siblings` | array of string | the authentication path, `Fr` hex each |
+
+`Fr` hex is `0x` followed by exactly 64 lowercase hexadecimal characters,
+the 32-byte big-endian serialization of section 1.1. A parser must reject
+a value at or above `r`, and it must reject a string that does not match
+this form exactly, including an uppercase digit or a wrong length. One
+field element then has exactly one string, so two implementations
+compare and hash the same bytes. The layout freedom below covers
+whitespace and line structure only, never the form of a value. `balance` is a decimal string because `u64`
+exceeds the exact integer range of a JSON number; a parser must reject a
+value above the `u64` maximum. `siblings` runs from the leaf level to the
+level below the root, per section 5.4. The sibling count must equal the
+tree depth of the deployment generation, which the deployments file
+records; a package with another count is malformed. A `leaf_index` at or
+above 2 to the power of that depth is malformed: the walk of section 5.4
+reads only the low bits of the index, so an unchecked high bit would let
+two different indices name one path. An `id` of zero is malformed, per
+section 4.1: no customer package names the padding identifier.
+
+A writer must serialize deterministically, so two implementations produce
+byte-identical files. The exact layout is:
+
+- the keys in the order of the table;
+- LF line ends;
+- every key-value pair and every array element on its own line;
+- an indentation of two spaces per nesting depth;
+- one colon and one space between a key and its value;
+- a comma at the end of a line that another element follows, with no
+  space before the comma;
+- each closing bracket on its own line, at the depth of its opening line;
+- one LF at the end of the file, and no trailing space on any line.
+
+This layout equals the output of the common pretty printers at an
+indentation width of two, plus the final LF. A reader must not require
+that layout; it parses any valid JSON with the required fields.
+
+`format` is the version gate. A reader that does not recognize the exact
+string must refuse to parse further and must say so. Any change to this
+section changes the suffix of the string.
+
+### 10.3 What the package must not contain
+
+The package carries exactly one customer's leaf data plus sibling hashes
+and locators. It must never contain:
+
+- the final root or the total `L`. The verifier reads both from the
+  registry over RPC. A package that carried its own expected root would
+  verify against a root that no chain ever accepted, so the registry
+  entry is the only root source a verifier may accept;
+- any other customer's identifier, balance, or salt;
+- the master secret or any value that derives salts;
+- direction bits. The direction derives from `leaf_index` per section
+  5.4, and stored data that can disagree with derived data is forbidden.
+
+A sibling hash is safe to include: it is a three-input hash whose salt
+term alone carries approximately 254 bits of entropy, so it reveals
+nothing about the leaf behind it.
+
+The authority must not issue a package for a padding leaf (section 4.3).
+
+### 10.4 Where `network` and `registry` come from
+
+The generation tooling reads `network` and `registry` from the committed
+deployments file of section 8, selected by network and deployment
+generation. It must not accept either value from an ad hoc source, because
+the package points customers at a registry, and that pointer must come
+from the same file that every other client trusts.
+
+### 10.5 When generation may run
+
+Package generation is a separate step, run only after the attestation
+transaction is confirmed on chain. Before it writes any file, the
+generation tooling must obtain the attested `final_root` and the attested
+`snapshot_ledger` from the registry entry of the asset, through a read of
+the registry, not through manual entry. It must recompute the tree,
+require the recomputed root to equal the attested root, and require the
+snapshot ledger that shaped the tree to equal the attested one. It must
+refuse on either mismatch.
+
+The root equality is the load-bearing check. The snapshot ledger enters
+the context hash, the context hash derives every salt, and every leaf
+holds its salt, so the attested root binds the whole tree. A package can
+therefore exist only for a tree that the chain accepted. The snapshot
+comparison is redundant under that check, but it stays required, because
+it catches a wrong context file early and names the disagreeing value.
+
+The reason for the gate: packages carry balances. Emitting them for an
+attestation that never landed would distribute sensitive files that point
+at a root the chain never accepted. A ledger number that an operator
+types proves nothing about the chain, so the gate reads the chain, and
+no typed value takes part in it.
+
+An implementation may split the work: a component with network access
+reads the registry entry, and an offline component recomputes the tree
+and compares. The offline component then trusts that carrier for the two
+chain values, and nothing else. The obligation of this section binds the
+implementation as a whole, so the carrier must pass the values from the
+registry read, unaltered.
+
+### 10.6 Naming, layout, and permissions
+
+```
+<out>/packages/<asset>/<snapshot_ledger>/package-<leaf_index>.zkpor.json
+<out>/packages/<asset>/<snapshot_ledger>/generation.json
+```
+
+`<leaf_index>` in the filename is zero-padded to 6 digits. The filename
+carries no customer identifier. `generation.json` is authority-side
+bookkeeping (count, format, root, transaction hash) and is not
+distributed; it is not part of any package.
+
+The tooling creates the package directory with mode `0700` and each file
+with mode `0600`, and prints one notice that the directory contains
+per-customer balances. It must not guess whether a path is synced or
+shared; explicit permissions and one explicit warning are the mechanism.
+
+### 10.7 Verification requirements
+
+A verifier accepts one package and checks it against the chain.
+
+One rule governs every package field that names a place. A package value
+may select a record inside data that the verifier already trusts. It must
+never select where trusted data comes from. The verifier obtains its
+registry addresses and its RPC endpoints from its own copy of the
+deployments file and its own configuration, never from the package. The
+`registry` and `network` fields are claims to check against that data:
+the pair must match a deployment record of the verifier's deployments
+file, from any generation, so a package of an earlier generation stays
+verifiable. A pair that matches no record means the package points
+somewhere the verifier does not trust. That is a distinct outcome and a
+signal, not an infrastructure error. The `asset` field is safe under
+this rule: it selects an entry inside the trusted registry, and the root
+the verifier obtains is then the chain's attested root for exactly the
+asset the package names. A future field that names a source of truth
+must pass the same test before it enters the schema.
+
+The checks, in order:
+
+1. Parse and validate the package per section 10.2. Refuse an unknown
+   `format` before reading any other field.
+2. Check `network` and `registry` against the verifier's deployments
+   data, per the rule above. Refuse an unmatched pair.
+3. Fetch the registry entry and its attestation for `asset` from that
+   registry. The attested root is the only root the verifier may use.
+4. Reject when no entry or no attestation exists, or when the package's
+   `snapshot_ledger` does not equal the attested snapshot.
+5. Recompute the leaf per section 4.1 and walk the siblings per section
+   5.4. Accept only when the result equals the attested root.
+
+Each failure class must stay distinct in the result: unsupported format,
+malformed package, untrusted registry or network, no matching
+attestation, root mismatch, and an infrastructure error, which is not a
+verdict. On a root mismatch the
+verifier must state that a wrong balance, a wrong salt, and a tampered
+path are indistinguishable from its position, and that the customer
+re-obtains the package before concluding anything.
+
+Inclusion and solvency currency are different claims. When the attested
+snapshot is older than the window of section 6.2, the verifier reports
+inclusion as valid and reports the solvency claim as lapsed, in two
+separate statements.
