@@ -2,7 +2,7 @@
   "constants": {
     "ctx_domain_tag": "0x000000000000000000000000000000007a6b706f722d636f6e746578742d7631",
     "salt_domain_tag": "0x000000000000000000000000000000000000007a6b706f722d73616c742d7631",
-    "max_reserve_addresses": 16,
+    "max_reserve_addresses": 32,
     "attestation_max_age_ledgers": 720,
     "address_tag_account": 0,
     "address_tag_contract": 1

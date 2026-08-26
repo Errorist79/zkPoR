@@ -1,0 +1,16 @@
+[
+  {
+    "network": "testnet",
+    "registry": "CC4MA6FWDBG3Y4YXYGDHYEZ36O3YSP7DREGOLBWKP6ZTQQ6IYFFX3KQK",
+    "verifier": "CDUEQOM2AQ54ZZ3EZA2Q4D32C7DBVQ5D45TFMBSC2RCE6ZMX32T44JC2",
+    "aggregator_key_sha256": "e08adcfe939b0610ae80c07217abf5a5b177bed4a09478266d8b49108392634f",
+    "tree_depth": 12
+  },
+  {
+    "network": "testnet",
+    "registry": "CCHUTDKUPWXVUIX6D26SE5NZ5STP74VV4DY2CNVCMNJYOU5PTROLA7MY",
+    "verifier": "CDICJW5B5VYT3GD3VTDWFYCQG6N4ONLUXKHPQSJVAN5QYPGCTOG7PIXE",
+    "aggregator_key_sha256": "e08adcfe939b0610ae80c07217abf5a5b177bed4a09478266d8b49108392634f",
+    "tree_depth": 12
+  }
+]

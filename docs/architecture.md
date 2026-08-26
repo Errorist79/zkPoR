@@ -325,11 +325,24 @@ contributors is honest. The project treats this as practically risk-free.
 ## 9. Throughput and design constraints
 
 The feasibility test measured a ceiling of about 7 verifications for each ledger,
-for the monolithic host-accelerated verify. The terminal verify of the production
-recursion path is larger: about 114.77M instructions on P26, and about 106.67M
-instructions consumed on the real P27 testnet. That gives about 5 verifications
-for each ledger. Proof of Reserves submits one attestation for each epoch, so
-this is headroom and not a binding limit. It still forces a specific design:
+for the monolithic host-accelerated verify. The production path submits one
+attestation transaction. On the real Protocol 27 testnet, that transaction with
+one reserve address declared 122,268,806 instructions and consumed 117,524,415
+instructions. The network enforces its caps against the declaration. The live
+settings of the testnet and of the mainnet, read on 2026-08-09, both set
+400,000,000 instructions for each transaction and 580,000,000 instructions
+for each ledger. One ledger budget
+therefore holds 4 such declarations. The reserve count moves the cost very
+little. Simulations against the live registry measured one added balance read.
+The read costs about 0.10M declared instructions for a classic asset. It costs
+about 0.36M for a contract token with 101,195 bytes of code, near the size
+limit of 131,072 bytes. At the limit of 32
+reserve addresses the declaration rises to about 125M for a classic asset, and
+to about 137M for such a contract token. The token figure carries the parse of
+the token code once, and the marginal cost of the read for each address after
+that. Proof of Reserves submits one
+attestation for each epoch, so this is headroom and not a binding limit. It
+still forces a specific design:
 
 - One root and one batch attestation for each reporting period. Not one
   verification for each customer.
@@ -337,8 +350,9 @@ this is headroom and not a binding limit. It still forces a specific design:
   published root. There is no on-chain transaction for each customer.
 - For a large liabilities circuit the bottleneck is the proof generation, not the
   verification, because the verification cost does not grow with the circuit
-  size. The production terminal verify measures about 106.67M instructions on
-  Protocol 27 testnet, whatever the size of the liabilities circuit. The
+  size. The production attestation transaction consumed about 117.52M
+  instructions on the Protocol 27 testnet, whatever the size of the
+  liabilities circuit. The
   prover-side
   architecture was the real design question: either recursive aggregation, or a
   split design of per-user inclusion plus a separate proof of the aggregate sum.
@@ -368,6 +382,13 @@ this is headroom and not a binding limit. It still forces a specific design:
   scheduled AFTER the audit of the production verifier and after that verifier is
   stable, and BEFORE project close. When it is done, it MUST pass the same
   soundness gate: honest ACCEPT, forged REJECT, deflated REJECT.
+
+- **Context vectors at the reserve bound.** The committed cross-language
+  vectors in `fixtures/context_vectors.json` hold reserve sets of at most 4
+  addresses. Agreement above 16 addresses currently rests on one live
+  attestation with 17 reserve reads. Before the TypeScript SDK verifies
+  packages, add a committed vector with a reserve set of 32 addresses, so
+  every implementation checks the hash at the bound and not only below it.
 
 ---
 
@@ -401,8 +422,9 @@ this is headroom and not a binding limit. It still forces a specific design:
   `Field` values. The sum accumulator is `u128`. A missing range constraint is a
   hidden vulnerability.
 - **Throughput.** About 7 verifications for each ledger for the monolithic
-  verify, and about 5 for the terminal verify of the production recursion path
-  (about 114.77M instructions on P26, about 106.67M on P27 testnet). Proof of
+  verify, and 4 attestation transactions for each ledger for the production
+  path. The attestation declares 122.27M instructions, and the ledger budget of
+  580M on the Protocol 27 testnet holds 4 such declarations. Proof of
   Reserves submits one root and one batch attestation for each period, so this is
   headroom. Do not scale the on-chain verification for each customer.
 - **Prover cost.** In a large liabilities circuit the bottleneck is the proof
@@ -432,8 +454,10 @@ The feasibility test verified that these versions work. Pin and lock all of them
 The project validated the recursive path on the real Stellar testnet at Protocol
 27 with these pins. The chain accepted the honest verify. The chain rejected the
 forged case and the deflated case with the contract error #4 of the verifier. All
-of them are real confirmed transactions. The terminal verify consumed about
-106.67M instructions, under the cap of 400M. The verifier and the circuits are
+of them are real confirmed transactions. No instruction figure stands for that
+verify of the earlier artifact, because no public source returns it today. The
+attestation transaction of the current artifact declared about 122.27M
+instructions and consumed about 117.52M. The verifier and the circuits are
 byte-identical to the P26 build: the sha256 of verifier.rs is unchanged, and
 soroban-sdk stays at 26.0.1 with no bump. See `SECURITY.md`.
 

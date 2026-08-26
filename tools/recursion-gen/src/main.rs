@@ -1,6 +1,8 @@
 //! Off-circuit driver for the recursive-aggregation circuits (inner + agg).
 //!
-//! Three subcommands split the work around the bb proving step:
+//! Three subcommands split the work around the bb proving step. Two more read
+//! the same tree again for the customers: one prints a single path, and one
+//! writes the customer files after the attestation lands.
 //!
 //!   witness   Reads params.toml, the attestation context, and a customer
 //!             file, pads the customer list to the tree capacity, derives one
@@ -8,6 +10,20 @@
 //!             subtotal, and writes
 //!               - common/src/params.nr       (BATCH_B)
 //!               - inner/Prover_<k>.toml      (one per batch)
+//!
+//!   path      Rebuilds the same tree from the same two files and prints the
+//!             authentication path of one customer: the global leaf index and
+//!             one sibling hash for each level, from the leaf level upward.
+//!             The direction of each step comes from the index, so the path
+//!             holds no direction bit.
+//!
+//!   packages  Run AFTER the attestation transaction is confirmed. Writes one
+//!             inclusion package for each customer row, and one bookkeeping
+//!             record beside them. This tool has no network access: the caller
+//!             reads the registry entry and passes the attested root and the
+//!             attested snapshot. Nothing reaches the disk until the
+//!             recomputed root equals the attested one, because a package
+//!             holds a balance.
 //!
 //!   assemble  Run AFTER bb has proven every inner batch. Reads the bb field
 //!             outputs (out/vk_fields.json + out/batch_<k>/*_fields.json) and
@@ -36,14 +52,26 @@
 //! the leaf, the node, the salt, and the context hash.
 
 use num_bigint::BigUint;
-use soroban_poseidon::Field;
-use soroban_sdk::{
-    crypto::BnScalar, Address, Bytes, Env, String as SorobanString, Vec as SorobanVec, U256,
+use soroban_sdk::{Address, Bytes, Env, String as SorobanString, Vec as SorobanVec, U256};
+use std::{
+    collections::{HashMap, HashSet},
+    env, fs,
+    io::Write,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    path::Path,
+    path::PathBuf,
+    process::Command,
 };
-use std::{collections::HashMap, env, fs, path::Path, path::PathBuf, process::Command};
 use zkpor_context::{
-    context_hash, derive_salt, fr_reduce, leaf_hash, node_hash, reserve_set_hash, FR_BYTES,
+    context_hash, derive_salt, fr_modulus, fr_reduce, leaf_hash, reserve_set_hash, FR_BYTES,
     PADDING_LEAF_BALANCE, PADDING_LEAF_ID,
+};
+use zkpor_package::{
+    deployments,
+    fr::{fr_hex, hex_bytes, parse_fr, to_big, to_fr},
+    new_env,
+    schema::{json_string, package_filename, Package, JSON_INDENT, PACKAGE_FORMAT},
+    tree::{path_in_levels, root_from_path, subtree_root, tree_levels},
 };
 
 /// The generated record of the release artifact.
@@ -65,6 +93,16 @@ const MASTER_SECRET_VAR: &str = "ZKPOR_MASTER_SECRET";
 /// Names of the three public inputs of the inner circuit, in the order that
 /// agg/src/params.nr records their positions.
 const INNER_PUBLIC_INPUTS: [&str; 3] = ["batch_slot", "subroot", "subtotal"];
+/// The committed record of the deployment generations, in order. A package
+/// names a registry, and that pointer comes from the file every client trusts.
+const DEPLOYMENTS_FILE: &str = "scripts/deployments.json";
+/// The authority-side record of one generation run. It holds the root, so it
+/// is bookkeeping and it reaches no customer.
+const GENERATION_FILE: &str = "generation.json";
+/// Mode of every directory that the generation step creates, and of every file
+/// it writes. A package holds one customer's balance.
+const PACKAGE_DIR_MODE: u32 = 0o700;
+const PACKAGE_FILE_MODE: u32 = 0o600;
 
 // Resolve a path relative to the repo root. CARGO_MANIFEST_DIR is
 // <repo>/tools/recursion-gen, so ../.. is the repo root and `rel` is taken
@@ -116,9 +154,44 @@ fn list_value(pairs: &HashMap<String, String>, key: &str) -> Vec<String> {
         .collect()
 }
 
+/// Rejects a liability list that breaks an identifier rule.
+///
+/// An identifier must be a field element, must not be zero, and must not
+/// appear twice. Zero is the padding identifier, so a zero row would produce
+/// the exact padding leaf of its position. A repeated identifier would let the
+/// authority split one liability across two leaves that each show a partial
+/// balance, and the total would still reconcile.
+///
+/// The circuits cannot enforce either rule. An inner circuit sees one batch,
+/// so it cannot see a repeated identifier in another batch.
+fn assert_identifier_rules(env: &Env, rows: &[(BigUint, u64)]) {
+    let padding = BigUint::from(PADDING_LEAF_ID);
+    let modulus = to_big(&fr_modulus(env));
+    let mut seen: HashSet<BigUint> = HashSet::with_capacity(rows.len());
+    for (row, (id, _)) in rows.iter().enumerate() {
+        assert!(
+            *id != padding,
+            "row {row} carries identifier {id}, and a customer identifier must not be zero"
+        );
+        assert!(
+            *id < modulus,
+            "row {row} carries identifier {id}, which is not below the field modulus"
+        );
+        assert!(
+            seen.insert(id.clone()),
+            "row {row} repeats identifier {id}, and an identifier appears once"
+        );
+    }
+}
+
 /// (id, balance) rows from a customer file. A comment line and the header line
 /// are dropped.
-fn read_customers(path: &Path) -> Vec<(BigUint, u64)> {
+///
+/// Every command that builds the tree reads the list here, and the identifier
+/// rules run before the reader returns. An invalid list therefore never
+/// becomes a tree: a tree that a wrong list builds is already wrong, and an
+/// attestation over it can leave a customer without a provable leaf.
+fn read_customers(env: &Env, path: &Path) -> Vec<(BigUint, u64)> {
     let mut rows = Vec::new();
     let text = fs::read_to_string(path).unwrap_or_else(|_| panic!("read {}", path.display()));
     for line in text.lines() {
@@ -134,6 +207,7 @@ fn read_customers(path: &Path) -> Vec<(BigUint, u64)> {
         let bal = bal.trim().parse::<u64>().expect("balance is u64");
         rows.push((id, bal));
     }
+    assert_identifier_rules(env, &rows);
     rows
 }
 
@@ -156,42 +230,28 @@ fn pad_to_capacity(mut rows: Vec<(BigUint, u64)>, capacity: usize) -> Vec<(BigUi
     rows
 }
 
-fn be32(x: &BigUint) -> [u8; FR_BYTES] {
-    let be = x.to_bytes_be();
-    assert!(
-        be.len() <= FR_BYTES,
-        "value does not fit in a field element"
-    );
-    let mut out = [0u8; FR_BYTES];
-    out[FR_BYTES - be.len()..].copy_from_slice(&be);
-    out
+/// The root that the two circuit stages produce: each inner circuit folds one
+/// batch of `batch_size` leaves, and the aggregator folds the batch subroots
+/// with the same node hash.
+///
+/// The two stages give the root of one uniform tree over every leaf, so a
+/// customer follows a single path and never needs to know where a batch
+/// boundary is.
+fn folded_root(env: &Env, leaves: &[U256], batch_size: usize) -> U256 {
+    let subroots: Vec<U256> = leaves
+        .chunks(batch_size)
+        .map(|batch| subtree_root(env, batch))
+        .collect();
+    subtree_root(env, &subroots)
 }
 
-fn to_fr(env: &Env, x: &BigUint) -> U256 {
-    let value = U256::from_be_bytes(env, &Bytes::from_array(env, &be32(x)));
-    assert!(
-        value < <BnScalar as Field>::modulus(env),
-        "value is not below the field modulus"
-    );
-    value
-}
-
-fn to_big(value: &U256) -> BigUint {
-    let mut bytes = [0u8; FR_BYTES];
-    value.to_be_bytes().copy_into_slice(&mut bytes);
-    BigUint::from_bytes_be(&bytes)
-}
-
-/// Root of a full binary tree over `leaves` (len a power of two, >= 2).
-/// Pairwise bottom-up; identical pairing order to common/lib.nr subtree_root.
-fn subtree_root(env: &Env, leaves: &[U256]) -> U256 {
-    let mut level: Vec<U256> = leaves.to_vec();
-    while level.len() > 1 {
-        level = (0..level.len() / 2)
-            .map(|k| node_hash(env, &level[2 * k], &level[2 * k + 1]))
-            .collect();
-    }
-    level.into_iter().next().expect("non-empty tree")
+/// The root that one leaf and its authentication path reproduce.
+///
+/// Every caller here knows the tree it built, so a failure is a defect of this
+/// tool and not an input error.
+fn root_of_path(env: &Env, leaf: &U256, index: usize, siblings: &[U256], depth: usize) -> U256 {
+    root_from_path(env, leaf, index as u64, siblings, depth)
+        .unwrap_or_else(|reason| panic!("{reason}"))
 }
 
 fn fmt_field_array(values: &[BigUint]) -> String {
@@ -199,19 +259,23 @@ fn fmt_field_array(values: &[BigUint]) -> String {
     format!("[{}]", items.join(", "))
 }
 
-fn new_env() -> Env {
-    let env = Env::default();
-    env.cost_estimate().budget().reset_unlimited();
-    env
-}
-
 fn address(env: &Env, strkey: &str) -> Address {
     Address::from_string(&SorobanString::from_str(env, strkey))
 }
 
-/// The value that binds the proof to one authority, one asset, one reserve
-/// address set, and one snapshot.
-fn read_context_hash(env: &Env, path: &Path) -> U256 {
+/// The attestation context of one context file.
+///
+/// The hash binds the proof to one authority, one asset, one reserve address
+/// set, and one snapshot. The asset and the snapshot travel with it, because
+/// a package names both and the tree that the snapshot shaped must be the
+/// tree that the chain attested.
+struct AttestationContext {
+    hash: U256,
+    asset: String,
+    snapshot_ledger: u32,
+}
+
+fn read_context(env: &Env, path: &Path) -> AttestationContext {
     let pairs = read_pairs(path);
     let mut reserves = SorobanVec::new(env);
     for strkey in list_value(&pairs, "reserves") {
@@ -220,14 +284,20 @@ fn read_context_hash(env: &Env, path: &Path) -> U256 {
     let set = reserve_set_hash(env, &reserves).expect("the reserve set is not valid");
     let snapshot_ledger = u64_value(&pairs, "snapshot_ledger");
     let snapshot_ledger = u32::try_from(snapshot_ledger).expect("snapshot_ledger is a u32");
-    context_hash(
+    let asset = text_value(&pairs, "asset");
+    let hash = context_hash(
         env,
         &address(env, &text_value(&pairs, "authority")),
-        &address(env, &text_value(&pairs, "asset")),
+        &address(env, &asset),
         &set,
         snapshot_ledger,
     )
-    .expect("the context addresses are not valid")
+    .expect("the context addresses are not valid");
+    AttestationContext {
+        hash,
+        asset,
+        snapshot_ledger,
+    }
 }
 
 /// The master secret that seeds every salt.
@@ -239,21 +309,8 @@ fn read_master_secret(env: &Env) -> U256 {
         .unwrap_or_else(|_| panic!("set {MASTER_SECRET_VAR} to 32 bytes of hex"));
     let raw = raw.trim();
     let raw = raw.strip_prefix("0x").unwrap_or(raw);
-    fr_reduce(env, &hex_bytes(raw))
-}
-
-fn hex_bytes(text: &str) -> [u8; FR_BYTES] {
-    assert_eq!(
-        text.len(),
-        FR_BYTES * 2,
-        "{MASTER_SECRET_VAR} must be 32 bytes of hex"
-    );
-    let mut out = [0u8; FR_BYTES];
-    for (i, byte) in out.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&text[2 * i..2 * i + 2], 16)
-            .unwrap_or_else(|_| panic!("{MASTER_SECRET_VAR} is not hex"));
-    }
-    out
+    let bytes = hex_bytes(raw).unwrap_or_else(|reason| panic!("{MASTER_SECRET_VAR}: {reason}"));
+    fr_reduce(env, &bytes)
 }
 
 /// The names of the public inputs of a compiled Noir program, in the order
@@ -508,12 +565,26 @@ fn read_shape() -> (usize, usize, usize) {
     (b, k, b * k)
 }
 
+/// The salt and the leaf hash of one row at its global index.
+fn leaf_of_row(
+    env: &Env,
+    master_secret: &U256,
+    context: &U256,
+    row: &(BigUint, u64),
+    global_index: usize,
+) -> (U256, U256) {
+    let (id, balance) = row;
+    let salt = derive_salt(env, master_secret, context, global_index as u64);
+    let leaf = leaf_hash(env, &to_fr(env, id), *balance, &salt);
+    (salt, leaf)
+}
+
 fn cmd_witness(context_file: &Path, customers_file: &Path) {
     let (b, k, capacity) = read_shape();
     let env = new_env();
-    let context = read_context_hash(&env, context_file);
+    let context = read_context(&env, context_file).hash;
     let master_secret = read_master_secret(&env);
-    let rows = pad_to_capacity(read_customers(customers_file), capacity);
+    let rows = pad_to_capacity(read_customers(&env, customers_file), capacity);
 
     fs::write(
         repo_path("circuits/recursion/common/src/params.nr"),
@@ -531,11 +602,11 @@ fn cmd_witness(context_file: &Path, customers_file: &Path) {
         let mut leaves = Vec::with_capacity(b);
         let mut sum: u128 = 0;
         for j in 0..b {
-            let global_index = (batch * b + j) as u64;
-            let (id, balance) = &rows[batch * b + j];
-            let id_fr = to_fr(&env, id);
-            let salt = derive_salt(&env, &master_secret, &context, global_index);
-            leaves.push(leaf_hash(&env, &id_fr, *balance, &salt));
+            let global_index = batch * b + j;
+            let row = &rows[global_index];
+            let (id, balance) = row;
+            let (salt, leaf) = leaf_of_row(&env, &master_secret, &context, row, global_index);
+            leaves.push(leaf);
             ids.push(id.clone());
             balances.push(*balance);
             salts.push(to_big(&salt));
@@ -557,6 +628,277 @@ fn cmd_witness(context_file: &Path, customers_file: &Path) {
         .expect("write inner Prover_<k>.toml");
     }
     println!("witness: B={b} K={k} -> common/src/params.nr + {k} inner Prover_<k>.toml");
+}
+
+/// The global leaf index of one customer identifier: the position of the row
+/// in the frozen list, counted from zero.
+///
+/// The reader already rejected a zero identifier and a repeated identifier, so
+/// only an absent identifier fails here.
+fn index_of_customer(rows: &[(BigUint, u64)], id: &BigUint) -> usize {
+    rows.iter()
+        .position(|(row_id, _)| row_id == id)
+        .unwrap_or_else(|| panic!("the customer file holds no row with identifier {id}"))
+}
+
+/// The leaves that the path command checks against the fold: the first leaf,
+/// the two leaves on the sides of the first batch boundary, the last customer
+/// row, and the leaf that the caller asked for. An index error shows at an
+/// edge, so the check reads the edges rather than arbitrary positions.
+fn self_check_indices(batch_size: usize, customer_count: usize, requested: usize) -> Vec<usize> {
+    let mut indices = std::vec![0, batch_size - 1, batch_size, customer_count - 1, requested];
+    indices.sort_unstable();
+    indices.dedup();
+    indices
+}
+
+/// Prints the authentication path of one customer.
+///
+/// The command rebuilds the same tree from the same two files as the witness
+/// command, so the path it prints belongs to the root that the proof carries.
+/// It recomputes the root from the path it produced and fails on a
+/// disagreement, so a drift between the fold and the path cannot leave this
+/// command.
+fn cmd_path(context_file: &Path, customers_file: &Path, customer_id: &str) {
+    let (b, _, capacity) = read_shape();
+    let depth = capacity.trailing_zeros() as usize;
+    let env = new_env();
+    let context = read_context(&env, context_file).hash;
+    let master_secret = read_master_secret(&env);
+
+    let customers = read_customers(&env, customers_file);
+    let customer_count = customers.len();
+    let id = customer_id
+        .trim()
+        .parse::<BigUint>()
+        .expect("the customer identifier is a non-negative integer");
+    let global_index = index_of_customer(&customers, &id);
+    let rows = pad_to_capacity(customers, capacity);
+    let balance = rows[global_index].1;
+
+    let mut leaves = Vec::with_capacity(capacity);
+    let mut salt = None;
+    for (index, row) in rows.iter().enumerate() {
+        let (row_salt, leaf) = leaf_of_row(&env, &master_secret, &context, row, index);
+        if index == global_index {
+            salt = Some(row_salt);
+        }
+        leaves.push(leaf);
+    }
+    let salt = salt.expect("the leaf of the customer");
+
+    // The levels come from the uniform fold and the root comes from the two
+    // circuit stages. The two computations stay separate, so the comparison
+    // below is evidence and not a restatement.
+    let levels = tree_levels(&env, &leaves);
+    let root = to_big(&folded_root(&env, &leaves, b));
+    for index in self_check_indices(b, customer_count, global_index) {
+        let path = path_in_levels(&levels, index);
+        assert_eq!(
+            to_big(&root_of_path(&env, &leaves[index], index, &path, depth)),
+            root,
+            "the path of leaf {index} does not recompute the root that the fold produces"
+        );
+    }
+
+    let siblings: Vec<BigUint> = path_in_levels(&levels, global_index)
+        .iter()
+        .map(to_big)
+        .collect();
+    println!("global_index = {global_index}");
+    println!("depth = {depth}");
+    println!("id = {id}");
+    println!("balance = {balance}");
+    println!("salt = {}", to_big(&salt));
+    println!("leaf = {}", to_big(&leaves[global_index]));
+    println!("root = {root}");
+    println!("siblings = {}", fmt_field_array(&siblings));
+}
+
+/// The authority-side record of one generation run. It holds the root, so it
+/// stays with the authority and reaches no customer.
+fn generation_json(count: usize, root: &BigUint, transaction_hash: &str) -> String {
+    let pad = " ".repeat(JSON_INDENT);
+    format!(
+        "{{\n{pad}\"count\": {count},\n{pad}\"format\": {},\n{pad}\"root\": {},\n\
+         {pad}\"transaction_hash\": {}\n}}\n",
+        json_string(PACKAGE_FORMAT),
+        json_string(&fr_hex(root)),
+        json_string(transaction_hash),
+    )
+}
+
+/// Creates one directory that only the owner can enter.
+fn create_dir_private(path: &Path) {
+    if !path.is_dir() {
+        fs::create_dir(path).unwrap_or_else(|_| panic!("create {}", path.display()));
+    }
+    fs::set_permissions(path, fs::Permissions::from_mode(PACKAGE_DIR_MODE))
+        .unwrap_or_else(|_| panic!("set the mode of {}", path.display()));
+}
+
+/// Writes one file that only the owner can read.
+///
+/// The open sets the mode of a new file. An earlier file at the path keeps its
+/// own mode through the open, so the mode is set again on the open file before
+/// any content reaches it. The open truncated that file, so no byte of the new
+/// content ever sits at the earlier mode.
+fn write_private(path: &Path, text: &str) {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(PACKAGE_FILE_MODE)
+        .open(path)
+        .unwrap_or_else(|_| panic!("write {}", path.display()));
+    file.set_permissions(fs::Permissions::from_mode(PACKAGE_FILE_MODE))
+        .unwrap_or_else(|_| panic!("set the mode of {}", path.display()));
+    file.write_all(text.as_bytes())
+        .unwrap_or_else(|_| panic!("write {}", path.display()));
+}
+
+/// The values that a read of the registry entry supplies. No value here comes
+/// from a person: a typed ledger number proves nothing about the chain.
+struct AttestedEntry {
+    root: BigUint,
+    snapshot_ledger: u32,
+    transaction_hash: String,
+}
+
+/// The inputs of one generation run that do not come from the context file.
+struct GenerationRequest<'a> {
+    customers_file: &'a Path,
+    deployments_file: &'a Path,
+    out: &'a Path,
+    network: &'a str,
+    /// The registry that accepted the attestation. The package carries the
+    /// registry of the deployment record, and a customer reads the root there.
+    /// A record that names another registry would send every customer to a
+    /// chain state that this attestation never reached.
+    registry: &'a str,
+    attested: &'a AttestedEntry,
+}
+
+/// Writes one package for each customer row.
+///
+/// The generator has no network access. The caller reads the registry entry
+/// and passes the attested root and the attested snapshot, unaltered. Nothing
+/// reaches the disk before both comparisons pass, because a package holds a
+/// balance and an attestation that never landed must leave no file behind.
+fn write_packages(
+    env: &Env,
+    context: &AttestationContext,
+    master_secret: &U256,
+    request: &GenerationRequest,
+) {
+    let (b, _, capacity) = read_shape();
+    let depth = capacity.trailing_zeros() as usize;
+
+    let deployments = fs::read_to_string(request.deployments_file)
+        .unwrap_or_else(|_| panic!("read {}", request.deployments_file.display()));
+    let generation = deployments::current(&deployments, request.network)
+        .unwrap_or_else(|reason| panic!("{DEPLOYMENTS_FILE}: {reason}"));
+    assert_eq!(
+        generation.tree_depth, depth,
+        "the {} generation holds trees of depth {}, and this tree has depth {depth}",
+        request.network, generation.tree_depth
+    );
+    assert_eq!(
+        generation.registry, request.registry,
+        "the {} generation names the registry {}, and the attestation reached {}",
+        request.network, generation.registry, request.registry
+    );
+
+    // The first half of the gate. This comparison needs no tree, and it names
+    // a wrong context file directly, so it runs before the fold.
+    assert_eq!(
+        context.snapshot_ledger, request.attested.snapshot_ledger,
+        "the context file names snapshot {}, and the registry attested {}",
+        context.snapshot_ledger, request.attested.snapshot_ledger
+    );
+
+    let customers = read_customers(env, request.customers_file);
+    let customer_count = customers.len();
+    let rows = pad_to_capacity(customers, capacity);
+
+    let mut leaves = Vec::with_capacity(capacity);
+    let mut salts = Vec::with_capacity(customer_count);
+    for (index, row) in rows.iter().enumerate() {
+        let (salt, leaf) = leaf_of_row(env, master_secret, &context.hash, row, index);
+        if index < customer_count {
+            salts.push(to_big(&salt));
+        }
+        leaves.push(leaf);
+    }
+
+    // The load-bearing half of the gate. The snapshot enters the context hash,
+    // the context derives every salt, and every leaf holds its salt, so an
+    // equal root means the chain accepted this exact tree.
+    let root = to_big(&folded_root(env, &leaves, b));
+    assert!(
+        root == request.attested.root,
+        "the recomputed root is {}, and the registry attested {}; \
+         no package may exist for a root that the chain did not accept",
+        fr_hex(&root),
+        fr_hex(&request.attested.root)
+    );
+
+    let directory = request
+        .out
+        .join("packages")
+        .join(&context.asset)
+        .join(context.snapshot_ledger.to_string());
+    // The output directory belongs to the operator, so it keeps its own mode.
+    // Every directory below it holds packages, and the tool owns those.
+    fs::create_dir_all(request.out).unwrap_or_else(|_| panic!("create {}", request.out.display()));
+    for level in [
+        request.out.join("packages"),
+        request.out.join("packages").join(&context.asset),
+        directory.clone(),
+    ] {
+        create_dir_private(&level);
+    }
+
+    let levels = tree_levels(env, &leaves);
+    for (index, salt) in salts.iter().enumerate() {
+        let siblings: Vec<BigUint> = path_in_levels(&levels, index).iter().map(to_big).collect();
+        let leaf_index = index as u32;
+        let package = Package {
+            network: request.network.to_string(),
+            registry: generation.registry.clone(),
+            asset: context.asset.clone(),
+            snapshot_ledger: context.snapshot_ledger,
+            leaf_index,
+            id: rows[index].0.clone(),
+            balance: rows[index].1,
+            salt: salt.clone(),
+            siblings,
+        };
+        write_private(
+            &directory.join(package_filename(leaf_index)),
+            &package.to_json(),
+        );
+    }
+    write_private(
+        &directory.join(GENERATION_FILE),
+        &generation_json(customer_count, &root, &request.attested.transaction_hash),
+    );
+    println!(
+        "packages: {customer_count} files in {}",
+        directory.display()
+    );
+    println!(
+        "NOTICE: {} holds one balance for each customer. Give one file to \
+         one customer, and to nobody else.",
+        directory.display()
+    );
+}
+
+fn cmd_packages(context_file: &Path, request: &GenerationRequest) {
+    let env = new_env();
+    let context = read_context(&env, context_file);
+    let master_secret = read_master_secret(&env);
+    write_packages(&env, &context, &master_secret, request);
 }
 
 /// bb `--output_format fields` emits a JSON array of 0x-prefixed field strings
@@ -588,7 +930,7 @@ fn cmd_assemble(context_file: &Path, out: &Path) {
         println!("WARNING: this pin is a development artifact of shape B={b} K={k}");
     }
     let env = new_env();
-    let context = read_context_hash(&env, context_file);
+    let context = read_context(&env, context_file).hash;
 
     let layout = public_input_layout(&repo_path(
         "circuits/recursion/inner/target/recursion_inner.json",
@@ -891,8 +1233,34 @@ fn write_registry_params(key_sha256: &str, inner_key_hash: &BigUint, positions: 
 }
 
 const USAGE: &str = "usage: recursion-gen witness <context.toml> <customers.csv>\n\
+                            recursion-gen path <context.toml> <customers.csv> <customer_id>\n\
+                            recursion-gen packages <context.toml> <customers.csv> <out_dir> \
+                            --network <name> --registry <address> --attested-root <hex> \
+                            --attested-snapshot <ledger> --transaction <hash> \
+                            [--deployments <file>]\n\
                             recursion-gen assemble <context.toml> [out_dir]\n\
                             recursion-gen manifest <inner_out_dir> <agg_target_dir>";
+
+/// The value of one named argument that a run may leave out.
+fn optional_flag_value(args: &[String], name: &str) -> Option<String> {
+    let position = args.iter().position(|arg| arg == name)?;
+    Some(
+        args.get(position + 1)
+            .unwrap_or_else(|| panic!("{name} needs a value"))
+            .clone(),
+    )
+}
+
+/// The value of one required named argument.
+fn flag_value(args: &[String], name: &str) -> String {
+    let position = args
+        .iter()
+        .position(|arg| arg == name)
+        .unwrap_or_else(|| panic!("missing {name}"));
+    args.get(position + 1)
+        .unwrap_or_else(|| panic!("{name} needs a value"))
+        .clone()
+}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -900,6 +1268,41 @@ fn main() {
     match args.get(1).map(String::as_str) {
         Some("witness") => match (arg(2), arg(3)) {
             (Some(context), Some(customers)) => cmd_witness(&context, &customers),
+            _ => usage(),
+        },
+        Some("path") => match (arg(2), arg(3), args.get(4)) {
+            (Some(context), Some(customers), Some(id)) => cmd_path(&context, &customers, id),
+            _ => usage(),
+        },
+        Some("packages") => match (arg(2), arg(3), arg(4)) {
+            (Some(context), Some(customers), Some(out)) => {
+                let snapshot = flag_value(&args, "--attested-snapshot");
+                let attested = AttestedEntry {
+                    root: parse_fr(&new_env(), &flag_value(&args, "--attested-root"))
+                        .unwrap_or_else(|reason| panic!("the attested root: {reason}")),
+                    snapshot_ledger: snapshot
+                        .trim()
+                        .parse()
+                        .expect("the attested snapshot is a u32"),
+                    transaction_hash: flag_value(&args, "--transaction"),
+                };
+                // A localnet harness deploys its own registry, so it names its
+                // own record. Every other run reads the committed file.
+                let deployments = optional_flag_value(&args, "--deployments")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| repo_path(DEPLOYMENTS_FILE));
+                cmd_packages(
+                    &context,
+                    &GenerationRequest {
+                        customers_file: &customers,
+                        deployments_file: &deployments,
+                        out: &out,
+                        network: &flag_value(&args, "--network"),
+                        registry: &flag_value(&args, "--registry"),
+                        attested: &attested,
+                    },
+                );
+            }
             _ => usage(),
         },
         Some("assemble") => match arg(2) {
@@ -925,6 +1328,8 @@ fn usage() -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zkpor_context::node_hash;
+    use zkpor_package::schema::PACKAGE_EXTENSION;
 
     fn rows(count: usize) -> Vec<(BigUint, u64)> {
         (0..count)
@@ -989,6 +1394,512 @@ mod tests {
         position_of(&layout, "subroot");
     }
 
+    /// Shapes that the path tests cover. Each pair is (B, K), and both values
+    /// are powers of two of at least 2, as params.toml requires.
+    const SHAPES: [(usize, usize); 5] = [(2, 2), (2, 4), (4, 2), (4, 4), (8, 2)];
+
+    /// Distinct leaves of a tree of `count` positions. The values only have to
+    /// differ, so the test builds them from the leaf hash directly instead of
+    /// from a context and a master secret.
+    fn leaves(env: &Env, count: usize) -> Vec<U256> {
+        (0..count)
+            .map(|i| {
+                let id = to_fr(env, &BigUint::from(i as u64 + 1));
+                let salt = to_fr(env, &BigUint::from(i as u64 + 1000));
+                leaf_hash(env, &id, i as u64 * 7 + 1, &salt)
+            })
+            .collect()
+    }
+
+    fn depth_of(capacity: usize) -> usize {
+        capacity.trailing_zeros() as usize
+    }
+
+    /// The path of one leaf. A test that reads a single path folds the tree
+    /// for that path, and a test that reads many folds it once.
+    fn path_of(env: &Env, leaves: &[U256], global_index: usize) -> Vec<U256> {
+        path_in_levels(&tree_levels(env, leaves), global_index)
+    }
+
+    /// The drift guard. The generator holds the path extraction next to the
+    /// fold, so this test fails as soon as one of the two moves.
+    #[test]
+    fn every_path_recomputes_the_root_that_the_fold_produces() {
+        let env = new_env();
+        for (b, k) in SHAPES {
+            let capacity = b * k;
+            let tree = leaves(&env, capacity);
+            let root = to_big(&folded_root(&env, &tree, b));
+            let levels = tree_levels(&env, &tree);
+            for (g, leaf) in tree.iter().enumerate() {
+                let siblings = path_in_levels(&levels, g);
+                assert_eq!(
+                    to_big(&root_of_path(&env, leaf, g, &siblings, depth_of(capacity))),
+                    root,
+                    "leaf {g} of the tree of B={b} K={k}"
+                );
+            }
+        }
+    }
+
+    /// The first leaf is the left input at every level, and the last leaf is
+    /// the right input at every level. The first sibling is the neighbour leaf
+    /// in both cases.
+    #[test]
+    fn the_first_and_the_last_leaf_sit_at_the_two_edges() {
+        let env = new_env();
+        let (b, capacity) = (4, 16);
+        let tree = leaves(&env, capacity);
+        let first = path_of(&env, &tree, 0);
+        let last = path_of(&env, &tree, capacity - 1);
+        assert_eq!(to_big(&first[0]), to_big(&tree[1]));
+        assert_eq!(to_big(&last[0]), to_big(&tree[capacity - 2]));
+
+        // Every step of the first leaf pairs the node on the left, and every
+        // step of the last leaf pairs it on the right.
+        let mut left = tree[0].clone();
+        let mut right = tree[capacity - 1].clone();
+        for level in 0..depth_of(capacity) {
+            left = node_hash(&env, &left, &first[level]);
+            right = node_hash(&env, &last[level], &right);
+        }
+        let root = to_big(&folded_root(&env, &tree, b));
+        assert_eq!(to_big(&left), root);
+        assert_eq!(to_big(&right), root);
+    }
+
+    #[test]
+    fn the_index_of_a_customer_is_the_row_of_the_identifier() {
+        let rows = rows(4);
+        assert_eq!(index_of_customer(&rows, &BigUint::from(1u32)), 0);
+        assert_eq!(index_of_customer(&rows, &BigUint::from(4u32)), 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "no row with identifier")]
+    fn an_absent_identifier_gets_no_path() {
+        index_of_customer(&rows(4), &BigUint::from(9u32));
+    }
+
+    /// A liability list of three rows. Only the identifier of the last row
+    /// changes, so a rejected list and its control differ in one value.
+    fn list_with_last_identifier(id: &str) -> String {
+        format!("id,balance\n1,10\n2,20\n{id},30\n")
+    }
+
+    /// Reads the list through the same reader that the witness command calls,
+    /// so an invalid list fails before any tree exists.
+    fn read_list(name: &str, id: &str) -> Vec<(BigUint, u64)> {
+        let env = new_env();
+        let path = write_temp(name, &list_with_last_identifier(id));
+        read_customers(&env, &path)
+    }
+
+    /// The control of the three rejections below.
+    #[test]
+    fn the_reader_accepts_distinct_nonzero_identifiers() {
+        let rows = read_list("zkpor_rows_ok.csv", "3");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[2], (BigUint::from(3u32), 30));
+    }
+
+    #[test]
+    #[should_panic(expected = "must not be zero")]
+    fn the_reader_rejects_the_padding_identifier() {
+        read_list("zkpor_rows_zero.csv", "0");
+    }
+
+    #[test]
+    #[should_panic(expected = "repeats identifier")]
+    fn the_reader_rejects_a_repeated_identifier() {
+        read_list("zkpor_rows_repeat.csv", "2");
+    }
+
+    #[test]
+    #[should_panic(expected = "below the field modulus")]
+    fn the_reader_rejects_an_identifier_that_is_not_a_field_element() {
+        let modulus = to_big(&fr_modulus(&new_env()));
+        read_list("zkpor_rows_modulus.csv", &modulus.to_string());
+    }
+
+    #[test]
+    fn the_self_check_reads_the_edges_of_the_tree() {
+        // The batch boundary, the first leaf, the last customer row, and the
+        // leaf that the caller asked for.
+        assert_eq!(
+            self_check_indices(1024, 1000, 499),
+            [0, 499, 999, 1023, 1024]
+        );
+        // A request at an edge adds no position.
+        assert_eq!(self_check_indices(4, 4, 0), [0, 3, 4]);
+    }
+
+    // ---- the inclusion package ----
+
+    const TEST_NETWORK: &str = "test-only-network";
+    /// A valid contract StrKey. It stands for a registry in these tests only.
+    const TEST_REGISTRY: &str = "CBCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEJ5HZ";
+    const TEST_TRANSACTION: &str =
+        "3a1f0000000000000000000000000000000000000000000000000000000000ff";
+    const CUSTOMERS_FIXTURE: &str = "fixtures/test_only_customers.csv";
+
+    fn fixture_context(env: &Env) -> AttestationContext {
+        read_context(env, &repo_path("fixtures/test_only_context.toml"))
+    }
+
+    /// The master secret of the committed fixture. The tests read the file
+    /// rather than the process environment, so no test changes the process.
+    fn fixture_master_secret(env: &Env) -> U256 {
+        let pairs = read_pairs(&repo_path("fixtures/test_only_master_secret.env"));
+        let raw = pairs
+            .get("TEST_ONLY_MASTER_SECRET")
+            .expect("the fixture holds the test secret")
+            .clone();
+        let raw = raw.trim().trim_start_matches("0x");
+        fr_reduce(env, &hex_bytes(raw).expect("the fixture secret"))
+    }
+
+    fn fixture_rows(env: &Env) -> Vec<(BigUint, u64)> {
+        read_customers(env, &repo_path(CUSTOMERS_FIXTURE))
+    }
+
+    fn deployments_with_depth(name: &str, depth: usize) -> PathBuf {
+        write_temp(
+            name,
+            &format!(
+                "[\n  {{\n    \"network\": \"{TEST_NETWORK}\",\n    \
+                 \"registry\": \"{TEST_REGISTRY}\",\n    \
+                 \"verifier\": \"{TEST_REGISTRY}\",\n    \
+                 \"verification_key_sha256\": \"{TEST_TRANSACTION}\",\n    \
+                 \"tree_depth\": {depth}\n  }}\n]\n"
+            ),
+        )
+    }
+
+    /// The attestation that the fixture produces. One process computes it once,
+    /// because the tree of the release shape is expensive to fold.
+    fn fixture_attestation() -> &'static AttestedEntry {
+        static ATTESTED: std::sync::OnceLock<AttestedEntry> = std::sync::OnceLock::new();
+        ATTESTED.get_or_init(|| {
+            let env = new_env();
+            let context = fixture_context(&env);
+            let (b, _, capacity) = read_shape();
+            let master_secret = fixture_master_secret(&env);
+            let rows = pad_to_capacity(fixture_rows(&env), capacity);
+            let leaves: Vec<U256> = rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| leaf_of_row(&env, &master_secret, &context.hash, row, index).1)
+                .collect();
+            AttestedEntry {
+                root: to_big(&folded_root(&env, &leaves, b)),
+                snapshot_ledger: context.snapshot_ledger,
+                transaction_hash: TEST_TRANSACTION.to_string(),
+            }
+        })
+    }
+
+    /// Writes the packages of the fixture into a fresh directory and returns
+    /// the directory that holds them.
+    fn generate_into(out_name: &str, attested: &AttestedEntry, deployments: &Path) -> PathBuf {
+        generate_for_registry(out_name, attested, deployments, TEST_REGISTRY)
+    }
+
+    fn generate_for_registry(
+        out_name: &str,
+        attested: &AttestedEntry,
+        deployments: &Path,
+        registry: &str,
+    ) -> PathBuf {
+        let env = new_env();
+        let context = fixture_context(&env);
+        let out = env::temp_dir().join(out_name);
+        let _ = fs::remove_dir_all(&out);
+        write_packages(
+            &env,
+            &context,
+            &fixture_master_secret(&env),
+            &GenerationRequest {
+                customers_file: &repo_path(CUSTOMERS_FIXTURE),
+                deployments_file: deployments,
+                out: &out,
+                network: TEST_NETWORK,
+                registry,
+                attested,
+            },
+        );
+        out.join("packages")
+            .join(&context.asset)
+            .join(context.snapshot_ledger.to_string())
+    }
+
+    /// One generation over the fixture, done once for every test that reads it.
+    fn generated() -> &'static PathBuf {
+        static DIRECTORY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        DIRECTORY.get_or_init(|| {
+            let depth = read_shape().2.trailing_zeros() as usize;
+            generate_into(
+                "zkpor_packages",
+                fixture_attestation(),
+                &deployments_with_depth("zkpor_deployments_ok.json", depth),
+            )
+        })
+    }
+
+    fn package_files(directory: &Path) -> Vec<PathBuf> {
+        let mut files: Vec<PathBuf> = fs::read_dir(directory)
+            .expect("read the package directory")
+            .map(|entry| entry.expect("a directory entry").path())
+            .filter(|path| path.to_string_lossy().ends_with(PACKAGE_EXTENSION))
+            .collect();
+        files.sort();
+        files
+    }
+
+    fn mode_of(path: &Path) -> u32 {
+        fs::metadata(path)
+            .expect("the metadata")
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    #[test]
+    fn the_committed_deployments_file_is_an_ordered_list() {
+        let text = fs::read_to_string(repo_path(DEPLOYMENTS_FILE)).expect("the deployments file");
+        let json: serde_json::Value = serde_json::from_str(&text).expect("the file is JSON");
+        assert!(json.is_array(), "the deployments file is a list");
+    }
+
+    #[test]
+    fn one_package_exists_for_each_customer_row_and_none_for_a_padding_leaf() {
+        let directory = generated();
+        let rows = fixture_rows(&new_env());
+        assert_eq!(package_files(directory).len(), rows.len());
+        assert!(directory.join(package_filename(0)).is_file());
+        assert!(directory
+            .join(package_filename(rows.len() as u32 - 1))
+            .is_file());
+        // The first padding position holds no package.
+        assert!(!directory.join(package_filename(rows.len() as u32)).exists());
+        assert!(directory.join(GENERATION_FILE).is_file());
+    }
+
+    /// The load-bearing test. Every package verifies against the root that the
+    /// fold produced, and every field holds what section 10.2 fixes.
+    #[test]
+    fn every_package_holds_the_fixed_fields_and_verifies_against_the_attested_root() {
+        let env = new_env();
+        let context = fixture_context(&env);
+        let rows = fixture_rows(&env);
+        let depth = read_shape().2.trailing_zeros() as usize;
+        let attested = &fixture_attestation().root;
+        let directory = generated();
+
+        let hex_value = |text: &str| -> BigUint {
+            assert_eq!(text.len(), 2 + FR_BYTES * 2, "an Fr field is 0x and 64 hex");
+            assert!(text.starts_with("0x"));
+            let body = &text[2..];
+            assert_eq!(body, body.to_lowercase(), "an Fr field is lowercase");
+            BigUint::parse_bytes(body.as_bytes(), 16).expect("hexadecimal")
+        };
+
+        for (index, (id, balance)) in rows.iter().enumerate() {
+            let text = fs::read_to_string(directory.join(package_filename(index as u32)))
+                .expect("read the package");
+            assert!(text.ends_with("}\n") && !text.contains('\r'));
+            let json: serde_json::Value = serde_json::from_str(&text).expect("the package is JSON");
+            let object = json.as_object().expect("the package is an object");
+
+            // Presence and absence. The root and the total never appear.
+            assert_eq!(
+                object.keys().collect::<Vec<_>>(),
+                std::vec![
+                    "asset",
+                    "balance",
+                    "format",
+                    "id",
+                    "leaf_index",
+                    "network",
+                    "registry",
+                    "salt",
+                    "siblings",
+                    "snapshot_ledger"
+                ],
+                "the package holds exactly the fields of the schema"
+            );
+
+            assert_eq!(json["format"], PACKAGE_FORMAT);
+            assert_eq!(json["network"], TEST_NETWORK);
+            assert_eq!(json["registry"], TEST_REGISTRY);
+            assert_eq!(json["asset"], context.asset);
+            assert_eq!(json["snapshot_ledger"], context.snapshot_ledger);
+            assert_eq!(json["leaf_index"], index);
+            assert_eq!(json["balance"], balance.to_string());
+            assert_eq!(hex_value(json["id"].as_str().expect("id is a string")), *id);
+
+            let siblings = json["siblings"].as_array().expect("siblings is a list");
+            assert_eq!(siblings.len(), depth);
+            let siblings: Vec<U256> = siblings
+                .iter()
+                .map(|value| to_fr(&env, &hex_value(value.as_str().expect("a sibling"))))
+                .collect();
+            let salt = to_fr(&env, &hex_value(json["salt"].as_str().expect("salt")));
+            let leaf = leaf_hash(&env, &to_fr(&env, id), *balance, &salt);
+            assert_eq!(
+                to_big(&root_of_path(&env, &leaf, index, &siblings, depth)),
+                *attested,
+                "package {index} does not verify against the attested root"
+            );
+        }
+    }
+
+    #[test]
+    fn the_bookkeeping_record_holds_the_count_and_the_root() {
+        let text = fs::read_to_string(generated().join(GENERATION_FILE)).expect("the record");
+        let json: serde_json::Value = serde_json::from_str(&text).expect("the record is JSON");
+        assert_eq!(json["count"], fixture_rows(&new_env()).len());
+        assert_eq!(json["format"], PACKAGE_FORMAT);
+        assert_eq!(json["root"], fr_hex(&fixture_attestation().root));
+        assert_eq!(json["transaction_hash"], TEST_TRANSACTION);
+    }
+
+    #[test]
+    fn the_directory_and_the_files_are_private() {
+        let directory = generated();
+        // Every directory that the tool creates, from `packages` downward.
+        let asset = directory.parent().expect("the asset directory");
+        assert_eq!(mode_of(directory), PACKAGE_DIR_MODE);
+        assert_eq!(mode_of(asset), PACKAGE_DIR_MODE);
+        assert_eq!(
+            mode_of(asset.parent().expect("the packages directory")),
+            PACKAGE_DIR_MODE
+        );
+        assert_eq!(
+            mode_of(&directory.join(package_filename(0))),
+            PACKAGE_FILE_MODE
+        );
+        assert_eq!(mode_of(&directory.join(GENERATION_FILE)), PACKAGE_FILE_MODE);
+    }
+
+    /// A file that already exists takes the private mode before the new
+    /// content reaches it, so no byte ever sits at the earlier mode.
+    #[test]
+    fn a_rewritten_file_is_private_from_the_first_byte() {
+        let path = write_temp("zkpor_rewrite.json", "an earlier file");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("the wide mode");
+        write_private(&path, "the new content\n");
+        assert_eq!(mode_of(&path), PACKAGE_FILE_MODE);
+        assert_eq!(
+            fs::read_to_string(&path).expect("read"),
+            "the new content\n"
+        );
+    }
+
+    /// Two writers must produce the same bytes, so a second run over the same
+    /// inputs reproduces every file exactly.
+    #[test]
+    fn a_second_generation_writes_the_same_bytes() {
+        let depth = read_shape().2.trailing_zeros() as usize;
+        let again = generate_into(
+            "zkpor_packages_again",
+            fixture_attestation(),
+            &deployments_with_depth("zkpor_deployments_again.json", depth),
+        );
+        let first = package_files(generated());
+        let second = package_files(&again);
+        assert_eq!(first.len(), second.len());
+        for (one, two) in first.iter().zip(second.iter()) {
+            assert_eq!(
+                one.file_name(),
+                two.file_name(),
+                "the two runs name their files differently"
+            );
+            assert_eq!(
+                fs::read(one).expect("read"),
+                fs::read(two).expect("read"),
+                "{} differs between two runs",
+                one.display()
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "names snapshot")]
+    fn a_snapshot_that_the_chain_did_not_attest_is_refused() {
+        let depth = read_shape().2.trailing_zeros() as usize;
+        let attested = AttestedEntry {
+            root: fixture_attestation().root.clone(),
+            snapshot_ledger: fixture_attestation().snapshot_ledger + 1,
+            transaction_hash: TEST_TRANSACTION.to_string(),
+        };
+        generate_into(
+            "zkpor_packages_snapshot",
+            &attested,
+            &deployments_with_depth("zkpor_deployments_snapshot.json", depth),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "holds trees of depth")]
+    fn a_generation_of_another_tree_depth_is_refused() {
+        generate_into(
+            "zkpor_packages_depth",
+            fixture_attestation(),
+            &deployments_with_depth("zkpor_deployments_depth.json", 3),
+        );
+    }
+
+    /// The package sends the customer to the registry of the deployment
+    /// record. A record of another registry must stop the generation, because
+    /// the customer would read a root that this attestation never reached.
+    #[test]
+    #[should_panic(expected = "names the registry")]
+    fn a_generation_of_another_registry_is_refused() {
+        let depth = read_shape().2.trailing_zeros() as usize;
+        generate_for_registry(
+            "zkpor_packages_registry",
+            fixture_attestation(),
+            &deployments_with_depth("zkpor_deployments_registry.json", depth),
+            "CANOTHERREGISTRY",
+        );
+    }
+
+    /// A refused generation must leave nothing behind: a package holds a
+    /// balance, and a root the chain did not accept must produce no file.
+    #[test]
+    fn a_root_that_the_chain_did_not_attest_writes_no_file() {
+        let depth = read_shape().2.trailing_zeros() as usize;
+        let deployments = deployments_with_depth("zkpor_deployments_root.json", depth);
+        let out = env::temp_dir().join("zkpor_packages_root");
+        let _ = fs::remove_dir_all(&out);
+
+        let refused = std::panic::catch_unwind(|| {
+            let env = new_env();
+            let context = fixture_context(&env);
+            let attested = AttestedEntry {
+                root: &fixture_attestation().root + BigUint::from(1u32),
+                snapshot_ledger: fixture_attestation().snapshot_ledger,
+                transaction_hash: TEST_TRANSACTION.to_string(),
+            };
+            write_packages(
+                &env,
+                &context,
+                &fixture_master_secret(&env),
+                &GenerationRequest {
+                    customers_file: &repo_path(CUSTOMERS_FIXTURE),
+                    deployments_file: &deployments,
+                    out: &out,
+                    network: TEST_NETWORK,
+                    registry: TEST_REGISTRY,
+                    attested: &attested,
+                },
+            );
+        });
+        assert!(refused.is_err(), "a wrong root must refuse");
+        assert!(!out.exists(), "a refused generation left files behind");
+    }
+
     #[test]
     #[should_panic(expected = "is not one field element")]
     fn a_public_parameter_that_is_not_one_field_element_fails() {
@@ -998,5 +1909,160 @@ mod tests {
              \"type\": {\"kind\": \"field\"}}, \"visibility\": \"public\"}",
         );
         public_input_layout(&write_temp("zkpor_layout_array.json", &abi));
+    }
+
+    // ---- the round trip: the generator writes, the customer command reads ----
+
+    /// The ledger at which the registry read the reserves, in the answer that
+    /// the stub gives. It is later than the snapshot, as the chain requires.
+    const STUB_ATTESTED_LEDGER: u32 = 1003;
+    /// The identity that the customer command needs for a read-only call.
+    const STUB_SOURCE_ACCOUNT: &str = "round-trip-reader";
+
+    /// The customer command, built from this tree.
+    ///
+    /// The test runs the binary rather than a library function, because the
+    /// binary is what a customer runs, and it holds the reading of the chain,
+    /// the exit status, and the text of the verdict.
+    fn verifier_binary() -> &'static PathBuf {
+        static BINARY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        BINARY.get_or_init(|| {
+            let crate_dir = repo_path("tools/inclusion-verify");
+            let built = Command::new("cargo")
+                .args(["build", "--quiet", "--bin", "verify-inclusion"])
+                .current_dir(&crate_dir)
+                .status()
+                .expect("run cargo");
+            assert!(built.success(), "the customer command did not build");
+            crate_dir.join("target/debug/verify-inclusion")
+        })
+    }
+
+    /// A stand-in for the stellar command line, on the path of the child.
+    ///
+    /// The command reads the chain through that program. The stub answers the
+    /// two read-only calls and records the arguments of each one, so the test
+    /// can state which registry the command asked. It answers no other call.
+    fn stub_stellar(directory: &Path, attested: &AttestedEntry, latest_ledger: u32) -> PathBuf {
+        create_dir_private(directory);
+        let record = directory.join("calls");
+        let _ = fs::remove_file(&record);
+        let entry = format!(
+            "{{\"attestation\": {{\"Filled\": {{\"final_root\": \"{}\", \
+             \"total_liabilities\": \"1290\", \"snapshot_ledger\": {}, \
+             \"attested_ledger\": {STUB_ATTESTED_LEDGER}, \"reserve_sum\": \"2000\"}}}}}}",
+            attested.root, attested.snapshot_ledger
+        );
+        let program = directory.join("stellar");
+        fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {record}\ncase \"$1\" in\n\
+                 ledger) printf '%s\\n' '{{\"sequence\": {latest_ledger}}}' ;;\n\
+                 contract) printf '%s\\n' '{entry}' ;;\n\
+                 *) exit 1 ;;\nesac\n",
+                record = record.display()
+            ),
+        )
+        .expect("write the stub");
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).expect("the stub mode");
+        record
+    }
+
+    /// The status and the output of one run of the customer command.
+    fn run_verifier(package: &Path, deployments: &Path, stub_dir: &Path) -> (i32, String) {
+        let output = Command::new(verifier_binary())
+            .args([package, deployments])
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    stub_dir.display(),
+                    env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env("STELLAR_SOURCE_ACCOUNT", STUB_SOURCE_ACCOUNT)
+            // The endpoint of the customer must not leak in from this process.
+            .env_remove("STELLAR_RPC_URL")
+            .env_remove("STELLAR_NETWORK_PASSPHRASE")
+            .output()
+            .expect("run the customer command");
+        (
+            output.status.code().expect("an exit status"),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )
+    }
+
+    /// The same package with one hexadecimal digit of the first sibling
+    /// changed. The change travels as text, so a reader that drops a digit or
+    /// reorders the bytes fails here.
+    fn with_one_changed_sibling(text: &str) -> String {
+        let list = text.find("\"siblings\": [").expect("the sibling list");
+        let value = list + text[list..].find("\"0x").expect("a sibling") + 3;
+        let last = value + FR_BYTES * 2 - 1;
+        let mut changed = text.to_string();
+        let digit = if &changed[last..=last] == "0" {
+            "1"
+        } else {
+            "0"
+        };
+        changed.replace_range(last..=last, digit);
+        changed
+    }
+
+    /// The round trip. A package that the generator wrote reaches the command
+    /// that a customer runs, as bytes on disk.
+    ///
+    /// Each half has its own tests, and both halves share one schema module. A
+    /// defect inside that module therefore passes both halves, and only this
+    /// test fails.
+    ///
+    /// What this cannot cover: the reading of a real chain. The stub stands
+    /// for the stellar command line, so the test states what a registry
+    /// answers instead of proving that a registry answers it. The registry
+    /// gate covers the real read. The test also runs one deployment
+    /// generation, so it does not cover a package of a retired generation;
+    /// the tests of the customer command cover that with their own file.
+    #[test]
+    fn a_package_that_the_generator_wrote_reaches_the_customer_command() {
+        let depth = read_shape().2.trailing_zeros() as usize;
+        let deployments = deployments_with_depth("zkpor_round_trip_deployments.json", depth);
+        let attested = fixture_attestation();
+        let directory = generate_into("zkpor_round_trip", attested, &deployments);
+        let stub_dir = env::temp_dir().join("zkpor_round_trip_stub");
+        let record = stub_stellar(&stub_dir, attested, STUB_ATTESTED_LEDGER + 1);
+
+        let package = directory.join(package_filename(0));
+        let (status, output) = run_verifier(&package, &deployments, &stub_dir);
+        assert_eq!(status, 0, "the package must verify: {output}");
+        assert!(output.contains("INCLUDED"), "{output}");
+
+        // The command asked the registry of the deployment record, and the
+        // asset of the package.
+        let calls = fs::read_to_string(&record).expect("the recorded calls");
+        assert!(
+            calls.contains(&format!("--id {TEST_REGISTRY}")),
+            "the command read another registry: {calls}"
+        );
+        assert!(calls.contains(&format!("--asset {}", fixture_context(&new_env()).asset)));
+
+        // A rejection that travels through the file. One digit of one sibling
+        // changes, and nothing else does.
+        let tampered = env::temp_dir().join("zkpor_round_trip_tampered.zkpor.json");
+        let original = fs::read_to_string(&package).expect("read the package");
+        let changed = with_one_changed_sibling(&original);
+        assert_ne!(changed, original, "the change must reach the file");
+        assert_eq!(changed.len(), original.len());
+        fs::write(&tampered, &changed).expect("write the changed package");
+        let (status, output) = run_verifier(&tampered, &deployments, &stub_dir);
+        assert_eq!(
+            status, 7,
+            "a changed path must be a root mismatch: {output}"
+        );
+        assert!(output.contains("ROOT MISMATCH"), "{output}");
     }
 }

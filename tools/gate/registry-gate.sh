@@ -15,13 +15,24 @@
 #                     is refused. The registry derives the context itself, so
 #                     this exercises the binding through the component that
 #                     builds the public inputs
+#   unregistered   -> an attestation for an asset with no registry entry is
+#                     refused with AssetNotRegistered
 #   observation    -> the read-only reading answers the minted amount
 #
 # The failed balance read stays in the unit tests. A reserve address here is a
-# custom account contract, because the pinned command line signs only the
-# transaction envelope and cannot give the Soroban consent of a second
-# account. A contract address that holds no balance entry answers a true zero
-# rather than a failure, so this gate cannot produce a failed read.
+# custom account contract. The pinned command line can sign an authorization
+# entry, but it collects a signer only for a top-level Address argument
+# (stellar-cli 27.0.0, cmd/soroban-cli/src/commands/contract/arg_parsing.rs).
+# A reserve sits inside a Vec<Address>, so no command line invocation signs
+# the entry of a second account. A contract address that holds no balance
+# entry answers a true zero rather than a failure, so this gate cannot
+# produce a failed read.
+#
+# The custom account is a convenience for this localnet harness only. It does
+# not exercise the path of a real reserve, which is an ordinary account that
+# signs its authorization entry. A run on a public network must register an
+# ordinary account as the reserve and must sign its entry with the JavaScript
+# SDK (authorizeEntry). A pass of this gate is not evidence for that path.
 #
 # Environment (all optional):
 #   SOROBAN_RPC      localnet RPC (default http://localhost:8000/soroban/rpc)
@@ -91,8 +102,10 @@ ASSET=$(stellar contract id asset --asset "$ASSET_NAME" --network "$NET") \
 note "asset contract=$ASSET"
 
 # The reserve address is a custom account, because a reserve address must
-# authorize its own registration and the pinned command line signs only the
-# transaction envelope. One signer therefore drives the whole run.
+# authorize its own registration, and the command line collects no signer for
+# an address inside a vector argument. One signer therefore drives the whole
+# run. A real reserve is an ordinary account, so this contract stands in for
+# it only on a localnet.
 cargo build --release --target wasm32v1-none \
   --manifest-path "$GATE_DIR/reserve-account/Cargo.toml" >/dev/null 2>&1 \
   || die "reserve account build"
@@ -111,7 +124,7 @@ stellar contract invoke --id "$ASSET" --source registry-gate-issuer --network "$
 # The serialized Asset XDR of the classic asset: the asset type, the code, the
 # public key type of the issuer, and the issuer key. The registry derives the
 # canonical asset contract address from these bytes.
-SERIALIZED=$(python3 "$GATE_DIR/classic_asset.py" "$ASSET_CODE" "$ISSUER") \
+SERIALIZED=$(python3 "$REPO_ROOT/scripts/classic_asset.py" "$ASSET_CODE" "$ISSUER") \
   || die "serialized asset"
 
 # -----------------------------------------------------------------------------
@@ -181,20 +194,47 @@ EOF
 # The flow refuses the fixture secret and every file under a fixtures
 # directory, so this run derives its own secret and writes its own copy of the
 # customer rows.
-GATE_SECRET="0x$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+GATE_SECRET_FILE="$WORK/master.secret"
+( umask 077; printf '0x%s' "$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')" \
+  > "$GATE_SECRET_FILE" ) || die "cannot write the master secret of this run"
 GATE_CUSTOMERS="$WORK/customers.csv"
 cp "$CUSTOMERS_FILE" "$GATE_CUSTOMERS" || die "cannot copy the customer rows"
-HONEST=$(ZKPOR_MASTER_SECRET="$GATE_SECRET" ZKPOR_REGISTRY="$REGISTRY" \
+
+# The flow writes the package of every customer before it removes the salts,
+# and a package names the registry of a deployment record. This run deploys its
+# own registry, so it writes its own record and never touches the committed
+# file.
+CAPACITY=$(python3 -c "
+import re,sys
+text = open(sys.argv[1]).read()
+value = lambda name: int(re.search(rf'^{name} *= *([0-9]+)', text, re.M).group(1))
+print(value('batch_b') * value('num_batches_k'))" "$REC/params.toml") \
+  || die "cannot read the tree capacity from params.toml"
+DEPTH=$(python3 -c "print(int($CAPACITY).bit_length() - 1)")
+cat > "$WORK/deployments.json" <<EOF
+[
+  {
+    "network": "$NET",
+    "registry": "$REGISTRY",
+    "verifier": "$VERIFIER",
+    "tree_depth": $DEPTH
+  }
+]
+EOF
+
+HONEST=$(ZKPOR_MASTER_SECRET_FILE="$GATE_SECRET_FILE" ZKPOR_REGISTRY="$REGISTRY" \
   ZKPOR_WORK="$WORK" STELLAR_SOURCE_ACCOUNT=registry-gate-issuer \
-  STELLAR_NETWORK_NAME="$NET" \
+  STELLAR_NETWORK_NAME="$NET" ZKPOR_DEPLOYMENTS="$WORK/deployments.json" \
   bash "$REPO_ROOT/scripts/attest.sh" "$CONTEXT_FILE" "$GATE_CUSTOMERS" 2>&1) \
   || die "the issuer flow did not reach an accepted attestation: $HONEST"
 note "honest ACCEPT through scripts/attest.sh"
+[ -d "$WORK/packages" ] || die "the flow removed the salts without writing the packages"
+note "the packages of the customers exist"
 [ -f "$WORK/proof" ] || die "the flow left no proof at $WORK/proof"
 
 # The root and the total of the run come from the public input string that the
 # prover wrote, so this gate never states them itself.
-read -r FINAL_ROOT TOTAL < <(python3 "$GATE_DIR/public_input_fields.py" \
+read -r FINAL_ROOT TOTAL < <(python3 "$REPO_ROOT/scripts/public_input_fields.py" \
   "$WORK/public_inputs" "$REC/manifest.json") || die "read the public inputs"
 note "final_root=$FINAL_ROOT L=$TOTAL"
 
