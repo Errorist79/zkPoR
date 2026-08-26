@@ -14,10 +14,11 @@ export const STYLESHEET = `
    act: a link, the entry of the current page, the focus ring, and the button.
    The warning marks a failure statement.
 
-   The other two mark the result of an attestation. The reserves reach the
-   liabilities, or they fall short. A reader had to read a sentence to find that
-   result, and in the history table the result was a word in the fifth column of
-   six, so a reader had to search the page for it.
+   The other two mark the answer of a check. The reserves reach the liabilities
+   or they fall short, and a leaf is under the attested root or it is not. A
+   reader had to read a sentence to find that answer, and in the history table
+   the answer was a word in the fifth column of six, so a reader had to search
+   the page for it.
 
    The colour of a shortfall is near the colour of a failure. That is deliberate
    and it is a cost that this dashboard accepts. The two appear in different
@@ -448,6 +449,33 @@ tr.coverage-reserves-reach-liabilities td.verdict {
 #solvency-headline.coverage-reserves-fall-short h2,
 tr.coverage-reserves-fall-short td.verdict {
   color: var(--short);
+}
+
+/* The check of one package has seven outcomes and one of them accepts, so a
+   refusal is the rule on that page and the acceptance is the exception. A kind
+   that somebody adds later is a refusal, and it reads as one without a second
+   rule to remember.
+
+   Red here can only mean a refusal, and that is a property of the route rather
+   than a promise. A failure of the client or of the network never reaches this
+   page: the route answers one with the page of a failure, and a file it cannot
+   read with the form again. So the two meanings of red never stand together
+   here.
+
+   The page of a run is the opposite case and it takes neither colour. The
+   reason is in the values above: a shortfall and a failure are near neighbours,
+   and that was accepted because they sit on different pages. A run page shows a
+   refusal of a snapshot and a failure of the prover at the same time, so the
+   two colours there would be one colour, and the sentence is the only thing
+   that can separate them. A stage of a run is also not an answer: a run that
+   proves and attests nothing finishes, and green would claim a verdict that no
+   run makes. */
+#inclusion-verdict h2 {
+  color: var(--short);
+}
+
+#inclusion-verdict.verdict-included h2 {
+  color: var(--reach);
 }
 
 /* The verdict is the answer that a reader came for, so it takes the first
