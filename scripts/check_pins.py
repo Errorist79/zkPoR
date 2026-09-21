@@ -60,7 +60,10 @@ TABLE = {
     },
     "poseidon": {
         "variable": "NOIR_POSEIDON_VERSION",
-        "manifests": ["circuits/recursion/common/Nargo.toml"],
+        "manifests": [
+            "circuits/recursion/common/Nargo.toml",
+            "tools/gate/attacks/inner_evil/Nargo.toml",
+        ],
     },
 }
 

@@ -3,9 +3,9 @@
 zkPoR proves that the reserves of an issuer cover its customer liabilities. It
 does not reveal the individual balances. It uses a recursive UltraHonk proof. A
 Soroban contract verifies the proof on-chain with the CAP-0080 BN254 host
-functions. This document states the security model, the trust assumptions, the
-on-chain validation evidence, and the known limits. No independent party audited
-the verifier. See Audit status and scope.
+functions. This document states the security model, the trust assumptions, and the known limits.
+No independent party audited the verifier.
+See Audit status and scope.
 
 ## Security model
 
@@ -24,8 +24,7 @@ verifier that checks sumcheck and Shplemini, but never completes that pairing,
 accepts a terminal proof that folded a foreign inner circuit. One example of such
 an inner circuit is a circuit without the u64 range check, which deflates a
 subtotal. The patch completes that pairing on-chain. The completed pairing binds
-the folded inner proofs to the pinned inner verification key. The on-chain
-validation below is the evidence that this rejection happens.
+the folded inner proofs to the pinned inner verification key.
 
 ## What is and is not guaranteed
 
@@ -40,10 +39,10 @@ committed total is therefore the sum of range-checked u64 balances under that VK
 
 The system does not guarantee the following:
 
-- Completeness, that the tree contains all the real customers of the issuer and
-  no other leaf. The verifier cannot close this gap. A social mitigation applies:
-  each customer checks the inclusion of their own leaf against the published
-  root, so an omission becomes visible if enough customers check.
+- Completeness, that the tree contains all real customers and no other leaf.
+  An earlier inclusion permits a dispute against a later stored attestation.
+  Nonresponse records a protocol outcome. It is not a cryptographic proof of absence.
+  This path does not cover a customer who never appeared in an attestation.
 - That the balances belong to the ledger the attestation names. The context hash
   covers the authority, the asset, the reserve set and the snapshot ledger. It
   does not cover the customer balances, which reach the chain as the root and
@@ -91,6 +90,31 @@ difference is worth stating. The registry reads the reserves on chain inside the
 attestation transaction, so the reserve figure belongs to a ledger. The issuer
 asserts the liabilities for a ledger, and nothing binds them to it.
 
+## Dispute privacy and retention
+
+The circuit first hashes a domain tag, balance, and salt into a balance commitment.
+It then hashes a different domain tag, customer identifier, and commitment into the leaf.
+Public dispute evidence contains the identifier, commitment, position, and path.
+It contains no balance or salt.
+A customer package still contains its recipient's balance and salt and must remain private.
+
+Each attestation has an asset-specific identifier and a persistent record.
+Package checks select that record, so a later attestation does not change the expected root.
+Persistent records still require storage lifetime management and restoration when the network requires it.
+The event window is not the history boundary.
+
+The target window is 518,400 ledgers. The answer window is 51,840 ledgers.
+The issuer retains redacted manifests through those windows and any open dispute deadline.
+The next attestation also requires the latest manifest and every previous customer identifier.
+Closed accounts remain as zero-balance rows.
+An issuer who loses a manifest can lose its ability to answer or produce the next attestation.
+
+A valid answer transfers the 10 XLM deposit to the issuer.
+An unanswered dispute returns that deposit to the disputer and permanently locks the available optional bond.
+The bond has no withdrawal path, even before a dispute.
+The protocol pays no bounty and does not reduce the native asset supply.
+Service failure can cause the same nonresponse outcome as an omitted customer.
+
 ## Trust assumptions
 
 - Verifier correctness. The verifier implements UltraHonk correctly for the
@@ -114,406 +138,7 @@ asserts the liabilities for a ledger, and nothing binds them to it.
 - Host pairing and MSM. The BN254 pairing and the MSM are the CAP-0080 Soroban
   host functions. Their correctness is the responsibility of the protocol, not of
   this project.
-- Protocol. CAP-0080 shipped in Protocol 26. The project validated the path on
-  the real Protocol 27 testnet with a byte-identical verifier. That validation
-  used the superseded artifact of the section On-chain validation. A future
-  protocol change to the host functions or to the proof format needs a new
-  validation.
-
-## On-chain validation
-
-### Superseded artifact, testnet evidence
-
-The transactions below verified an earlier artifact, and a later artifact
-supersedes it. The earlier circuits used two-input leaves, no context
-binding, and three public inputs. The current artifact uses different
-circuits, different keys, and a four-element public input vector, so these
-transactions are not evidence for it. The repository did not record the
-commit or the key hashes of the earlier artifact. The deployed contract
-stores its verification key without an upgrade path, so the contract address
-identifies that artifact, and its `vk_bytes` function returns its key.
-
-The validation ran end to end on the real Stellar testnet (Protocol 27),
-under the real limit of 400,000,000 instructions for each transaction, on
-the verifier contract
-`CCADPDEROE6OXGODBMAC7SU3Q3VOUZQAKYAQL67YNBMSTROJSSK7ATZ7`. Two attacks pass
-`nargo execute` and all the in-circuit checks: a forged inner proof under the
-pinned VK of that artifact, and a no-range inner proof with a balance of
--100. Only the completed pairing rejects them. The same contract accepts the
-honest proofs. All four cases are real confirmed transactions:
-
-| Case | Tx hash | Ledger | Result |
-|---|---|---|---|
-| honest | `50fab606cb87205a44045049ce12727aaf1d4c9ee1865f908a5ee4e8e75c8238` | 3312849 | SUCCESS |
-| forged | `1a59d5ca1c94969e5d3b9887643e0d8db5bf69a9793eab8a1a7a8fba2090c374` | 3312942 | FAILED, Error(Contract, #4) |
-| deflated | `5d06ca66a324db4b4d8f362f5133ec25ae166175798e59464df06c76efddbb01` | 3312958 | FAILED, Error(Contract, #4) |
-| honest (post-attacks) | `b88c7c2b5fb8fa0a20d7b436c3b4657f8109279ab1a75f7d398bc9ddfd93c1a7` | 3313107 | SUCCESS |
-
-No instruction figure stands for that verify. The instruction count lives in
-the diagnostic events of the applied transaction, and the endpoint that serves
-those keeps a fixed window of ledgers. These transactions left that window, and
-a lookup of the first one answers NOT_FOUND. Horizon still resolves the four
-transactions and serves no Soroban transaction meta, so it shows that they
-happened and not what they cost.
-
-The two honest accepts bracket the two rejects in ledger order on the same
-contract. This order shows a real gate, and not a deployment that rejects
-everything.
-
-Horizon serves the result of each rejected transaction, and a reader who decodes
-it reaches `tx_failed` with the operation result `invoke_host_function: trapped`.
-That result carries no contract error number, and Horizon serves no transaction
-meta for these two transactions. The contract error number lives in the
-diagnostic events, the endpoint keeps those for a window of ledgers, and these
-transactions left that window. A reader establishes that each transaction failed.
-A reader cannot establish which error the contract returned.
-
-### Current artifact, testnet evidence
-
-The current artifact adds the context binding and the salted three-input
-leaves, at the release configuration of 1024 leaves for each batch and 4
-batches. `circuits/recursion/manifest.json` records its identity: the batch
-values, the inner key hash, the SHA-256 of the committed aggregator key
-`circuits/recursion/agg/vk`, the public input count and positions, and the
-toolchain versions.
-
-The flow ran end to end on the real Stellar testnet (Protocol 27) on August 8
-and 9, 2026, under the real limit of 400,000,000 instructions for each
-transaction. It began at 20:45 UTC on August 8 and the last four steps of the
-table below closed after midnight UTC on August 9.
-
-`scripts/deployments.json` records three deployment generations of this network,
-in order. The first generation is the verifier
-`CDUEQOM2AQ54ZZ3EZA2Q4D32C7DBVQ5D45TFMBSC2RCE6ZMX32T44JC2` with the registry
-`CC4MA6FWDBG3Y4YXYGDHYEZ36O3YSP7DREGOLBWKP6ZTQQ6IYFFX3KQK`. Its registry
-enforces a reserve bound of 16, because it was built before the bound became
-32. The second generation is the verifier
-`CDICJW5B5VYT3GD3VTDWFYCQG6N4ONLUXKHPQSJVAN5QYPGCTOG7PIXE` with the registry
-`CCHUTDKUPWXVUIX6D26SE5NZ5STP74VV4DY2CNVCMNJYOU5PTROLA7MY`. The third
-generation is the verifier
-`CDNUAFLJPLFM4DSHHQF5SVX2HESQR5GICSKQKZDHXP5NAGG4G2C2QMMM` with the registry
-`CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG`, and it is the
-newest. Each registry holds the aggregator key hash of the manifest, because its
-constructor refuses a verifier that stores another key.
-
-Two of the three registries cannot be traced to a source state of this
-repository. The documented build reproduces the verifier of every generation,
-and it reproduces the registry of the third generation byte for byte. It
-reproduces the registry of neither the first nor the second. A commit that can
-change that contract builds a registry of 33,364 bytes, and the two recorded
-registries hold 65,185 bytes. The commits that carry the error rule as a
-documentation comment build 33,880 bytes, because the wasm holds the contract
-specification. The second generation went on chain forty-one minutes before the
-commit that raises its reserve bound, and that commit produces the registry of
-the third generation rather than its own.
-
-One candidate cause was tested and refused. A build without the optimize step
-gives the same size and the same hash, so that step accounts for none of the
-difference. The cause is not established. `scripts/deploy_registry.sh` and
-`scripts/check_deployment.sh` exist for this reason, and the third generation is
-the first that either one produced.
-
-The sections below carry the evidence of the first two generations. A reader must
-not read them as statements about the third. The section "Third generation, the
-deployed artifact" carries the evidence of the third.
-
-The deployments file names the registry and the verifier of a generation, and it
-names no asset. No query enumerates the assets of a registry, so this document
-names the assets that it knows, and it does not claim to name every asset that a
-generation holds.
-
-The first generation registered the asset
-`CCWGBIKQALFIZRZALTITQUASGKSTT2XIE2V4SBPQSWH6XZXIJINGK6HF` with one reserve
-account, and the asset
-`CBSEPZ3RWTZHCM3O45EGHZW7WPUP6G2E3ZZE33XJNGFIKQ7HLGXLI6TV` with one reserve
-account. The second generation registered the asset
-`CAD6S62UZGQP42MC5C7TOGVP7CUM7HTDPAFRSZSI42WOFMADXUIDAYRD` with 17 reserve
-accounts. All three registered under the classic issuer tier, with the issuer
-account `GAQSAE4ZNHWPERZQICWSSAVV57Z3AE2RNGQXJC6I5MLSRB4GG2473W5K` as the
-authority.
-
-A reader needs these asset addresses to examine the evidence again. The registry
-stores the record of an asset under the address of that asset, and no query
-enumerates the assets of a registry, so a reader who holds only the registry
-address cannot reach the record.
-
-Two limits govern what the `getEvents` method answers, and they are different
-quantities. The first is the window of ledgers that an endpoint keeps. The
-public test endpoint keeps 120,960 ledgers, and the measured close interval is
-5.009 seconds, so the window is about seven days. The window moves with every
-ledger, so a reader takes its present bounds from the endpoint rather than from
-this document: `getHealth` answers with `oldestLedger` and `latestLedger`, and
-`ledgerRetentionWindow` states the count. The attestations of August 8 and 9
-landed at the ledgers 4040298, 4040321, 4042618 and 4043038, and the window
-passed them long ago, so no query reaches them now. The table below names all
-four. A query that
-starts before the window does not answer with an empty result. It returns an
-error that names the ledger range the endpoint holds, so a reader sees a refusal
-and knows that the window, and not the absence of an attestation, produced it.
-
-The second limit applies inside the window. One request reads a bounded count of
-ledgers, which measured 10,000 on the same day, or about fourteen hours. A
-request that asks for a wider range answers with the events of the part it read,
-and with a cursor at the ledger where it stopped. An empty page therefore means
-that the request found no event before it stopped. It does not mean that the
-range holds none. A caller reaches the rest of the range by asking again from
-that cursor, until the cursor reaches the latest ledger.
-
-The two limits answer different questions, and the numbers differ by more than a
-factor of ten. The window says whether an event still exists. The count of
-ledgers in one request says how much of the window a caller sees before asking
-again. A reader who wants an old attestation asks the first question. A reader
-who gets an empty answer for a recent one asks the second.
-
-After the window passes, the asset address is the one way back to the record.
-
-On August 17, 2026 the client read two records back from the chain. They are
-the asset `CCWGBIKQALFIZRZALTITQUASGKSTT2XIE2V4SBPQSWH6XZXIJINGK6HF` of the
-first generation, and the asset
-`CAD6S62UZGQP42MC5C7TOGVP7CUM7HTDPAFRSZSI42WOFMADXUIDAYRD` of the second. Every
-field of the first record equalled the values that the run of August 8 recorded:
-the authority, the tier, the reserve address, the reserve set hash, the attested
-root, the total liabilities, the reserve sum, the snapshot ledger, and the
-attested ledger. For each of the two records the TypeScript mirror recomputed
-the reserve set hash from the reserve addresses of the record and reached the
-value that the registry holds, at one address and at 17 addresses.
-Both solvency claims read as lapsed, which is correct, because the snapshot of
-each one is far outside the window of 720 ledgers.
-
-The steps are real confirmed transactions:
-
-| Step | Tx hash | Ledger | Result |
-|---|---|---|---|
-| verifier deploy | `916782a14691515f0339a0be9e9283397c5701c0b17c18c2aed1934c875db386` | 4040247 | SUCCESS |
-| registry deploy | `b56572375953ac859e6916b5eb15df5f095d5f873a9f07dd9aba51947e62e326` | 4040255 | SUCCESS |
-| register asset | `a65e25c62ef12bac1ca19927df41f0d41e076b543799c82febc2aae1171a5a46` | 4040282 | SUCCESS |
-| attestation 1 | `63f909b07a5661d28b7e2df82dd6f36a0e55e11530add1dcc22b41e81baaf18f` | 4040298 | SUCCESS |
-| attestation 2 | `314553796a6d084ce01971fe8608f488375b977bc3f97f95d274d9aa425111ec` | 4040321 | SUCCESS |
-| register asset through `scripts/register_asset.sh` | `418ed637a5a61420c2477b6d286865cf9608db369a1c457c5d9f93d00bb05f90` | 4042603 | SUCCESS |
-| attestation 3, with the packages of the customers | `269d2d4289f504cdfb7f0aa734e767197cc1e9ee26a0f22143cadc8b5b47cafa` | 4042618 | SUCCESS |
-| generation 2 verifier deploy | `8580ddd61a45722457ad342975142c8060bd1e08473c16b2fd9b6d09b9654c6f` | 4042930 | SUCCESS |
-| generation 2 register asset, 17 reserve addresses | `8698229db26f72964982f5aae84feb512fa3c8a2f55d2ef34d65eba031b4b12a` | 4042992 | SUCCESS |
-| generation 2 attestation, 17 reserve reads | `1bd3280f6f91ef1dc768cfec42911db93c96d8fe229c95866ad61b0f297a7acf` | 4043038 | SUCCESS |
-
-The registration names an ordinary account as the reserve address. That
-account signed its own authorization entry with the JavaScript software
-development kit, and the issuer signed the transaction. The signing step of that
-run lived in `tools/reserve-consent/`. The client library at `sdk/` now holds it,
-and it reproduces the same call. The consent is a signed entry, and not a source-account
-credential. The first registration ran by hand, and `scripts/register_asset.sh`
-ran the second one. Both declared 6,745,316 instructions, so the script
-reproduces the steps of the hand-driven run.
-
-Attestation 3 followed the second registration, at ledger 4042603, and the
-third registration came after it. Its asset is
-`CBSEPZ3RWTZHCM3O45EGHZW7WPUP6G2E3ZZE33XJNGFIKQ7HLGXLI6TV`, which that
-registration wrote on the first generation. A reader needs that address,
-because it is the one route back to the record and this is the one step of the
-table that produced the packages of the customers. It declared 122,229,204
-instructions and consumed 117,486,336, and it wrote the package of every
-customer before the flow removed the salts.
-
-The attestation transaction carries the whole cost: the cross-contract call
-to the verifier, the reserve balance read, and the hashes that the registry
-computes. Two numbers describe that cost, and they mean different things.
-
-No reader can check the instruction figures of this section today. The
-consumption comes from the diagnostic events of the applied transaction, the
-endpoint keeps a window of ledgers, and these transactions left it. Horizon
-resolves the transactions and serves no Soroban meta. The figures stand as this
-project measured them, and a reader takes them on that basis rather than on a
-check of their own.
-
-The declared instruction resource bounds the headroom. It stands in the
-applied transaction, the network enforces the cap against it, and the fee
-pays for it. Attestation 2 declared 122,268,806 instructions, about 30.6
-percent of the cap.
-
-The consumption measures the work. Attestation 2 consumed 117,524,415
-instructions, and attestation 1 consumed 117,493,660. Each number is the
-`cpu_insn` core metric that the node reports in the diagnostic events of the
-applied transaction, read over the remote procedure call. It is the metered
-consumption of the real execution, and not a simulation. The transaction
-meta carries no instruction field, so a reader who wants this number reads
-the diagnostic events.
-
-The bound of 32 reserve addresses is measured, and not assumed. The second
-generation registered one asset with 17 reserve accounts, and each account
-signed its own authorization entry. The first generation refuses the same
-registration with the contract error `TooManyReserveAddresses`, because it
-enforces the earlier bound of 16.
-
-The attestation of that entry read 17 balances. It declared 123,901,586
-instructions, about 31.0 percent of the cap, and consumed 118,759,615. The
-comparison with the attestation of one reserve address gives the cost of one
-added balance read: 0.10M declared instructions for a classic asset. A set of
-32 classic addresses therefore declares about 125M instructions, which stays
-under the cap.
-
-A package of the first generation stays verifiable after the second
-generation exists. The package names its own registry, and
-`tools/inclusion-verify` reads that generation from the deployments file. A
-package of the first generation and a package of the second generation both
-answer INCLUDED against the file that lists both.
-
-The customer path ran on the same data: `tools/recursion-gen` wrote one
-inclusion package for each customer of attestation 2, and
-`tools/inclusion-verify` read the registry over the network and answered
-INCLUDED for one of them. The tool read the registry address from
-`scripts/deployments.json`, and not from the package.
-
-### Third generation, the deployed artifact
-
-The third generation is the artifact that runs now. Its registry is
-`CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG` and its verifier is
-`CDNUAFLJPLFM4DSHHQF5SVX2HESQR5GICSKQKZDHXP5NAGG4G2C2QMMM`. It is the first
-generation that the documented deploy path produced, and the documented build
-reproduces its registry byte for byte.
-
-That registry holds the asset
-`CBEHK5VDPAKSY2YAQFQQKN2FWOZ6YU6LKNKYRQ5M6XIDIYJEOBDQRHTT`, under the
-administrator tier, with the authority
-`GBTWIUFV6TF7GDS22K6YUMS65G4TA5UOZNYB4HNBNESWOY6VIWORR6NU` and one reserve
-address. Its record holds an accepted attestation at the snapshot ledger 4274940
-and the attested ledger 4274948.
-
-#### One accepted attestation
-
-| Step | Tx hash | Ledger | Result |
-|---|---|---|---|
-| attestation | `7ed11c70f2911fc9bf46bf815ab11d193a34372d16c72b6bdda58029327ebf5c` | 4263070 | SUCCESS |
-
-This project read the cost of that transaction on August 26, 2026:
-
-| Quantity | Value |
-|---|---|
-| declared instructions | 120,616,259 |
-| share of the cap of 400,000,000 | 30.15 percent |
-| consumed instructions | 115,854,936 |
-| memory | 6,451,294 bytes |
-| fee charged | 246,682 stroops, which is 0.0246682 XLM |
-
-A reader checks the declared instructions and the fee at any time, and the share
-of the cap follows from the declared instructions. Horizon serves the transaction
-result, the transaction envelope, and the fee. The declared instructions stand in
-the envelope, so a reader who decodes it reaches 120,616,259. The fee stands in
-the record, so a reader reads 246,682 stroops.
-
-A reader cannot check the consumed instructions or the memory after the window
-passes. Those two come from the diagnostic events. The endpoint held the ledgers
-4213479 to 4334438 on August 26, 2026, and it keeps 120,960 ledgers, which is
-about seven days. This transaction leaves that window near the ledger 4384030.
-The two figures then stand as this project measured them, and a reader takes them
-on that basis.
-
-#### Two refusals, against the deployed registry
-
-The registry refuses a stale snapshot, and it refuses a proof that does not
-verify. Both refusals are reproducible against the deployed contract. A reader
-runs one command for each and reads the error number that the registry returns.
-
-The stale case names the snapshot ledger 4274940, which the registry already
-holds. The window is 720 ledgers, and the network passed that snapshot long ago.
-
-```
-stellar contract invoke \
-  --id CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG \
-  --source <a funded account> --network testnet --send no \
-  -- submit_attestation \
-  --asset CBEHK5VDPAKSY2YAQFQQKN2FWOZ6YU6LKNKYRQ5M6XIDIYJEOBDQRHTT \
-  --snapshot_ledger 4274940 \
-  --final_root 20554074537088043555280822736271664885243051878812220006918736495728922963448 \
-  --total_liabilities 18446744074315096615 \
-  --proof <any hexadecimal byte string>
-```
-
-The registry answers `Error(Contract, #15)`, which is `SnapshotOutsideWindow`.
-
-The proof case runs the same command with two changes. It names the current
-ledger as the snapshot ledger, so the snapshot stays inside the window. It also
-carries a hexadecimal byte string that is not a valid proof. The registry answers
-`Error(Contract, #16)`, which is `ProofRejected`.
-
-Any funded account reproduces both cases, and the account does not need to be the
-authority of the asset. The stale case never reaches the authority check, because
-the registry checks the snapshot age first. The proof case does reach that check,
-and it passes under simulation, because the endpoint records the authorization
-entries instead of enforcing them. The pinned command line states that default
-under `--auth-mode`.
-
-This project ran the two cases from the authority account. It also ran them from
-an account that is not the authority. Both accounts reached the same two error
-numbers.
-
-The two error numbers differ, and the difference carries the evidence. The
-registry checks the snapshot age before it reads the proof, and
-`contracts/registry/src/lib.rs` shows that order. The stale case answers #15 and
-not #16, so the registry refused on the age and never asked the verifier. A
-reader confirms that order from the source, with no network at all.
-
-Neither refusal writes to the registry. The record of that asset still holds the
-accepted attestation of the attested ledger 4274948, and a reader reads it back
-at any time.
-
-The command above names `--send no`, which simulates and sends nothing. This
-project ran both commands on August 26, 2026 against the deployed registry, and
-it submitted no transaction.
-
-#### Why these two refusals are not transactions
-
-A Soroban transaction reaches the ledger only after a simulation prices it. The
-simulation returns the resources and the footprint, and the transaction carries
-them. A call that the contract refuses returns no resources, so nothing prices
-it. Three measurements on August 26, 2026 establish this:
-
-- `stellar contract invoke --send yes` answers the contract error and sends
-  nothing. The pinned version is 27.0.0.
-- `stellar tx simulate` answers the same contract error.
-- The endpoint answers `simulateTransaction` with the error, with no
-  `transactionData` and with no `minResourceFee`.
-
-`stellar contract invoke --build-only` does write a transaction, and that
-transaction carries no Soroban resources. The network refuses such a transaction
-for its resources, so its record would show a resource failure and not the error
-that the registry returned. That record would mislead a reader, and this project
-did not submit one.
-
-So a refusal of this registry does not reach the ledger by the normal path. This
-is a property of the platform and of the pinned command line. It is not a
-property of the registry.
-
-A reproducible refusal answers more than a rejected transaction does. The two
-rejected transactions of the superseded artifact tell a reader that they failed.
-They do not tell a reader which error the contract returned. The two commands
-above return the error number. They return it now, and they return it for as long
-as the registry holds that asset.
-
-The repository does not record how the two rejected transactions of the
-superseded artifact reached the ledger.
-
-`tools/gate/soundness-gate.sh` validates the current artifact. The gate
-builds the production artifacts from the committed sources, and it deploys them
-to a Protocol 27 localnet. It then reads the verdict of the deployed verifier for
-five cases. It passed at the release configuration with these verdicts:
-
-- it accepted an honest proof;
-- it refused a forged proof;
-- it refused a deflated proof;
-- it refused a stale-leaf proof;
-- it refused a foreign context.
-
-The honest case lands a transaction on that localnet. The four refusals land
-nothing, for the reason above: the command line refuses to submit a call whose
-simulation fails. Each refusal is the verdict that the deployed contract returns
-under simulation. `tools/gate/registry-gate.sh` reads its refusals the same way.
-
-The gate fails loud on any other outcome, so an infrastructure
-failure never reads as a soundness REJECT. It runs in CI
-(`.github/workflows/soundness-gate.yml`) on a self-hosted runner, and CI
-fails when a rebuild changes the manifest, the committed key, or a
-generated parameter file. A localnet result is not testnet evidence. The
-gate is a regression guard and a demonstration. It is not a proof and it is
-not an audit.
+- Protocol. A change to the host functions or the proof format requires a new soundness check.
 
 ## Audit status and scope
 
@@ -526,26 +151,12 @@ review of the verifier crate, with priority on:
   load-bearing for the main KZG pairing and for the completed pairing;
 - the binding of the folded inner proofs to the pinned inner VK.
 
-A reviewer must weigh two provenance notes:
+A reviewer must check the implementation against the pinned Barretenberg version.
+The review must include the recursive accumulator and the completed pairing.
+A reviewer must also confirm both G2 constants against the proving setup and the pairing convention.
 
-- The module-by-module correspondence between the Rust code and Barretenberg in
-  `contracts/vendor/ultrahonk-soroban-verifier/VERIFIER_PROVENANCE.md` holds
-  against Barretenberg tag v0.82.2, while the pipeline pins bb 0.87.0. An
-  automated tool produced that correspondence, not a human audit, and it covers
-  the non-recursive keccak path only. The completed-pairing patch handles the
-  accumulator that is specific to recursion, which is outside that
-  correspondence.
-- The doc comment on `LHS_G2_BYTES` in `src/ec.rs` is inconsistent with itself. It
-  labels the constant as the negated generator `-[1]_2` and also as the SRS
-  `[x]_2` point. These two are not the same. A reviewer must confirm from the
-  bytes which one it is. A reviewer must also confirm that both G2 constants are
-  correct for this proving setup and for this pairing convention.
-
-Soundness is empirical today. The system demonstrably rejects two concrete
-attacks. That result is evidence. It is not a formal proof that the verifier
-accepts exactly the valid proofs. The verifier completes the deferred pairing in
-the naive separate `pairing_check` form. A batched-into-Shplemini form is future
-work, and it must pass the same gate and the same review.
+The verifier completes the deferred pairing in a separate `pairing_check` call.
+A future batched form requires the same soundness gate and independent review.
 
 ## Reporting a vulnerability
 

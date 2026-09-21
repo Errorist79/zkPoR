@@ -14,10 +14,11 @@
 use soroban_sdk::{address_payload::AddressPayload, Address, Bytes, BytesN, Env, Vec, U256};
 use std::{env as std_env, fs, path::PathBuf, string::String, vec::Vec as StdVec};
 use zkpor_context::{
-    context_hash, ctx_domain_tag, derive_salt, encode_address, fr_in_range, fr_modulus, fr_reduce,
-    leaf_hash, node_hash, reserve_set_hash, salt_domain_tag, ADDRESS_LIMB_BYTES,
-    ADDRESS_PAYLOAD_BYTES, ADDRESS_TAG_ACCOUNT, ADDRESS_TAG_CONTRACT, ATTESTATION_MAX_AGE_LEDGERS,
-    FR_BYTES, MAX_RESERVE_ADDRESSES, PADDING_LEAF_BALANCE, PADDING_LEAF_ID, POSEIDON2_STATE_WIDTH,
+    balance_commitment, balance_domain_tag, context_hash, ctx_domain_tag, derive_salt,
+    encode_address, fr_in_range, fr_modulus, fr_reduce, leaf_domain_tag, leaf_hash, node_hash,
+    reserve_set_hash, salt_domain_tag, ADDRESS_LIMB_BYTES, ADDRESS_PAYLOAD_BYTES,
+    ADDRESS_TAG_ACCOUNT, ADDRESS_TAG_CONTRACT, ATTESTATION_MAX_AGE_LEDGERS, FR_BYTES,
+    MAX_RESERVE_ADDRESSES, PADDING_LEAF_BALANCE, PADDING_LEAF_ID, POSEIDON2_STATE_WIDTH,
 };
 
 const VECTOR_FILE: &str = "fixtures/context_vectors.json";
@@ -450,12 +451,14 @@ fn vectors(env: &Env) -> String {
         .map(|(id, balance, salt, case)| {
             let id = fr_value(env, *id);
             let salt = fr_value(env, *salt);
+            let commitment = balance_commitment(env, *balance, &salt);
             std::format!(
                 "{{\"case\": \"{case}\", \"id\": \"{}\", \"balance\": \"{balance}\", \
-                 \"salt\": \"{}\", \"leaf\": \"{}\"}}",
+                 \"salt\": \"{}\", \"commitment\": \"{}\", \"leaf\": \"{}\"}}",
                 hex(&id),
                 hex(&salt),
-                hex(&leaf_hash(env, &id, *balance, &salt))
+                hex(&commitment),
+                hex(&leaf_hash(env, &id, &commitment))
             )
         })
         .collect();
@@ -481,7 +484,8 @@ fn vectors(env: &Env) -> String {
     std::format!(
         "{{\n  \"constants\": {{\n    \"fr_modulus\": \"{}\",\n    \
          \"fr_bytes\": {},\n    \"ctx_domain_tag\": \"{}\",\n    \
-         \"salt_domain_tag\": \"{}\",\n    \"poseidon2_state_width\": {},\n    \
+         \"salt_domain_tag\": \"{}\",\n    \"balance_domain_tag\": \"{}\",\n    \
+         \"leaf_domain_tag\": \"{}\",\n    \"poseidon2_state_width\": {},\n    \
          \"max_reserve_addresses\": {},\n    \"attestation_max_age_ledgers\": {},\n    \
          \"address_payload_bytes\": {},\n    \"address_limb_bytes\": {},\n    \
          \"address_tag_account\": {},\n    \"address_tag_contract\": {},\n    \
@@ -494,6 +498,8 @@ fn vectors(env: &Env) -> String {
         FR_BYTES,
         hex(&ctx_domain_tag(env)),
         hex(&salt_domain_tag(env)),
+        hex(&balance_domain_tag(env)),
+        hex(&leaf_domain_tag(env)),
         POSEIDON2_STATE_WIDTH,
         MAX_RESERVE_ADDRESSES,
         ATTESTATION_MAX_AGE_LEDGERS,

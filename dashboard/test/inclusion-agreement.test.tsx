@@ -20,7 +20,8 @@ import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { EXIT_CODES, exitCode, verdictLines } from "@zkpor/sdk";
+import { EXIT_CODES, balanceCommitment, exitCode, leafHash, parsePackage, rootFromPath, toHex, verdictLines } from "@zkpor/sdk";
+import { SorobanDataBuilder, nativeToScVal, rpc, scValToNative } from "@stellar/stellar-sdk";
 import type { Verdict } from "@zkpor/sdk";
 import { PACKAGE_PATH_FIELD, ROUTES, SECTION_IDS } from "../src/constants.js";
 import { route } from "../src/routes.js";
@@ -45,17 +46,21 @@ beforeAll(async () => {
 
 /** A registry address that the committed deployments file does not record. */
 const UNTRUSTED_REGISTRY = "CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+const HISTORY_ASSET = "CBSQOEUZDBCKO4NYNRJJSPOLEIXVWZZ66CZXWRSVUNZTNZK7IKHNNRY3";
 
 /** A package that follows the schema of the specification. The values are test data. */
 function packageFields(): Record<string, unknown> {
   return {
-    format: "zkpor-inclusion/1",
+    format: "zkpor-inclusion/2",
     network: "testnet",
     registry: REGISTRY,
     asset: ASSET,
     snapshot_ledger: 5_000,
+    context_hash: toHex(7n),
+    attestation_id: "1",
     leaf_index: 5,
     id: `0x${"0".repeat(63)}7`,
+    commitment: toHex(balanceCommitment({ balance: 100n, salt: 2n })),
     balance: "100",
     salt: `0x${"0".repeat(63)}2`,
     siblings: Array.from(
@@ -92,10 +97,12 @@ async function check(path: string, deployments = deploymentsText) {
  */
 const WITHOUT_A_NETWORK: readonly { changes: Record<string, unknown>; expected: Verdict }[] = [
   {
-    changes: { format: "zkpor-inclusion/2" },
+    changes: { format: "zkpor-inclusion/1" },
     expected: { kind: "unsupported-format", reason: "" },
   },
   { changes: { salt: "not a field element" }, expected: { kind: "malformed", reason: "" } },
+  { changes: { attestation_id: "0" }, expected: { kind: "malformed", reason: "" } },
+  { changes: { balance: "101" }, expected: { kind: "malformed", reason: "" } },
   {
     changes: { registry: UNTRUSTED_REGISTRY },
     expected: {
@@ -114,6 +121,69 @@ const WITHOUT_A_NETWORK: readonly { changes: Record<string, unknown>; expected: 
 ];
 
 describe("the page and the command line, on one package", () => {
+  it("accepts the version 2 fixture before any deployment or network check", () => {
+    const parsed = parsePackage(JSON.stringify(packageFields()));
+    expect(parsed.attestationId).toBe(1n);
+    expect(parsed.commitment).toBe(balanceCommitment({ balance: 100n, salt: 2n }));
+  });
+
+  it.each([false, true])("checks the fixed historical root through the page; changed root: %s", async (changed) => {
+    const packaged = parsePackage(JSON.stringify({ ...packageFields(), asset: HISTORY_ASSET }));
+    const root = rootFromPath({
+      leaf: leafHash({ id: packaged.id, commitment: packaged.commitment }),
+      leafIndex: packaged.leafIndex,
+      siblings: packaged.siblings,
+      depth: 12,
+    });
+    const client = dashboard({ deploymentsText });
+    const calls: { method: string; args: unknown[] }[] = [];
+    client.reader.server.simulateTransaction = async (transaction): Promise<rpc.Api.SimulateTransactionResponse> => {
+      const operation = transaction.toEnvelope().v1().tx().operations()[0];
+      if (operation === undefined) {
+        throw new Error("the registry read has no operation");
+      }
+      const call = operation.body().invokeHostFunctionOp().hostFunction().invokeContract();
+      calls.push({
+        method: call.functionName().toString(),
+        args: call.args().map((value): unknown => scValToNative(value)),
+      });
+      return {
+        id: "1", latestLedger: 5_100, events: [], _parsed: true,
+        transactionData: new SorobanDataBuilder(), minResourceFee: "0",
+        result: {
+          auth: [],
+          retval: nativeToScVal({
+            context_hash: 7n,
+            final_root: changed ? root + 1n : root,
+            total_liabilities: 1_000n,
+            snapshot_ledger: 5_000,
+            reserve_sum: 1_500n,
+            attested_ledger: 5_100,
+          }, { type: {
+            context_hash: ["symbol", "u256"],
+            final_root: ["symbol", "u256"],
+            total_liabilities: ["symbol", "u128"],
+            snapshot_ledger: ["symbol", "u32"],
+            reserve_sum: ["symbol", "u128"],
+            attested_ledger: ["symbol", "u32"],
+          } }),
+        },
+      };
+    };
+    client.reader.server.getHealth = async () => ({
+      status: "healthy", latestLedger: 5_200, oldestLedger: 1,
+      ledgerRetentionWindow: 5_200,
+    });
+    const answered = await route(request({
+      method: "POST", target: ROUTES.inclusion,
+      body: new URLSearchParams({ [PACKAGE_PATH_FIELD]: writePackage({ asset: HISTORY_ASSET }) }).toString(),
+    }), client);
+    expect(answered.status, textOf(answered.body)).toBe(200);
+    const shown = textOf(sectionOf(answered.body, SECTION_IDS.verdict));
+    expect(shown).toContain(`the exit code ${changed ? EXIT_CODES["root-mismatch"] : EXIT_CODES.included}`);
+    expect(calls).toEqual([{ method: "get_attestation", args: [HISTORY_ASSET, 1n] }]);
+  });
+
   it.each(WITHOUT_A_NETWORK)("agree on the outcome $expected.kind", async ({ changes, expected }) => {
     const answered = await check(writePackage(changes));
     expect(answered.status).toBe(200);

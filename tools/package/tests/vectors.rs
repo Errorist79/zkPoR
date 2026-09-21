@@ -18,7 +18,7 @@
 use num_bigint::BigUint;
 use soroban_sdk::{address_payload::AddressPayload, Address, BytesN, Env, U256};
 use std::{env as std_env, fs, path::PathBuf};
-use zkpor_context::{leaf_hash, ADDRESS_PAYLOAD_BYTES};
+use zkpor_context::{balance_commitment, leaf_hash, ADDRESS_PAYLOAD_BYTES};
 use zkpor_package::{
     fr::{fr_hex, to_big, to_fr},
     new_env,
@@ -133,7 +133,8 @@ fn leaf_parts(env: &Env, tree: usize, index: u64) -> (BigUint, u64, BigUint) {
 
 fn leaf_value(env: &Env, tree: usize, index: u64) -> U256 {
     let (id, balance, salt) = leaf_parts(env, tree, index);
-    leaf_hash(env, &to_fr(env, &id), balance, &to_fr(env, &salt))
+    let commitment = balance_commitment(env, balance, &to_fr(env, &salt));
+    leaf_hash(env, &to_fr(env, &id), &commitment)
 }
 
 fn leaves_of(env: &Env, tree: usize, depth: usize) -> Vec<U256> {
@@ -144,11 +145,13 @@ fn leaves_of(env: &Env, tree: usize, depth: usize) -> Vec<U256> {
 
 fn leaf_json(env: &Env, tree: usize, index: u64) -> String {
     let (id, balance, salt) = leaf_parts(env, tree, index);
+    let commitment = balance_commitment(env, balance, &to_fr(env, &salt));
     format!(
         "\"leaf_index\": {index}, \"id\": \"{}\", \"balance\": \"{balance}\", \
-         \"salt\": \"{}\", \"leaf\": \"{}\"",
+         \"salt\": \"{}\", \"commitment\": \"{}\", \"leaf\": \"{}\"",
         fr_hex(&id),
         fr_hex(&salt),
+        fr_hex(&to_big(&commitment)),
         fr_hex(&to_big(&leaf_value(env, tree, index)))
     )
 }
@@ -228,8 +231,11 @@ fn package_json(
         registry: strkey(env, REGISTRY_PAYLOAD),
         asset: strkey(env, ASSET_PAYLOAD),
         snapshot_ledger: ledger,
+        context_hash: BigUint::from(5u32),
+        attestation_id: 1,
         leaf_index: index as u32,
         id,
+        commitment: to_big(&balance_commitment(env, balance, &to_fr(env, &salt))),
         balance,
         salt,
         siblings: path_in_levels(levels, index as usize)

@@ -31,8 +31,8 @@ import { toHex } from "./fr.js";
 import { groupedDigits } from "./report.js";
 import { InfrastructureError, latestLedger } from "./network.js";
 import type { NetworkConfig } from "./network.js";
-import { readAssetRecord, solvencyLapsed } from "./registry.js";
-import type { Attestation, ReadOptions } from "./registry.js";
+import { readStoredAttestation, solvencyLapsed } from "./registry.js";
+import type { ReadOptions } from "./registry.js";
 
 /** The name of each outcome of the check. Each name is one failure class. */
 export type VerdictKind =
@@ -162,24 +162,17 @@ export async function verifyInclusion(input: {
     throw cause;
   }
 
-  const record = await readAssetRecord(
-    input.server,
+  const attestation = await readStoredAttestation(
     input.config,
-    input.readOptions,
     generation.registry,
     entry.asset,
+    entry.attestationId,
+    { ...input.readOptions, server: input.server },
   );
-  if (record === undefined) {
-    return {
-      kind: "no-matching-attestation",
-      reason: `the registry ${generation.registry} holds no record of the asset ${entry.asset}`,
-    };
-  }
-  const attestation: Attestation | undefined = record.attestation;
   if (attestation === undefined) {
     return {
       kind: "no-matching-attestation",
-      reason: `the registry ${generation.registry} holds a record of the asset ${entry.asset} and no attestation`,
+      reason: `the registry ${generation.registry} holds no attestation ${entry.attestationId} of the asset ${entry.asset}`,
     };
   }
   if (attestation.snapshotLedger !== entry.snapshotLedger) {
@@ -188,9 +181,15 @@ export async function verifyInclusion(input: {
       reason: `the package names the snapshot ledger ${entry.snapshotLedger}, and the registry attests the snapshot ledger ${attestation.snapshotLedger}`,
     };
   }
+  if (attestation.contextHash !== entry.contextHash) {
+    return {
+      kind: "no-matching-attestation",
+      reason: `the package names the context ${toHex(entry.contextHash)}, and attestation ${entry.attestationId} holds ${toHex(attestation.contextHash)}`,
+    };
+  }
 
   const recomputed = rootFromPath({
-    leaf: leafHash({ id: entry.id, balance: entry.balance, salt: entry.salt }),
+    leaf: leafHash({ id: entry.id, commitment: entry.commitment }),
     leafIndex: entry.leafIndex,
     siblings: entry.siblings,
     depth: generation.treeDepth,
@@ -264,7 +263,7 @@ export function verdictLines(verdict: Verdict): string[] {
         "The recomputed root does not equal the attested root.",
         `The recomputed root is ${toHex(verdict.recomputed)}.`,
         `The attested root is ${toHex(verdict.attested)}.`,
-        "A wrong balance, a wrong salt, and a tampered path are the same result from here.",
+        "A changed identifier, commitment, or path reaches another root.",
         "Obtain the package again from the authority before you conclude anything.",
       ];
   }

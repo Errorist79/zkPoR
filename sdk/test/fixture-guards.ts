@@ -97,7 +97,7 @@ export interface ContextVectors {
     context_hash: string;
   }[];
   nodes: { case: string; left: string; right: string; node: string }[];
-  leaves: { case: string; id: string; balance: string; salt: string; leaf: string }[];
+  leaves: { case: string; id: string; balance: string; salt: string; commitment: string; leaf: string }[];
   salts: {
     case: string;
     master_secret: string;
@@ -119,6 +119,7 @@ export interface LeafVector {
   id: string;
   balance: string;
   salt: string;
+  commitment: string;
   leaf: string;
 }
 
@@ -178,7 +179,7 @@ function isNode(value: unknown): value is ContextVectors["nodes"][number] {
 }
 
 function isLeaf(value: unknown): value is ContextVectors["leaves"][number] {
-  return isRecord(value) && hasStrings(value, ["case", "id", "balance", "salt", "leaf"]);
+  return isRecord(value) && hasStrings(value, ["case", "id", "balance", "salt", "commitment", "leaf"]);
 }
 
 function isSalt(value: unknown): value is ContextVectors["salts"][number] {
@@ -206,7 +207,7 @@ function isContextVectors(value: unknown): value is ContextVectors {
 function isLeafVector(value: unknown): value is LeafVector {
   return (
     isRecord(value) &&
-    hasStrings(value, ["case", "id", "balance", "salt", "leaf"]) &&
+    hasStrings(value, ["case", "id", "balance", "salt", "commitment", "leaf"]) &&
     hasNumbers(value, ["leaf_index"])
   );
 }

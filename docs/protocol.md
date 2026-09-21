@@ -24,10 +24,9 @@ left. A parser must reject a 32-byte value that is greater than or equal to
 - state width 4 and rate 3;
 - sponge capacity initialized to `n * 2^64`, where `n` is the input count.
 
-The capacity value depends on the input count. Therefore a hash of 2 inputs
-and a hash of 3 inputs can never collide, even on equal input prefixes. This
-property separates the hash domains in this protocol. No extra domain tags are
-needed for the tree.
+The capacity value separates inputs of different lengths.
+The balance commitment and customer leaf each have three inputs, so they use distinct domain tags.
+Tree nodes have two inputs.
 
 An implementation must not substitute another Poseidon variant, another state
 width, or another capacity rule. Any such substitution changes every root and
@@ -273,13 +272,9 @@ because the tag and every payload bit survive in the limb pair.
 6. Concatenate the limb pairs in sorted order into one list of `2N` elements.
 7. `reserve_set_hash = H_2N(list)`.
 
-`MAX_RESERVE_ADDRESSES` is a chosen coordination bound, and not a technical
-ceiling. Registration collects the consent of every reserve address, and the
-bound limits that coordination. The instruction budget does not fix it. One
-added reserve address costs one balance read, which measures about 0.10M
-declared instructions for a classic asset on the Protocol 27 testnet. A set
-of 32 classic addresses declares about 125M instructions, against a cap of
-400,000,000 for each transaction.
+`MAX_RESERVE_ADDRESSES` limits the number of reserve addresses that must authorize registration.
+Each additional reserve address requires another balance call.
+The transaction must also satisfy the target network's resource limits.
 
 The steps define the value and the rejection rules. They do not fix an
 execution order. An implementation may evaluate the rejection rules of
@@ -300,11 +295,18 @@ element count, so sets of different sizes cannot collide.
 
 ## 4. Leaf construction
 
-### 4.1 Salted leaf
+### 4.1 Balance commitment and customer leaf
 
 ```
-leaf = H_3([id, balance, salt])
+commitment = H_3([BALANCE_DOMAIN_TAG, balance, salt])
+leaf = H_3([LEAF_DOMAIN_TAG, id, commitment])
 ```
+
+`BALANCE_DOMAIN_TAG` encodes the ASCII bytes `zkpor-balance-v1` as one field element.
+`LEAF_DOMAIN_TAG` encodes the ASCII bytes `zkpor-leaf-v2` as one field element.
+The circuit recomputes both hashes from the private balance and salt.
+An inclusion dispute exposes the identifier, commitment, position, and path.
+It does not expose the balance or salt.
 
 - `id` is an opaque customer identifier as an `Fr` element. It must not be
   raw personal data. The authority keeps the mapping from `id` to the customer
@@ -481,7 +483,8 @@ exist, so no direction bit can disagree with the index.
 Verification algorithm:
 
 ```
-node = H_3([id, balance, salt])
+commitment = H_3([BALANCE_DOMAIN_TAG, balance, salt])
+node = H_3([LEAF_DOMAIN_TAG, id, commitment])
 for d in 0..D:
     if bit d of g == 0:            # bit 0 is the least significant bit
         node = H_2([node, siblings[d]])
@@ -514,11 +517,8 @@ detectable to the omitted customer; it does not prove the set is complete.
 ATTESTATION_MAX_AGE_LEDGERS = 720
 ```
 
-On the Stellar test network, the measured average close interval over 60
-consecutive ledgers is 5 seconds. 720 ledgers is therefore approximately one
-hour. The window must cover proof generation plus submission with margin,
-and it must keep the declared snapshot close to the verifiable reading. One
-hour satisfies both at the current proving cost.
+This window limits the age of the declared snapshot at submission.
+The issuer must complete proof generation and submission within that ledger window.
 
 The registry must enforce, at the ledger `e` where the attestation
 transaction executes:
@@ -550,9 +550,9 @@ configuration. No package, record, or user input supplies it, because a
 supplied value could hide a lapse. Which tool reads the value is an
 implementation choice; what the value is, is not.
 
-A stale attestation keeps its meaning in two parts: the inclusion claim
-under its root still holds, but the solvency claim has lapsed until a
-fresher attestation replaces it.
+A stale attestation keeps its inclusion claim, but its solvency claim has lapsed.
+A fresher attestation establishes a separate claim under its own identifier.
+It does not replace the historical record or renew the older snapshot's claim.
 
 ### 6.3 The two reserve readings
 
@@ -598,8 +598,9 @@ ledger `s`. At the ledger `e` where the attestation executed, with
 
 An accepted attestation does not prove the following:
 
-- It does not prove that the liability set is complete. An omitted customer
-  can detect the omission, and nothing else can.
+- It does not prove that the liability set is complete.
+  An earlier inclusion permits a dispute against a later attestation.
+  An unanswered dispute records a protocol outcome, not a cryptographic proof of absence.
 - It does not prove that the authority held the reserves at any ledger other
   than `e`. The balances are read inside the attestation transaction. A
   Soroban transaction is one atomic invocation tree, so funds can enter a
@@ -731,8 +732,11 @@ A tier 2 record therefore proves who authorized the registration at that
 time. It does not prove who can create the asset now. These limits stand
 next to the lookalike limit of section 7.1.
 
-The registry records consent only. It holds no funds, moves no funds, and
-takes no authority over any balance.
+Reserve balances remain at the registered reserve addresses.
+The registry records their consent and reads their balances; it cannot move those reserves.
+The registry separately holds native XLM deposits and optional bonds for disputes.
+It transfers a deposit to the issuer after a valid answer, or refunds it after an unanswered dispute.
+A bond has no withdrawal path, and an unanswered dispute permanently locks its available allocation.
 
 ## 8. Verification key binding
 
@@ -799,16 +803,26 @@ the addresses that authorized it, so an equal authority connects the two
 records. A registry address alone proves nothing, because any party can
 deploy a registry.
 
-## 9. The attestation event and history
+## 9. Persistent attestation history and events
 
-The entry of an asset holds only the latest attestation. Each accepted
-attestation also emits one contract event. The event stream is the only
-record of the earlier attestations.
+Each accepted attestation receives an asset-specific `u64` identifier that starts at one.
+`submit_attestation` returns that identifier from the successful transaction.
+The registry stores each attestation under its identifier in persistent storage.
+A later attestation does not replace that record.
+Two attestations in one ledger have different identifiers.
+The asset entry retains the latest attestation for existing readers.
+
+`attestation_count(asset)` returns the last identifier.
+`get_attestation(asset, id)` returns the fixed attestation as a direct struct.
+The struct includes `context_hash`, `final_root`, `total_liabilities`, `snapshot_ledger`, `reserve_sum`, and `attested_ledger`.
+An unknown identifier returns `AttestationNotFound`.
+Persistent storage remains subject to the network's storage lifetime and restoration rules.
+Event retention does not define the lifetime of these records.
 
 The event carries exactly two topics, in this order: the symbol
 `attestation_accepted`, then the asset address. The event data is a map
-with five keys, the field names of the attestation record:
-`attested_ledger`, `final_root`, `reserve_sum`, `snapshot_ledger`, and
+with six keys:
+`attestation_id`, `attested_ledger`, `final_root`, `reserve_sum`, `snapshot_ledger`, and
 `total_liabilities`. The values equal the values that the registry stored
 for that attestation. A consumer must read each value by its key, never
 by its position. The host orders the keys of a map, and that order is
@@ -826,17 +840,18 @@ external datastore past its own window, but that integration covers
 state the oldest ledger that its query covered. It must not present a
 window-bounded result as the complete history.
 
-History past the window is outside this protocol. The ledger history is
-permanent in the history archives, but `getEvents`, the one method that
-serves the attestation events, does not reach it. A reader who needs the
-complete attestation record uses a data indexer, or captures the events
-continuously inside the window.
+Readers of the current registry use persistent records beyond the event window.
+A bounded query fixes the attestation count before it reads a range of identifiers.
+It does not include an attestation that arrives after that count read.
+Older deployment generations support only the event history that their API provides.
+A client must not report an unsupported historical API as an absent attestation.
 
 ### 9.1 The read interface
 
-The registry exposes two read functions. `entry` returns the record of a
+The registry exposes the historical functions above and the existing read functions.
+`entry` returns the record of a
 registered asset. `observe_reserves` returns the reading of section 6.3.
-Both encode their results as contract values of soroban-sdk 26.0.1.
+These functions encode their results as contract values of soroban-sdk 26.0.1.
 
 `entry` returns a map with five keys: `authority`, `tier`, `reserves`,
 `reserve_set_hash`, and `attestation`. `observe_reserves` returns a map
@@ -847,8 +862,9 @@ A value that names one case of a closed set arrives as a vector. The
 first element is the symbol of the case. The second element, when the
 case carries data, is that data. `tier` is `["ClassicIssuer"]` or
 `["ContractAdministrator"]`. `attestation` is `["Empty"]` or
-`["Filled", record]`, where `record` is the map of the attestation
-record, with the five keys of the event data above. A client must reject
+`["Filled", record]`, where `record` has the six stored attestation fields above.
+The stored record includes `context_hash`; the event instead includes `attestation_id`.
+A client must reject
 a case that this section does not name, because a later registry version
 can add one, and a silent guess about an unknown case would misreport
 the chain.
@@ -889,13 +905,16 @@ fields would also tolerate a package that carries a root, which section
 
 | field | type | content |
 |-------|------|---------|
-| `format` | string | exactly `zkpor-inclusion/1` |
+| `format` | string | exactly `zkpor-inclusion/2` |
 | `network` | string | the network name, as the deployments file records it |
 | `registry` | string | the registry contract id, StrKey `C...` |
 | `asset` | string | the asset contract id, StrKey `C...` |
 | `snapshot_ledger` | number | the `u32` snapshot ledger of the attestation |
+| `context_hash` | string | the context hash of the fixed attestation, `Fr` hex |
+| `attestation_id` | string | the positive `u64` identifier of the fixed attestation |
 | `leaf_index` | number | the `u32` global leaf index of section 5.2 |
 | `id` | string | the customer identifier, `Fr` hex |
+| `commitment` | string | the balance commitment, `Fr` hex |
 | `balance` | string | the `u64` balance as a decimal string |
 | `salt` | string | the leaf salt, `Fr` hex |
 | `siblings` | array of string | the authentication path, `Fr` hex each |
@@ -918,6 +937,11 @@ above 2 to the power of that depth is malformed: the walk of section 5.4
 reads only the low bits of the index, so an unchecked high bit would let
 two different indices name one path. An `id` of zero is malformed, per
 section 4.1: no customer package names the padding identifier.
+
+`attestation_id` uses canonical decimal notation and must be between one and the `u64` maximum.
+The reader recomputes `commitment` from the balance and salt before it accepts the package.
+It rejects a commitment that does not match.
+It also compares `context_hash` with the stored attestation.
 
 A writer must serialize deterministically, so two implementations produce
 byte-identical files. The exact layout is:
@@ -954,9 +978,8 @@ and locators. It must never contain:
 - direction bits. The direction derives from `leaf_index` per section
   5.4, and stored data that can disagree with derived data is forbidden.
 
-A sibling hash is safe to include: it is a three-input hash whose salt
-term alone carries approximately 254 bits of entropy, so it reveals
-nothing about the leaf behind it.
+A sibling hash commits to a subtree whose customer balances use salted commitments.
+The customer package does not expose those balances or salts.
 
 The authority must not issue a package for a padding leaf (section 4.3).
 
@@ -973,8 +996,10 @@ from the same file that every other client trusts.
 Package generation is a separate step, run only after the attestation
 transaction is confirmed on chain. Before it writes any file, the
 generation tooling must obtain the attested `final_root` and the attested
-`snapshot_ledger` from the registry entry of the asset, through a read of
-the registry, not through manual entry. It must recompute the tree,
+`snapshot_ledger` through `get_attestation(asset, id)`.
+The identifier must come from the successful `submit_attestation` return value.
+The tooling must not substitute the latest entry or the current count.
+It must recompute the tree,
 require the recomputed root to equal the attested root, and require the
 snapshot ledger that shaped the tree to equal the attested one. It must
 refuse on either mismatch.
@@ -993,7 +1018,7 @@ types proves nothing about the chain, so the gate reads the chain, and
 no typed value takes part in it.
 
 An implementation may split the work: a component with network access
-reads the registry entry, and an offline component recomputes the tree
+reads the fixed attestation, and an offline component recomputes the tree
 and compares. The offline component then trusts that carrier for the two
 chain values, and nothing else. The obligation of this section binds the
 implementation as a whole, so the carrier must pass the values from the
@@ -1002,14 +1027,25 @@ registry read, unaltered.
 ### 10.6 Naming, layout, and permissions
 
 ```
-<out>/packages/<asset>/<snapshot_ledger>/package-<leaf_index>.zkpor.json
-<out>/packages/<asset>/<snapshot_ledger>/generation.json
+<out>/packages/<network>/<registry>/<asset>/<attestation_id>/package-<leaf_index>.zkpor.json
+<out>/packages/<network>/<registry>/<asset>/<attestation_id>/generation.json
 ```
 
 `<leaf_index>` in the filename is zero-padded to 6 digits. The filename
 carries no customer identifier. `generation.json` is authority-side
-bookkeeping (count, format, root, transaction hash) and is not
-distributed; it is not part of any package.
+metadata and redacted leaves for the fixed attestation. It is not part of a customer package.
+The manifest binds the network, registry, asset, attestation identifier, root, and context hash.
+Its ordered leaves contain only customer identifiers and balance commitments.
+It contains no balances, salts, or master secret.
+The generator reconstructs the root from those leaves before it accepts the manifest.
+
+Before a later attestation, the issuer flow reads the last historical record and requires its manifest.
+The generator requires every previous customer identifier in the new customer file.
+A closed account remains as an explicit row with a zero balance.
+The issuer retains each manifest for at least 518,400 ledgers after the attestation.
+An open dispute requires retention through its answer deadline.
+The issuer also retains the latest manifest until a later attestation replaces it for continuity checks.
+The tools do not purge these manifests automatically.
 
 The tooling creates the package directory with mode `0700` and each file
 with mode `0600`, and prints one notice that the directory contains
@@ -1042,8 +1078,8 @@ The checks, in order:
    `format` before reading any other field.
 2. Check `network` and `registry` against the verifier's deployments
    data, per the rule above. Refuse an unmatched pair.
-3. Fetch the registry entry and its attestation for `asset` from that
-   registry. The attested root is the only root the verifier may use.
+3. Fetch `get_attestation(asset, attestation_id)` from that registry.
+   The stored root is the only root that the verifier may use.
 4. Reject when no entry or no attestation exists, or when the package's
    `snapshot_ledger` does not equal the attested snapshot.
 5. Recompute the leaf per section 4.1 and walk the siblings per section
@@ -1061,3 +1097,40 @@ Inclusion and solvency currency are different claims. When the attested
 snapshot is older than the window of section 6.2, the verifier reports
 inclusion as valid and reports the solvency claim as lapsed, in two
 separate statements.
+
+## 11. Inclusion disputes
+
+A disputer supplies an inclusion path from an earlier stored attestation.
+The public evidence contains the identifier, balance commitment, leaf position, and sibling hashes.
+It contains no balance or salt.
+The target is a later attestation of the same asset.
+An omitted target argument selects the latest identifier when the dispute opens.
+The contract fixes that identifier in the dispute record.
+
+The target must be no more than 518,400 ledgers old when the dispute opens.
+The disputer authorizes a deposit of 10 XLM, which equals 100,000,000 stroops.
+The contract permits one dispute for each asset, target identifier, and customer identifier.
+The issuer has 51,840 ledgers after the dispute opens to answer.
+An answer at the deadline is valid.
+Resolution requires a ledger after the deadline.
+
+A valid answer proves inclusion of the same customer identifier under the fixed target root.
+The answer may use a different commitment because the balance and salt can change.
+The issuer authorizes the answer and receives the deposit.
+No answer can retarget the dispute to a later attestation.
+
+After the deadline, an unanswered dispute receives the status `OmissionProven`.
+That name denotes a protocol outcome: the issuer did not supply a valid answer in time.
+It is not a cryptographic proof that the customer was absent.
+The disputer receives the deposit back.
+The protocol pays no bounty.
+
+An issuer can deposit an optional bond in XLM.
+The contract provides no bond withdrawal function, including before a dispute opens.
+An unanswered dispute moves the entire available bond into the burned allocation.
+The contract retains that allocation permanently and provides no transfer path for it.
+This burn is an irrevocable allocation in the contract, not a reduction of the native asset supply.
+
+This path requires earlier inclusion evidence.
+It does not establish a claim for a customer who never appeared in an attestation.
+It also does not bind an opaque identifier to a person.

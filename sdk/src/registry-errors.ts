@@ -32,10 +32,26 @@ export const REGISTRY_ERRORS: ReadonlyMap<number, string> = new Map([
   [18, "ReserveSumOverflow"],
   [19, "VerifierNotSet"],
   [20, "RootOutOfRange"],
+  [21, "AttestationNotFound"],
+  [22, "AttestationIdOverflow"],
+  [23, "TargetOutsideWindow"],
+  [24, "EvidenceNotOlder"],
+  [25, "InvalidInclusion"],
+  [26, "DisputeAlreadyExists"],
+  [27, "DisputeNotFound"],
+  [28, "DisputeClosed"],
+  [29, "AnswerWindowClosed"],
+  [30, "AnswerWindowOpen"],
+  [31, "DeadlineOverflow"],
+  [32, "InvalidBondAmount"],
+  [33, "BondOverflow"],
 ]);
 
 /** The code that the registry returns when an asset has no record. */
 export const ASSET_NOT_REGISTERED = 7;
+
+/** The code that the registry returns when an attestation has no record. */
+export const ATTESTATION_NOT_FOUND = 21;
 
 /** The code that the registry returns when a reserve balance read fails. */
 export const RESERVE_BALANCE_UNAVAILABLE = 17;

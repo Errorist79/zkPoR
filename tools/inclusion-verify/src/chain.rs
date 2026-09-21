@@ -1,7 +1,6 @@
 //! The read of the chain.
 //!
-//! The verifier reads two values from the network: the attestation that the
-//! registry holds for the asset, and the sequence number of the last ledger.
+//! The verifier reads the named attestation and the last ledger sequence.
 //! Both reads are read-only. This tool signs nothing and sends nothing.
 
 use num_bigint::BigUint;
@@ -23,6 +22,7 @@ impl std::fmt::Display for NoVerdict {
 /// The attestation record that the registry holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attestation {
+    pub context_hash: BigUint,
     pub final_root: BigUint,
     pub total_liabilities: u128,
     pub snapshot_ledger: u32,
@@ -33,9 +33,7 @@ pub struct Attestation {
 
 /// What the registry answers for one asset.
 ///
-/// The two empty answers stay apart, because they tell the customer different
-/// things: an asset with no entry never reached this registry, and an asset
-/// with an entry and no attestation reached it and holds no proof yet.
+/// The two missing answers stay apart, because they have different causes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
     NoEntry,
@@ -44,9 +42,8 @@ pub enum Entry {
 }
 
 pub trait Chain {
-    /// The attestation of one asset, from the registry that the verifier
-    /// resolved from its own deployments file.
-    fn attestation(&self, registry: &str, asset: &str) -> Result<Entry, NoVerdict>;
+    /// The named attestation of one asset from a trusted registry.
+    fn attestation(&self, registry: &str, asset: &str, id: u64) -> Result<Entry, NoVerdict>;
     /// The sequence number of the last closed ledger.
     fn latest_ledger(&self) -> Result<u32, NoVerdict>;
 }
@@ -129,7 +126,7 @@ fn contract_error(text: &str) -> Option<u32> {
 }
 
 impl Chain for StellarCli {
-    fn attestation(&self, registry: &str, asset: &str) -> Result<Entry, NoVerdict> {
+    fn attestation(&self, registry: &str, asset: &str, id: u64) -> Result<Entry, NoVerdict> {
         let mut args = vec![
             "contract".to_string(),
             "invoke".to_string(),
@@ -141,15 +138,20 @@ impl Chain for StellarCli {
         args.extend(self.endpoint_args()?);
         args.extend([
             "--".to_string(),
-            "entry".to_string(),
+            "get_attestation".to_string(),
             "--asset".to_string(),
             asset.to_string(),
+            "--id".to_string(),
+            id.to_string(),
         ]);
         let output = self.run(&args)?;
         if !output.status.success() {
             let text = String::from_utf8_lossy(&output.stderr).to_string();
             if contract_error(&text) == Some(RegistryError::AssetNotRegistered as u32) {
                 return Ok(Entry::NoEntry);
+            }
+            if contract_error(&text) == Some(RegistryError::AttestationNotFound as u32) {
+                return Ok(Entry::NoAttestation);
             }
             return Err(NoVerdict(format!(
                 "the read of the registry failed: {text}"
@@ -193,34 +195,17 @@ impl Chain for StellarCli {
 pub fn parse_entry(text: &str) -> Result<Entry, NoVerdict> {
     let json: Value = serde_json::from_str(text)
         .map_err(|error| NoVerdict(format!("the answer of the registry is not JSON: {error}")))?;
-    let slot = &json["attestation"];
-    if slot.is_null() {
-        return Err(NoVerdict(
-            "the answer of the registry holds no attestation slot".to_string(),
-        ));
-    }
-    // The empty slot carries no value, and the filled slot carries the record.
-    if slot.as_str() == Some("Empty") || !slot["Empty"].is_null() {
-        return Ok(Entry::NoAttestation);
-    }
-    let filled = match &slot["Filled"] {
-        Value::Null => {
-            return Err(NoVerdict(format!(
-                "the attestation slot of the answer reads as none of the two cases: {slot}"
-            )))
-        }
-        // One payload behind a variant name reaches the reader either alone or
-        // inside a list of one.
-        Value::Array(values) => values
-            .first()
-            .cloned()
-            .ok_or_else(|| NoVerdict("the filled attestation slot is empty".to_string()))?,
-        value => value.clone(),
+    let filled = json
+        .as_object()
+        .ok_or_else(|| NoVerdict("the attestation answer is not an object".to_string()))?;
+    let value = |name: &str| -> Result<&Value, NoVerdict> {
+        filled
+            .get(name)
+            .ok_or_else(|| NoVerdict(format!("the attestation holds no {name}")))
     };
 
     let number = |name: &str| -> Result<u128, NoVerdict> {
-        let value = &filled[name];
-        let text = match value {
+        let text = match value(name)? {
             Value::String(text) => text.clone(),
             Value::Number(number) => number.to_string(),
             _ => return Err(NoVerdict(format!("the attestation holds no {name}"))),
@@ -235,23 +220,24 @@ pub fn parse_entry(text: &str) -> Result<Entry, NoVerdict> {
         u32::try_from(number(name)?)
             .map_err(|_| NoVerdict(format!("the {name} of the attestation is not a u32")))
     };
-    let root = match &filled["final_root"] {
-        Value::String(text) => text.clone(),
-        Value::Number(number) => number.to_string(),
-        _ => return Err(NoVerdict("the attestation holds no final_root".to_string())),
-    };
-    // The root travels as a decimal number, and a hexadecimal text stays
-    // readable, because both name one integer.
-    let final_root = if root.starts_with("0x") {
-        parse_fr(&zkpor_package::new_env(), &root)
-            .map_err(|reason| NoVerdict(format!("the attested root does not read: {reason}")))?
-    } else {
-        root.parse::<BigUint>()
-            .map_err(|_| NoVerdict(format!("the attested root does not read: {root}")))?
+    let field = |name: &str| -> Result<BigUint, NoVerdict> {
+        let text = match value(name)? {
+            Value::String(text) => text.clone(),
+            Value::Number(number) => number.to_string(),
+            _ => return Err(NoVerdict(format!("the attestation holds no {name}"))),
+        };
+        if text.starts_with("0x") {
+            parse_fr(&zkpor_package::new_env(), &text)
+                .map_err(|reason| NoVerdict(format!("the {name} does not read: {reason}")))
+        } else {
+            text.parse::<BigUint>()
+                .map_err(|_| NoVerdict(format!("the {name} does not read: {text}")))
+        }
     };
 
     Ok(Entry::Attested(Attestation {
-        final_root,
+        context_hash: field("context_hash")?,
+        final_root: field("final_root")?,
         total_liabilities: number("total_liabilities")?,
         snapshot_ledger: ledger("snapshot_ledger")?,
         attested_ledger: ledger("attested_ledger")?,
@@ -273,44 +259,37 @@ mod tests {
     }
 
     #[test]
-    fn the_empty_slot_and_the_filled_slot_stay_apart() {
-        assert_eq!(
-            parse_entry(r#"{"attestation": "Empty"}"#).unwrap(),
-            Entry::NoAttestation
-        );
-        assert_eq!(
-            parse_entry(r#"{"attestation": {"Empty": []}}"#).unwrap(),
-            Entry::NoAttestation
-        );
+    fn an_old_slot_answer_is_not_a_history_record() {
+        assert!(parse_entry(r#"{"attestation": "Empty"}"#).is_err());
+        assert!(parse_entry(r#"{"attestation": {"Empty": []}}"#).is_err());
     }
 
     #[test]
-    fn a_filled_slot_reads_the_record() {
+    fn a_stored_attestation_reads_the_record() {
         let expected = Attestation {
+            context_hash: BigUint::from(5u32),
             final_root: BigUint::from(123u32),
             total_liabilities: 40,
             snapshot_ledger: 100,
             attested_ledger: 101,
         };
-        let object = r#"{"attestation": {"Filled": {"final_root": "123",
+        let object = r#"{"context_hash": "5", "final_root": "123",
             "total_liabilities": "40", "snapshot_ledger": 100, "attested_ledger": 101,
-            "reserve_sum": "50"}}}"#;
+            "reserve_sum": "50"}"#;
         assert_eq!(
             parse_entry(object).unwrap(),
             Entry::Attested(expected.clone())
         );
 
-        // The same record inside a list of one, and with numbers instead of
-        // strings, names the same values.
-        let list = r#"{"attestation": {"Filled": [{"final_root": 123,
-            "total_liabilities": 40, "snapshot_ledger": 100, "attested_ledger": 101}]}}"#;
-        assert_eq!(parse_entry(list).unwrap(), Entry::Attested(expected));
+        let numbers = r#"{"context_hash": 5, "final_root": 123,
+            "total_liabilities": 40, "snapshot_ledger": 100, "attested_ledger": 101}"#;
+        assert_eq!(parse_entry(numbers).unwrap(), Entry::Attested(expected));
     }
 
     #[test]
     fn a_root_in_hexadecimal_names_the_same_value() {
-        let text = r#"{"attestation": {"Filled": {"final_root": "0x000000000000000000000000000000000000000000000000000000000000007b",
-            "total_liabilities": "40", "snapshot_ledger": 100, "attested_ledger": 101}}}"#;
+        let text = r#"{"context_hash": "5", "final_root": "0x000000000000000000000000000000000000000000000000000000000000007b",
+            "total_liabilities": "40", "snapshot_ledger": 100, "attested_ledger": 101}"#;
         match parse_entry(text).unwrap() {
             Entry::Attested(attestation) => {
                 assert_eq!(attestation.final_root, BigUint::from(123u32))
@@ -323,7 +302,7 @@ mod tests {
     fn an_answer_that_the_reader_cannot_read_is_not_a_verdict() {
         assert!(parse_entry("not json").is_err());
         assert!(parse_entry("{}").is_err());
-        assert!(parse_entry(r#"{"attestation": {"Filled": {"final_root": "1"}}}"#).is_err());
+        assert!(parse_entry(r#"{"final_root": "1"}"#).is_err());
         assert!(parse_entry(r#"{"attestation": {"Other": {}}}"#).is_err());
     }
 }

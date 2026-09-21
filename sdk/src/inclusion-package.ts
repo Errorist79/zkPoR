@@ -22,6 +22,7 @@ import {
 } from "./constants.js";
 import { parseHex, parseU32, parseU64Decimal, toHex } from "./fr.js";
 import { isRecord, messageOf } from "./guards.js";
+import { balanceCommitment } from "./hashes.js";
 
 /** The parsed content of one inclusion package. */
 export interface InclusionPackage {
@@ -30,8 +31,11 @@ export interface InclusionPackage {
   readonly registry: string;
   readonly asset: string;
   readonly snapshotLedger: number;
+  readonly contextHash: bigint;
+  readonly attestationId: bigint;
   readonly leafIndex: number;
   readonly id: bigint;
+  readonly commitment: bigint;
   readonly balance: bigint;
   readonly salt: bigint;
   readonly siblings: readonly bigint[];
@@ -145,16 +149,30 @@ export function parsePackage(text: string): InclusionPackage {
     malformed("the identifier zero names a padding leaf, and no customer package names it");
   }
 
+  const attestationId = checked(() => parseU64Decimal(stringField(source, "attestation_id"), "the attestation ID"));
+  if (attestationId === 0n) {
+    malformed("the attestation ID must be positive");
+  }
+
+  const commitment = checked(() => parseHex(stringField(source, "commitment"), "the commitment"));
+  const balance = checked(() => parseU64Decimal(stringField(source, "balance"), "the balance"));
+  const salt = checked(() => parseHex(stringField(source, "salt"), "the salt"));
+  if (balanceCommitment({ balance, salt }) !== commitment) {
+    malformed("the commitment does not match the balance and salt");
+  }
   return {
     format,
     network: stringField(source, "network"),
     registry: stringField(source, "registry"),
     asset: stringField(source, "asset"),
     snapshotLedger: checked(() => parseU32(source["snapshot_ledger"], "the snapshot ledger")),
+    contextHash: checked(() => parseHex(stringField(source, "context_hash"), "the context hash")),
+    attestationId,
     leafIndex: checked(() => parseU32(source["leaf_index"], "the leaf index")),
     id,
-    balance: checked(() => parseU64Decimal(stringField(source, "balance"), "the balance")),
-    salt: checked(() => parseHex(stringField(source, "salt"), "the salt")),
+    commitment,
+    balance,
+    salt,
     siblings,
   };
 }
@@ -193,8 +211,11 @@ export function serializePackage(entry: InclusionPackage): string {
     registry: entry.registry,
     asset: entry.asset,
     snapshot_ledger: entry.snapshotLedger,
+    context_hash: toHex(entry.contextHash),
+    attestation_id: entry.attestationId.toString(10),
     leaf_index: entry.leafIndex,
     id: toHex(entry.id),
+    commitment: toHex(entry.commitment),
     balance: entry.balance.toString(10),
     salt: toHex(entry.salt),
     siblings: entry.siblings.map((sibling) => toHex(sibling)),

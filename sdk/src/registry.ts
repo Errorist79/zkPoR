@@ -21,12 +21,13 @@ import {
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
-import { ATTESTATION_MAX_AGE_LEDGERS, HISTORY_PAGE_LIMIT } from "./constants.js";
-import { InfrastructureError, retainedLedgers } from "./network.js";
+import { ATTESTATION_MAX_AGE_LEDGERS, HISTORY_PAGE_LIMIT, MAX_U64 } from "./constants.js";
+import { InfrastructureError, openServer, retainedLedgers } from "./network.js";
 import { isRecord, isStringList } from "./guards.js";
 import type { NetworkConfig } from "./network.js";
 import {
   ASSET_NOT_REGISTERED,
+  ATTESTATION_NOT_FOUND,
   describeRegistryError,
   registryErrorCode,
 } from "./registry-errors.js";
@@ -44,6 +45,12 @@ export interface Attestation {
   readonly snapshotLedger: number;
   readonly reserveSum: bigint;
   readonly attestedLedger: number;
+}
+
+/** A fixed record from a registry that supports persistent history. */
+export interface StoredAttestation extends Attestation {
+  readonly attestationId: bigint;
+  readonly contextHash: bigint;
 }
 
 /** The record of one registered asset. */
@@ -82,6 +89,24 @@ export class RegistryRefusedError extends Error {
  */
 export interface ReadOptions {
   readonly readSourceAccount?: string;
+}
+
+/** A caller can reuse its configured client for persistent history reads. */
+export interface StoredReadOptions extends ReadOptions {
+  readonly server?: rpc.Server;
+}
+
+/** One bounded range of persistent attestation identifiers. */
+export interface StoredHistoryOptions extends StoredReadOptions {
+  readonly startId: bigint;
+  readonly count: number;
+}
+
+/** The count is fixed before the first record read. Later attestations wait for the next query. */
+export interface StoredAttestationHistory {
+  readonly attestations: readonly StoredAttestation[];
+  readonly totalCount: bigint;
+  readonly nextId: bigint | undefined;
 }
 
 /**
@@ -199,8 +224,8 @@ function variantOf(value: unknown, what: string): { name: string; payload: unkno
 /**
  * Reads one attestation out of the value that the host returned.
  *
- * The registry gives the same five fields to the asset record and to the
- * attestation event, keyed by name in both, so one reader serves both. The
+ * The asset record and attestation event share five public snapshot fields,
+ * keyed by name in both, so one reader serves both. The
  * `source` names the place a failure came from.
  *
  * The decoders below take a value and return a record. They reach no network,
@@ -223,6 +248,18 @@ export function decodeAttestation(payload: unknown, source: string): Attestation
     attestedLedger: requireNumber(
       mapField(payload, "attested_ledger", source),
       "the attested ledger",
+    ),
+  };
+}
+
+/** Reads the direct struct that get_attestation returns. */
+export function decodeStoredAttestation(payload: unknown, id: bigint): StoredAttestation {
+  return {
+    ...decodeAttestation(payload, "get_attestation"),
+    attestationId: id,
+    contextHash: requireBigint(
+      mapField(payload, "context_hash", "get_attestation"),
+      "the attested context hash",
     ),
   };
 }
@@ -293,7 +330,7 @@ export function decodeReserveObservation(returned: unknown): ReserveObservation 
 export function decodeAttestationEvent(
   topics: readonly unknown[],
   data: unknown,
-): { asset: string; attestation: Attestation } {
+): { asset: string; attestation: Attestation & { readonly attestationId?: bigint } } {
   const [name, asset] = topics;
   if (name !== ATTESTATION_EVENT_TOPIC) {
     throw new InfrastructureError(
@@ -303,7 +340,84 @@ export function decodeAttestationEvent(
   if (typeof asset !== "string") {
     throw new InfrastructureError("the event carries no asset address as its second topic");
   }
+  if (isRecord(data) && "attestation_id" in data) {
+    const id = requireBigint(data["attestation_id"], "the attestation identifier");
+    requireAttestationId(id);
+    return { asset, attestation: { ...decodeAttestation(data, ATTESTATION_EVENT_TOPIC), attestationId: id } };
+  }
   return { asset, attestation: decodeAttestation(data, ATTESTATION_EVENT_TOPIC) };
+}
+
+function requireAttestationId(id: bigint): void {
+  if (id < 1n || id > MAX_U64) {
+    throw new RangeError("the attestation identifier must be a positive u64");
+  }
+}
+
+/** Reads one fixed record. This API requires a registry with persistent history. */
+export async function readStoredAttestation(
+  network: NetworkConfig,
+  registry: string,
+  asset: string,
+  id: bigint,
+  options: StoredReadOptions = {},
+): Promise<StoredAttestation | undefined> {
+  requireAttestationId(id);
+  const server = options.server ?? openServer(network);
+  let returned: unknown;
+  try {
+    returned = await simulateRead(server, network, options, registry, "get_attestation", [
+      nativeToScVal(Address.fromString(asset)),
+      nativeToScVal(id, { type: "u64" }),
+    ]);
+  } catch (cause) {
+    if (
+      cause instanceof RegistryRefusedError &&
+      (cause.code === ASSET_NOT_REGISTERED || cause.code === ATTESTATION_NOT_FOUND)
+    ) {
+      return undefined;
+    }
+    throw cause;
+  }
+  return decodeStoredAttestation(returned, id);
+}
+
+/** Reads a bounded range from persistent storage without an event query. */
+export async function readStoredAttestationHistory(
+  network: NetworkConfig,
+  registry: string,
+  asset: string,
+  options: StoredHistoryOptions,
+): Promise<StoredAttestationHistory> {
+  requireAttestationId(options.startId);
+  if (!Number.isInteger(options.count) || options.count < 1 || options.count > HISTORY_PAGE_LIMIT) {
+    throw new RangeError(`the history count must be between 1 and ${HISTORY_PAGE_LIMIT}`);
+  }
+  const server = options.server ?? openServer(network);
+  const totalCount = requireBigint(
+    await simulateRead(server, network, options, registry, "attestation_count", [
+      nativeToScVal(Address.fromString(asset)),
+    ]),
+    "the attestation count",
+  );
+  if (totalCount < 0n || totalCount > MAX_U64) {
+    throw new InfrastructureError("the attestation count is outside the u64 range");
+  }
+  const requestedEnd = options.startId + BigInt(options.count) - 1n;
+  const endId = requestedEnd < totalCount ? requestedEnd : totalCount;
+  const attestations: StoredAttestation[] = [];
+  for (let id = options.startId; id <= endId; id += 1n) {
+    const record = await readStoredAttestation(network, registry, asset, id, { ...options, server });
+    if (record === undefined) {
+      throw new InfrastructureError(`the attestation count includes the missing record ${id}`);
+    }
+    attestations.push(record);
+  }
+  return {
+    attestations,
+    totalCount,
+    nextId: endId < totalCount ? endId + 1n : undefined,
+  };
 }
 
 /**
@@ -359,6 +473,7 @@ export function solvencyLapsed(snapshotLedger: number, currentLedger: number): b
 
 /** One attestation that the event stream records, with the ledger of its event. */
 export interface AttestationEvent extends Attestation {
+  readonly attestationId?: bigint;
   readonly ledger: number;
   readonly transactionHash: string;
 }
@@ -412,8 +527,8 @@ function ledgerOfEventCursor(cursor: string): number | undefined {
 /**
  * Reads the attestation history of one asset from the event stream.
  *
- * The asset entry holds the latest attestation only, so the events are the one
- * record of the earlier attestations.
+ * This reader also supports legacy registries whose earlier attestations exist
+ * only in events. Persistent history uses readStoredAttestationHistory.
  *
  * A caller that names no ledger gets the whole window that the endpoint keeps.
  * That boundary is the endpoint's and not ours, which is the reason to take it:

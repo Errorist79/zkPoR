@@ -91,7 +91,7 @@ mod tests {
     use super::*;
     use crate::fr::{to_big, to_fr};
     use num_bigint::BigUint;
-    use zkpor_context::leaf_hash;
+    use zkpor_context::{balance_commitment, leaf_hash};
 
     const DEPTH: usize = 4;
     const CAPACITY: usize = 1 << DEPTH;
@@ -105,7 +105,8 @@ mod tests {
             .map(|i| {
                 let id = to_fr(env, &BigUint::from(i as u64 + 1));
                 let salt = to_fr(env, &BigUint::from(i as u64 + 1000));
-                leaf_hash(env, &id, i as u64 * 7 + 1, &salt)
+                let commitment = balance_commitment(env, i as u64 * 7 + 1, &salt);
+                leaf_hash(env, &id, &commitment)
             })
             .collect()
     }

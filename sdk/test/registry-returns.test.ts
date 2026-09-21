@@ -17,6 +17,7 @@ import {
   decodeAssetRecord,
   decodeAttestationEvent,
   decodeReserveObservation,
+  decodeStoredAttestation,
 } from "../src/registry.js";
 import { InfrastructureError } from "../src/network.js";
 import { toHex } from "../src/fr.js";
@@ -123,6 +124,7 @@ describe("the attestation event", () => {
     expect(decoded.asset).toMatch(/^C[A-Z2-7]{55}$/);
     expect(typeof decoded.attestation.finalRoot).toBe("bigint");
     expect(Number.isInteger(decoded.attestation.snapshotLedger)).toBe(true);
+    expect(decoded.attestation).toHaveProperty("attestationId", 1n);
   });
 
   it.each(fixture.events)("refuses the case $case under another topic symbol", (event) => {
@@ -134,9 +136,8 @@ describe("the attestation event", () => {
 
   it.each(fixture.events)("decodes the data of the case $case by name", (event) => {
     const data = decodedRecord(decode(event.data));
-    // The data is a map, not a list, so no consumer reads a value by a
-    // position. The five names are the names of the attestation record.
     expect(Object.keys(data).sort()).toEqual([
+      "attestation_id",
       "attested_ledger",
       "final_root",
       "reserve_sum",
@@ -144,18 +145,14 @@ describe("the attestation event", () => {
       "total_liabilities",
     ]);
     expect(typeof data["final_root"]).toBe("bigint");
+    expect(typeof data["attestation_id"]).toBe("bigint");
     expect(typeof data["total_liabilities"]).toBe("bigint");
     expect(typeof data["reserve_sum"]).toBe("bigint");
     expect(Number.isInteger(data["snapshot_ledger"])).toBe(true);
     expect(Number.isInteger(data["attested_ledger"])).toBe(true);
   });
 
-  /**
-   * The event and the record carry the same five fields under the same names,
-   * so one reader serves both. This states that property, because the client
-   * relies on it.
-   */
-  it("carries the same field names as the attestation of the record", () => {
+  it("carries the identifier and public snapshot fields of the stored attestation", () => {
     const filled = fixture.returns.find(
       (entry) => entry.call === "entry" && entry.expected.attestation !== null,
     );
@@ -169,7 +166,22 @@ describe("the attestation event", () => {
     const fromRecord = Object.keys(decodedRecord(slot[1])).sort();
     const first = elementAt(fixture.events, 0, "event list of the return file");
     const fromEvent = Object.keys(decodedRecord(decode(first.data))).sort();
-    expect(fromEvent).toEqual(fromRecord);
+    expect(fromEvent).toEqual([...fromRecord.filter((key) => key !== "context_hash"), "attestation_id"].sort());
+    const stored = decodeStoredAttestation(slot[1], 1n);
+    expect(stored.attestationId).toBe(1n);
+    expect(typeof stored.contextHash).toBe("bigint");
+    expect(stored.finalRoot).toBe(decodedRecord(slot[1])["final_root"]);
+  });
+
+  it("keeps a legacy event readable without inventing a stored identifier", () => {
+    const first = elementAt(fixture.events, 0, "event list of the return file");
+    const data = decodedRecord(decode(first.data));
+    const { attestation_id: ignoredId, ...legacy } = data;
+    expect(ignoredId).toBeDefined();
+    const decoded = decodeAttestationEvent(first.topics.map(decode), legacy);
+    expect(decoded.attestation).not.toHaveProperty("attestationId");
+    expect(decoded.attestation).not.toHaveProperty("contextHash");
+    expect(decoded.attestation.finalRoot).toBe(data["final_root"]);
   });
 });
 

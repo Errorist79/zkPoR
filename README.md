@@ -3,130 +3,53 @@
 ZK Proof of Reserves on Stellar (Soroban). An issuer proves that its reserves
 cover the customer liabilities. The proof does not reveal the individual
 balances. The proof is an UltraHonk zero-knowledge proof. A Soroban contract
-verifies the proof on-chain with the CAP-0080 BN254 host functions. The
-current artifact validated the recursive path on the real Stellar testnet at
-Protocol 27. The Status section separates that evidence from the evidence of
-the earlier artifact.
+verifies the proof on-chain with the CAP-0080 BN254 host functions.
 
-See [`docs/protocol.md`](docs/protocol.md) for the specification, which is
-authoritative. See [`docs/architecture.md`](docs/architecture.md) for the
-design. See [`SECURITY.md`](SECURITY.md) for the security model and the
-on-chain validation.
+See [the protocol specification](docs/protocol.md) for the authoritative definitions.
+See [the architecture](docs/architecture.md) for the design.
+See [the security model](SECURITY.md) for the trust assumptions and limits.
 
-## Status
+## Capabilities
 
-Three stages of work meet in this repository, and this section separates
-them. The first stage is superseded, with on-chain evidence that a reader
-can check. The second stage is the current artifact, and confirmed testnet
-transactions cover it. The third stage is written and tested, and no testnet
-run covers it yet.
+The registry stores each accepted attestation under a fixed identifier.
+Version 2 customer packages bind that identifier, the context hash, and a tagged balance commitment.
+A customer checks the package against the fixed attestation root.
 
-Each heading below states the evidence that covers the work under it. Do not
-read the transaction hashes of one heading as evidence for another.
+An inclusion dispute uses redacted evidence without a customer balance or salt.
+The target window is 518,400 ledgers.
+The answer window is 51,840 ledgers.
+Each dispute requires a 10 XLM deposit.
+An issuer can supply an optional, nonwithdrawable bond.
 
-Superseded (on-chain evidence dated June 27, 2026):
+An unanswered dispute refunds the deposit and permanently locks the available bond.
+It pays no bounty.
+Nonresponse is a protocol outcome, not a cryptographic proof of omission.
 
-- An earlier artifact validated the recursive path end to end on the real
-  Protocol 27 testnet: the verifier contract
-  `CCADPDEROE6OXGODBMAC7SU3Q3VOUZQAKYAQL67YNBMSTROJSSK7ATZ7` accepted the
-  honest proofs and rejected the forged and the deflated proofs. The four
-  confirmed transaction hashes are in [`SECURITY.md`](SECURITY.md). No
-  instruction figure stands for that verify, because no public source
-  returns it today.
-- That artifact used two-input leaves, no context binding, and three public
-  inputs. The current artifact uses different circuits and different keys.
-  The transactions above are evidence for that artifact only, not for the
-  current one.
+The issuer retains redacted manifests for disputes and customer continuity.
+A closed customer account remains in the next attestation with a zero balance.
 
-Current artifact (validated on the Protocol 27 testnet on August 8, 2026):
+## Run the dispute demonstration
 
-- The full flow ran on the real testnet on August 8 and 9, 2026: the verifier
-  `CDUEQOM2AQ54ZZ3EZA2Q4D32C7DBVQ5D45TFMBSC2RCE6ZMX32T44JC2` and the registry
-  `CC4MA6FWDBG3Y4YXYGDHYEZ36O3YSP7DREGOLBWKP6ZTQQ6IYFFX3KQK`, one classic
-  asset registered, one reserve account that signed its own
-  authorization entry, three accepted attestations, and one customer package
-  checked against the registry. A second generation followed, with the
-  verifier `CDICJW5B5VYT3GD3VTDWFYCQG6N4ONLUXKHPQSJVAN5QYPGCTOG7PIXE` and the
-  registry `CCHUTDKUPWXVUIX6D26SE5NZ5STP74VV4DY2CNVCMNJYOU5PTROLA7MY`. It
-  registered one asset with 17 reserve accounts, which the first generation
-  refuses, and a package of the first generation still verifies. A third
-  generation followed, with the verifier
-  `CDNUAFLJPLFM4DSHHQF5SVX2HESQR5GICSKQKZDHXP5NAGG4G2C2QMMM` and the registry
-  `CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG`, which is the
-  first generation that the documented deploy path produced. Its registry holds
-  accepted attestations, among them the transaction
-  `7ed11c70f2911fc9bf46bf815ab11d193a34372d16c72b6bdda58029327ebf5c` at ledger
-  4263070. The confirmed
-  transaction hashes are in
-  [`SECURITY.md`](SECURITY.md), and the addresses are in
-  [`scripts/deployments.json`](scripts/deployments.json). The attestation
-  transaction declared 122,268,806 instructions, about 30.6 percent of the cap
-  of 400,000,000 for each transaction. The network enforces the cap against
-  the declaration, so the declaration bounds the headroom. The transaction
-  consumed 117,524,415 instructions.
-- The circuits with context binding and salted three-input leaves, at the
-  release configuration of 1024 leaves for each batch and 4 batches
-  (`circuits/recursion/`, `tools/recursion-gen/`).
-- The artifact identity in
-  [`circuits/recursion/manifest.json`](circuits/recursion/manifest.json):
-  the batch values, both key hashes, the public input positions, and the
-  toolchain versions. The aggregator key is committed at
-  `circuits/recursion/agg/vk`, and CI fails when a rebuild changes either
-  file.
-- The host-accelerated verifier contract with the completed pairing
-  (`contracts/verifier/`, `contracts/vendor/`).
-- The asset registry contract (`contracts/registry/`). It registers an asset
-  against the authority that the chain authenticates, it collects the consent
-  of every reserve address, it builds the public inputs from its own state,
-  and it records one attestation for each asset. It holds 43 tests, and the
-  registry gate passed on a Protocol 27 localnet
-  (`tools/gate/registry-gate.sh`) with four cases: an honest attestation
-  accepted and recorded, a proof of another context refused, an asset with no
-  entry refused, and the read-only reserve reading. That gate registers a
-  custom account contract as the reserve, so it is not evidence for an
-  ordinary account that signs its own authorization. The testnet run above
-  registers an ordinary account, which signs its authorization entry with
-  `sdk/`.
-- The one Rust definition of the leaf, the node, the salt, the address
-  encoding, and the context hash (`contracts/context/`), with 18 tests and the
-  committed vectors in `fixtures/context_vectors.json`. Every contract and
-  every tool reads the hashes from there, so no component holds a second copy.
-- The issuer flow from a customer file to an accepted attestation
-  (`scripts/attest.sh`). It refuses a run whose salts anybody can recompute,
-  and it stops when the snapshot window holds too few ledgers for the proof.
-- The inclusion package of one customer, and the customer check of it
-  (`tools/package/`, `tools/inclusion-verify/`). The check rebuilds the leaf,
-  walks the authentication path, and compares the result with the root that
-  the registry holds. It reads the registry address from the committed
-  deployments file, and never from the package.
-- The soundness gate passed at the release configuration on a Protocol 27
-  localnet, with five verdicts: an honest proof accepted; a forged proof, a
-  deflated proof, a stale-leaf proof, and a foreign context rejected
-  (`tools/gate/`). A localnet result is not testnet evidence. The honest case
-  lands a transaction, and the four refusals are the verdict that the deployed
-  contract returns under simulation.
-- The deployed testnet registry refuses a stale snapshot with the error
-  `SnapshotOutsideWindow`, and it refuses an invalid proof with the error
-  `ProofRejected`. A reader reproduces both with one command each.
-  [`SECURITY.md`](SECURITY.md) carries the commands and the reason that neither
-  refusal is a transaction.
+Build the SDK and deploy the current verifier and registry before this command.
+Use a new absolute output directory outside the repository.
 
-Written and tested:
+```bash
+npm run build --workspace sdk
+ZKPOR_NETWORK=testnet \
+ZKPOR_REGISTRY="<registry-id>" \
+ZKPOR_VERIFIER="<verifier-id>" \
+ZKPOR_DEMO_WORK=/absolute/path/to/new-demo-directory \
+  bash scripts/dispute_demo.sh
+```
 
-- The TypeScript SDK, which writes and checks a package from the same
-  specification ([`sdk/README.md`](sdk/README.md)). A run on August 17, 2026
-  exercised every path of the package that needs a network. That run
-  provisioned its own disposable asset, and `sdk/README.md` states that it is
-  not evidence for the artifact above.
-- The issuer dashboard, a local process that serves the loopback address only
-  ([`dashboard/README.md`](dashboard/README.md)). It shows the solvency result
-  of one asset, it runs the proof and the attestation in its own process, and it
-  checks a customer package. It holds no cryptographic definition of its own.
+The demonstration uses synthetic token balances for reserves and liabilities.
+The deposits and optional bond use native testnet XLM.
+It answers one dispute and opens another against a tree that omits a previously included customer.
+The second dispute remains open until its real deadline.
+The command prints the later resolution command for `scripts/dispute_example.sh`.
 
-Both items hold their own tests, and the agreement job runs them. A test is not
-a network run. The run of the software development kit provisioned its own
-disposable asset, so it is not evidence for the artifact above. The testnet
-revalidation of the final artifact will cover them.
+The `private` directory contains the master secret and customer packages.
+Keep that directory outside version control.
 
 ## How it works
 
@@ -136,7 +59,9 @@ instructions for each transaction. The system therefore proves the customers in
 batches. It then folds the batch proofs into one terminal proof with recursive
 aggregation. One on-chain verification then covers the full set.
 
-Each batch hashes its `(id, balance, salt)` leaves into a subroot. Each batch also adds
+Each batch creates a tagged commitment from each balance and salt.
+It hashes each identifier and commitment into a tagged leaf, then builds the subroot.
+Each batch also adds
 its balances into a subtotal. The aggregator verifies every batch proof
 in-circuit. It composes the subroots into one final root. It adds the subtotals
 into the published total.
@@ -173,7 +98,7 @@ docs/architecture.md  system design
 [`rust-toolchain.toml`](rust-toolchain.toml) are the files that
 `scripts/setup.sh` and the agreement job read when they install a toolchain.
 They are not the only place these numbers live. The Cargo manifests, the Nargo
-manifests, and the table below each carry a copy, and every copy agrees today.
+manifests, and the table below each carry a copy.
 
 The agreement job compares them with `scripts/versions.env`. Three are compared
 directly: the Rust compiler, `nargo`, and the JavaScript client library against
@@ -199,9 +124,9 @@ on a drift, so the tool is checked wherever it is actually used.
 | noir-lang/poseidon | `v0.2.0` | in-circuit Poseidon2 |
 | soroban-poseidon | `26.0.0` | host-side Poseidon2 in the witness generator |
 | Rust | `1.96.0` | target `wasm32v1-none` |
-| soroban-sdk | `26.0.1` | workspace dependency; builds unchanged and runs on P27 |
-| Stellar CLI | `27.0.0` | must match the network protocol; testnet is P27 |
-| Quickstart image | `nightly` (Protocol `27` via `--protocol-version 27`) | moving tag, so the flag is the real pin; `future` stops at P26 |
+| soroban-sdk | `26.0.1` | workspace dependency |
+| Stellar CLI | `27.0.0` | command-line client |
+| Quickstart image | `nightly` | localnet protocol selected with `--protocol-version 27` |
 | Verifier crate | vendored in `contracts/vendor/ultrahonk-soroban-verifier` | completed-pairing patch; provenance in VENDOR.md |
 
 ## Build and run
@@ -261,31 +186,10 @@ from the deployments file, rebuilds both contracts, and reads back what the
 network runs. A mismatch there says that nobody can rebuild what the network
 runs. It does not say that what the network runs is wrong.
 
-Each record in the deployments file states the wasm hash of both contracts it
-names, so what follows is checkable rather than remembered.
-
-The documented build reproduces both contracts of generation 3, which is the
-first generation deployed through the path above. It reproduces the verifier of
-generations 1 and 2, and the registry of neither of those two.
-
-How those two registries were built is not established. Each is 65,185 bytes
-where the command above produces 33,364, and no candidate accounts for it: the
-documented command, the same command without its optimize pass, a plain cargo
-release build and a debug build produce 33,364, 38,309, 38,224 and 4,332,126
-bytes. Building at the revision where the registry source last changed produces
-the same wasm as building at the tip.
-
-The two are 65,185 bytes each and their contents differ, so whatever produced
-them was a procedure that stayed the same across two deployments rather than a
-single accident. A reader who finds that procedure closes this.
-
-That is a reproducibility gap and not a behaviour gap, and two measurements say
-so. The deployed registry and a fresh build declare the same interface and
-export the same six functions. `overflow-checks` is on in the release profile of
-this workspace and on by default in a debug build, so the arithmetic guards hold
-under every candidate above. Nobody can rebuild what those two contracts run,
-which is the reason to deploy again through the path above rather than a reason
-to distrust the answers they give.
+Each entry in the deployments file states both contract identifiers and their WASM hashes.
+The current registry ABI returns an attestation identifier from `submit_attestation`.
+It exposes `get_attestation` and `attestation_count`.
+Version 2 customer packages bind the context hash and fixed attestation identifier.
 
 ## Continuous integration
 

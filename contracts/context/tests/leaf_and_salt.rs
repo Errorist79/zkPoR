@@ -1,7 +1,8 @@
 use soroban_sdk::{Bytes, Env, U256};
 use zkpor_context::{
-    ctx_domain_tag, derive_salt, fr_reduce, leaf_hash, node_hash, salt_domain_tag, FR_BYTES,
-    PADDING_LEAF_BALANCE, PADDING_LEAF_ID,
+    balance_commitment, balance_domain_tag, ctx_domain_tag, derive_salt, fr_reduce,
+    leaf_domain_tag, leaf_hash, node_hash, salt_domain_tag, FR_BYTES, PADDING_LEAF_BALANCE,
+    PADDING_LEAF_ID,
 };
 
 /// The Poseidon2 permutation is a host function, and the default budget stops
@@ -21,25 +22,30 @@ fn every_leaf_input_changes_the_leaf() {
     let env = test_env();
     let id = fr(&env, 7);
     let salt = fr(&env, 11);
-    let base = leaf_hash(&env, &id, 100, &salt);
+    let commitment = balance_commitment(&env, 100, &salt);
+    let base = leaf_hash(&env, &id, &commitment);
 
-    assert_eq!(base, leaf_hash(&env, &id, 100, &salt));
-    assert_ne!(base, leaf_hash(&env, &fr(&env, 8), 100, &salt));
-    assert_ne!(base, leaf_hash(&env, &id, 101, &salt));
-    assert_ne!(base, leaf_hash(&env, &id, 100, &fr(&env, 12)));
+    assert_eq!(base, leaf_hash(&env, &id, &commitment));
+    assert_ne!(base, leaf_hash(&env, &fr(&env, 8), &commitment));
+    assert_ne!(
+        base,
+        leaf_hash(&env, &id, &balance_commitment(&env, 101, &salt))
+    );
+    assert_ne!(
+        base,
+        leaf_hash(&env, &id, &balance_commitment(&env, 100, &fr(&env, 12)))
+    );
 }
 
 #[test]
 fn a_leaf_is_not_a_node() {
     let env = test_env();
     let id = fr(&env, 7);
-    let balance = fr(&env, 100);
-    // The sponge capacity holds the input count, so a three-input leaf and a
-    // two-input node cannot meet even on an equal input prefix.
+    let commitment = balance_commitment(&env, 100, &fr(&env, 11));
     for salt in [0u32, 1, 0xffff_ffff] {
         assert_ne!(
-            node_hash(&env, &id, &balance),
-            leaf_hash(&env, &id, 100, &fr(&env, salt))
+            node_hash(&env, &id, &commitment),
+            leaf_hash(&env, &id, &balance_commitment(&env, 100, &fr(&env, salt)))
         );
     }
 }
@@ -48,17 +54,23 @@ fn a_leaf_is_not_a_node() {
 fn a_padding_leaf_holds_the_defined_values() {
     let env = test_env();
     let salt = fr(&env, 3);
-    let padding = leaf_hash(
-        &env,
-        &fr(&env, PADDING_LEAF_ID),
-        PADDING_LEAF_BALANCE,
-        &salt,
-    );
+    let padding_commitment = balance_commitment(&env, PADDING_LEAF_BALANCE, &salt);
+    let padding = leaf_hash(&env, &fr(&env, PADDING_LEAF_ID), &padding_commitment);
     // The salt of a padding leaf is real, so a padding leaf and a customer
     // leaf of the same shape are different values.
-    assert_ne!(padding, leaf_hash(&env, &fr(&env, 1), 0, &salt));
-    assert_ne!(padding, leaf_hash(&env, &fr(&env, 0), 1, &salt));
-    assert_ne!(padding, leaf_hash(&env, &fr(&env, 0), 0, &fr(&env, 4)));
+    assert_ne!(padding, leaf_hash(&env, &fr(&env, 1), &padding_commitment));
+    assert_ne!(
+        padding,
+        leaf_hash(&env, &fr(&env, 0), &balance_commitment(&env, 1, &salt))
+    );
+    assert_ne!(
+        padding,
+        leaf_hash(
+            &env,
+            &fr(&env, 0),
+            &balance_commitment(&env, 0, &fr(&env, 4))
+        )
+    );
 }
 
 #[test]
@@ -75,9 +87,12 @@ fn every_salt_input_changes_the_salt() {
 }
 
 #[test]
-fn the_two_domain_tags_differ() {
+fn the_domain_tags_differ() {
     let env = test_env();
     assert_ne!(salt_domain_tag(&env), ctx_domain_tag(&env));
+    assert_ne!(balance_domain_tag(&env), leaf_domain_tag(&env));
+    assert_ne!(balance_domain_tag(&env), salt_domain_tag(&env));
+    assert_ne!(leaf_domain_tag(&env), ctx_domain_tag(&env));
 }
 
 #[test]

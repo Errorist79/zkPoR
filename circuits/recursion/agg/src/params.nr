@@ -16,4 +16,4 @@ pub global PROOF_LEN: u32 = 456;
 // two) and the Poseidon2 binary-tree hash of the padded vk. The aggregator
 // recomputes this hash over the witnessed vk and asserts equality.
 pub global VK_COMMIT_WIDTH: u32 = 128;
-pub global PINNED_INNER_VK_HASH: Field = 21328364434191421272252912670623927031304585141963122353817084063178220902570;
+pub global PINNED_INNER_VK_HASH: Field = 19221863050947223406702666338893384022511163486255992669061614393775595095468;

@@ -35,6 +35,12 @@ export const CTX_DOMAIN_TAG_TEXT = "zkpor-context-v1";
  */
 export const SALT_DOMAIN_TAG_TEXT = "zkpor-salt-v1";
 
+/** The domain tag of the balance commitment. */
+export const BALANCE_DOMAIN_TAG_TEXT = "zkpor-balance-v1";
+
+/** The domain tag of the customer leaf. */
+export const LEAF_DOMAIN_TAG_TEXT = "zkpor-leaf-v2";
+
 /** The largest reserve address count that a registration may carry. */
 export const MAX_RESERVE_ADDRESSES = 32;
 
@@ -66,7 +72,7 @@ export const MAX_U64 = 2n ** 64n - 1n;
 export const MAX_U32 = 4294967295;
 
 /** The exact `format` string of the inclusion package schema. */
-export const PACKAGE_FORMAT = "zkpor-inclusion/1";
+export const PACKAGE_FORMAT = "zkpor-inclusion/2";
 
 /** The filename extension of an inclusion package. */
 export const PACKAGE_EXTENSION = "zkpor.json";
@@ -84,8 +90,11 @@ export const PACKAGE_FIELDS = [
   "registry",
   "asset",
   "snapshot_ledger",
+  "context_hash",
+  "attestation_id",
   "leaf_index",
   "id",
+  "commitment",
   "balance",
   "salt",
   "siblings",

@@ -1,8 +1,8 @@
 #![no_std]
 //! Registry of assets, authorities, and authorized reserve addresses.
 //!
-//! The registry records consent. It holds no funds, it moves no funds, and it
-//! takes no authority over any balance.
+//! The registry records consent and attestations. It holds dispute deposits
+//! and optional bonds. It takes no authority over reserve balances.
 //!
 //! Two claims are verifiable at registration. For a classic asset, the
 //! registry derives the canonical asset contract address from the serialized
@@ -36,7 +36,12 @@ use zkpor_context::{
     context_hash, fr_in_range, reserve_set_hash, ContextError, ATTESTATION_MAX_AGE_LEDGERS,
 };
 
+mod disputes;
+mod history;
 pub mod params;
+
+pub use disputes::{Bond, Dispute, DisputeStatus, InclusionEvidence};
+pub use disputes::{ANSWER_WINDOW_LEDGERS, DISPUTE_DEPOSIT_STROOPS, TARGET_MAX_AGE_LEDGERS};
 
 /// XDR discriminant of the native asset. The union carries no arm, so the
 /// serialized value is the discriminant alone.
@@ -141,6 +146,19 @@ pub enum Error {
     /// The submitted root is not a field element, so the proof would carry
     /// its reduction while the record kept the submitted value.
     RootOutOfRange = 20,
+    AttestationNotFound = 21,
+    AttestationIdOverflow = 22,
+    TargetOutsideWindow = 23,
+    EvidenceNotOlder = 24,
+    InvalidInclusion = 25,
+    DisputeAlreadyExists = 26,
+    DisputeNotFound = 27,
+    DisputeClosed = 28,
+    AnswerWindowClosed = 29,
+    AnswerWindowOpen = 30,
+    DeadlineOverflow = 31,
+    InvalidBondAmount = 32,
+    BondOverflow = 33,
 }
 
 /// The reasons of the shared encoding keep their identity here. A caller reads
@@ -163,6 +181,10 @@ pub enum DataKey {
     Verifier,
     /// The entry of one asset.
     Asset(Address),
+    AttestationCount(Address),
+    Attestation(Address, u64),
+    Dispute(Address, u64, U256),
+    Bond(Address),
 }
 
 /// What the registry verified about the authority at registration.
@@ -191,6 +213,8 @@ pub enum AssetAuthenticity {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Attestation {
+    /// The context that binds the authority, asset, reserves, and snapshot.
+    pub context_hash: U256,
     /// The root of the liabilities tree.
     pub final_root: U256,
     /// The total liabilities under that root.
@@ -210,6 +234,8 @@ pub struct Attestation {
 /// compile: soroban-sdk 26.0.1 converts an `Option<T>` only for a `T` whose
 /// conversion cannot fail, and the conversion that `contracttype` writes for
 /// a struct can fail.
+// The contract type macro does not support Box<T> in its public schema.
+#[allow(clippy::large_enum_variant)]
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AttestationSlot {
@@ -254,6 +280,8 @@ pub struct ReserveObservation {
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AttestationAccepted {
+    /// The permanent history identifier of the attestation.
+    pub attestation_id: u64,
     /// The asset of the attestation.
     #[topic]
     pub asset: Address,
@@ -570,7 +598,7 @@ impl Registry {
         final_root: U256,
         total_liabilities: u128,
         proof: Bytes,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let key = DataKey::Asset(asset.clone());
         let mut entry: AssetEntry = env
             .storage()
@@ -610,18 +638,22 @@ impl Registry {
         )?;
 
         let reserve_sum = reserve_sum(&env, &asset, &entry.reserves)?;
-        entry.attestation = AttestationSlot::Filled(Attestation {
+        let attestation = Attestation {
+            context_hash: context,
             final_root: final_root.clone(),
             total_liabilities,
             snapshot_ledger,
             reserve_sum,
             attested_ledger,
-        });
+        };
+        let attestation_id = history::append(&env, &asset, &attestation)?;
+        entry.attestation = AttestationSlot::Filled(attestation);
         env.storage().persistent().set(&key, &entry);
         extend_entry(&env, &key);
         extend_contract(&env);
 
         AttestationAccepted {
+            attestation_id,
             asset,
             snapshot_ledger,
             attested_ledger,
@@ -630,7 +662,7 @@ impl Registry {
             final_root,
         }
         .publish(&env);
-        Ok(())
+        Ok(attestation_id)
     }
 
     /// Reads the reserve balances now.

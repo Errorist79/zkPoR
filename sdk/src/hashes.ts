@@ -8,7 +8,9 @@
 
 import type { Address } from "@stellar/stellar-sdk";
 import {
+  BALANCE_DOMAIN_TAG_TEXT,
   CTX_DOMAIN_TAG_TEXT,
+  LEAF_DOMAIN_TAG_TEXT,
   MAX_U32,
   MAX_U64,
   SALT_DOMAIN_TAG_TEXT,
@@ -22,6 +24,12 @@ export const CTX_DOMAIN_TAG = domainTag(CTX_DOMAIN_TAG_TEXT);
 
 /** The domain tag that separates the salt derivation from every other hash. */
 export const SALT_DOMAIN_TAG = domainTag(SALT_DOMAIN_TAG_TEXT);
+
+/** The domain tag of the balance commitment. */
+export const BALANCE_DOMAIN_TAG = domainTag(BALANCE_DOMAIN_TAG_TEXT);
+
+/** The domain tag of the customer leaf. */
+export const LEAF_DOMAIN_TAG = domainTag(LEAF_DOMAIN_TAG_TEXT);
 
 function requireLedger(ledger: number, field: string): void {
   if (!Number.isInteger(ledger) || ledger < 0 || ledger > MAX_U32) {
@@ -82,23 +90,31 @@ export function deriveSalt(input: {
 }
 
 /**
- * The salted leaf of one customer.
+ * The commitment to one customer balance.
  *
  * The salt makes the leaf hash unguessable. Balances have low entropy, so an
  * unsalted sibling hash would fall to a search over plausible pairs of an
  * identifier and a balance.
  */
-export function leafHash(input: { id: bigint; balance: bigint; salt: bigint }): bigint {
-  if (!inRange(input.id)) {
-    throw new Error("the identifier is not a field element");
-  }
+export function balanceCommitment(input: { balance: bigint; salt: bigint }): bigint {
   if (input.balance < 0n || input.balance > MAX_U64) {
     throw new Error("the balance is not a u64");
   }
   if (!inRange(input.salt)) {
     throw new Error("the salt is not a field element");
   }
-  return hash([input.id, input.balance, input.salt]);
+  return hash([BALANCE_DOMAIN_TAG, input.balance, input.salt]);
+}
+
+/** The leaf that binds one identifier to a balance commitment. */
+export function leafHash(input: { id: bigint; commitment: bigint }): bigint {
+  if (!inRange(input.id)) {
+    throw new Error("the identifier is not a field element");
+  }
+  if (!inRange(input.commitment)) {
+    throw new Error("the commitment is not a field element");
+  }
+  return hash([LEAF_DOMAIN_TAG, input.id, input.commitment]);
 }
 
 /** The parent of two nodes of the liabilities tree. */

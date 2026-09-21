@@ -638,6 +638,7 @@ fn set_reserves_clears_a_stored_attestation() {
     env.as_contract(&registry_id, || {
         let mut entry: AssetEntry = env.storage().persistent().get(&key).unwrap();
         entry.attestation = AttestationSlot::Filled(Attestation {
+            context_hash: U256::from_u32(&env, 0),
             final_root: U256::from_u32(&env, 1),
             total_liabilities: 2,
             snapshot_ledger: 3,

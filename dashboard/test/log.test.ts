@@ -16,24 +16,43 @@
  * endpoint that carries a key in its path is how an address becomes a secret.
  */
 
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { groupedDigits } from "@zkpor/sdk";
+import { balanceCommitment, groupedDigits, parsePackage, toHex } from "@zkpor/sdk";
 import { afterTheProof } from "../src/attestation.js";
 import { ROUTES } from "../src/constants.js";
 import { LEVEL_OF_EVENT, endpointOrigin, openLog } from "../src/log.js";
 import type { LogEvent } from "../src/log.js";
 import { route } from "../src/routes.js";
 import { RunStore } from "../src/runs.js";
-import { ASSET, PACKAGE_ROOT, REPOSITORY_ROOT, capturingLog, dashboard, request } from "./support.js";
+import { ASSET, PACKAGE_ROOT, REGISTRY, capturingLog, dashboard, request } from "./support.js";
 
 /** The values that a case looks for. Each one is data that a log may never carry. */
 const MASTER_SECRET = "0xfeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface";
 const AUTHORITY_SECRET = "SBTESTAUTHORITYKEYVALUETESTAUTHORITYKEYVALUETESTAUTHOR";
 
-/** The committed example package. Its balance and its salt are in the file. */
-const EXAMPLE_PACKAGE = join(REPOSITORY_ROOT, "fixtures", "example_package.zkpor.json");
+/** A parsed customer package reaches the deployment check without a network read. */
+const EXAMPLE_PACKAGE = join(mkdtempSync(join(tmpdir(), "zkpor-log-package-")), "customer.zkpor.json");
+const PRIVATE_BALANCE = 12_345_678_901_234n;
+const PRIVATE_SALT = 0x123456789abcden;
+const PACKAGE_TEXT = JSON.stringify({
+  format: "zkpor-inclusion/2",
+  network: "testnet",
+  registry: REGISTRY,
+  asset: ASSET,
+  snapshot_ledger: 5_000,
+  context_hash: toHex(7n),
+  attestation_id: "1",
+  leaf_index: 0,
+  id: toHex(7n),
+  commitment: toHex(balanceCommitment({ balance: PRIVATE_BALANCE, salt: PRIVATE_SALT })),
+  balance: PRIVATE_BALANCE.toString(),
+  salt: toHex(PRIVATE_SALT),
+  siblings: Array.from({ length: 12 }, () => toHex(1n)),
+});
+writeFileSync(EXAMPLE_PACKAGE, PACKAGE_TEXT, { mode: 0o600 });
 
 /** The names of every field of the event union, without the name of the event. */
 function fieldNames(): string[] {
@@ -101,10 +120,7 @@ describe("what a whole session writes to the log", () => {
     for (const target of [ROUTES.home, `${ROUTES.asset}?asset=${ASSET}`, ROUTES.attestation]) {
       await route(request({ target }), client);
     }
-    // The inclusion check reads a package that carries the balance and the salt
-    // of one customer, and it prints both on the page. The log must carry
-    // neither, and this is the case that would catch it.
-    await route(
+    const inclusion = await route(
       request({
         method: "POST",
         target: ROUTES.inclusion,
@@ -112,6 +128,8 @@ describe("what a whole session writes to the log", () => {
       }),
       client,
     );
+    expect(parsePackage(PACKAGE_TEXT).balance).toBe(PRIVATE_BALANCE);
+    expect(inclusion.body).toContain("points at a registry this verifier does not trust");
 
     const finished = new Promise<void>((resolve) => {
       store.startOrJoin({

@@ -13,8 +13,7 @@ The package covers six capabilities.
   can name the address that failed.
 - The proving driver, which runs the pinned native binaries.
 - Attestation submission.
-- Registry queries, including the attestation history. A history result states
-  the oldest ledger that the query covered.
+- Registry queries, including persistent attestation history and legacy event history.
 - The customer inclusion check.
 
 The package does not hold the cryptographic definitions. The shared Rust crate
@@ -23,77 +22,75 @@ tests compare against the committed vectors. The package also writes no
 customer file: the generation gate lives in the generator, and a second writer
 of per-customer files would double the surface that touches sensitive data.
 
+## Fixed attestation records
+
+Version 2 customer packages carry a positive decimal `attestation_id` and a balance commitment.
+The verifier reads `get_attestation(asset, id)` and checks that fixed root.
+A later attestation does not change the record that the package selects.
+The verifier also recomputes the commitment from the private balance and salt.
+It refuses version 1 packages because their leaf rule differs.
+
+```typescript
+const attestation = await readStoredAttestation(network, registry, asset, 1n);
+const history = await readStoredAttestationHistory(network, registry, asset, {
+  startId: 1n,
+  count: 20,
+});
+```
+
+These functions require a registry that supports persistent history.
+The `network` argument is a `NetworkConfig` from the caller's trusted configuration.
+The optional `server` field lets a caller reuse its configured RPC client.
+The single-record reader returns `undefined` only for a missing asset or attestation.
+An unsupported contract API or failed network request remains an error.
+The page count must be between one and `HISTORY_PAGE_LIMIT` (200).
+Each page fixes `totalCount` before it reads records and returns `nextId` when more records remain.
+
+`readAttestationHistory` remains the event reader for legacy deployments.
+Its result states the ledger window that it covers.
+Persistent reads do not depend on that window.
+Persistent entries remain subject to the network's storage lifetime and restoration rules.
+
 ## Run the customer check
 
-The check tells one customer whether their balance sits under the root that the
-registry accepted. Two commands run it, and they differ only in where the
-answers come from. A third command runs it against a package that the check
-refuses.
+The examples use `fixtures/synthetic_package_v2.zkpor.json` and a synthetic RPC response.
+The fixture describes no real customer, liability, or accepted network attestation.
 
-### Against a recording, which always works
+### Check the synthetic package
 
+```bash
+npm install
+npm run example
 ```
-npm install && npm run example
-```
 
-The example runs `zkpor verify-inclusion` against a recorded answer of the
-registry, and prints the verdict and the exit code. It needs no key, no funding,
-no proving toolchain, and no network.
+The example runs `zkpor verify-inclusion` against a local synthetic endpoint.
+It prints the verdict and exit code.
+It needs no key, funds, proving toolchain, or network access.
 
-**A recording is not the chain.** Every answer is one this repository wrote
-down, so a check that passes against it proves that the client reads and refuses
-correctly. It proves nothing about what any network holds now.
+### Check your package against a network
 
-### Against the test network, while the record stands
-
-```
+```bash
 ZKPOR_NETWORK=testnet ZKPOR_RPC_URL=https://soroban-testnet.stellar.org \
-  npx zkpor verify-inclusion ../fixtures/example_package.zkpor.json \
-  ../scripts/deployments.json
+  npx zkpor verify-inclusion /absolute/path/to/customer.zkpor.json \
+  /absolute/path/to/deployments.json
 ```
 
-This reads the chain. It answers a verdict while the registry still holds the
-attestation that the committed package rests on.
+Use your own version 2 package and trusted deployment configuration.
+The registry must support persistent history and retain the selected attestation.
+A testnet reset can remove its contracts and records.
+A later attestation does not change the fixed record that a version 2 package selects.
 
-**It will stop working, and here is how to read it when it does.** The test
-network is cleared two to four times a year, and a clearing removes every
-contract. After one, the command answers that the registry holds no record of
-the asset. If somebody attests this asset again, the command answers that the
-package names one snapshot ledger and the registry attests another. Neither is a
-defect in the client. Both mean the record moved, and the recording above still
-runs.
+### Check a package with an incorrect path
 
-The package that both commands read is committed, and the run that produced it
-is not reproducible from this repository: it read a master secret that this
-repository does not hold. The balance in it is fictional and already committed,
-in the list of test customers.
-
-### The package the check refuses
-
-```
-npm install && npm run build
-node examples/check-a-package.mjs ../fixtures/example_package_wrong_balance.zkpor.json
+```bash
+npm install
+npm run build
+node examples/check-a-package.mjs ../fixtures/synthetic_package_v2_wrong_path.zkpor.json
 ```
 
-A check that only accepts proves half of the claim. So the repository commits a
-second package, and the command above runs the same example against it. The
-answer is that the recomputed root does not equal the attested root, and the
-exit code 7. The example takes any package path, and it reads the included
-package when it gets none.
-
-The two files differ in the balance and in nothing else. The refused one reads
-1001 where the attested balance reads 1000, so the check refuses a package that
-is well formed and plausible, and not a file that is broken.
-
-**The one unit is the point.** It is the smallest change a person can make to
-that field, and no reader of the two files finds it by eye. The root binds the
-exact balance, so the check has no tolerance, and a larger edit would teach the
-weaker lesson that the check catches only a crude one.
-
-Both files describe the same customer of the committed list of test customers,
-`fixtures/test_only_customers.csv`, which describes no real person and no real
-liability. The balance 1001 belongs to no row of that list. Neither file states
-this inside itself, because the format permits no field that it does not name.
+The second synthetic package has a changed sibling hash.
+The example reports a root mismatch, with exit code 7.
+The example accepts a package path and uses the valid synthetic package when no path is supplied.
 
 ## Call the check from your own program
 
@@ -114,8 +111,8 @@ get right and nothing else.
   raises `InfrastructureError`. A caller that turned that into "not included"
   would tell a customer their balance is missing because a request timed out.
 
-It runs against a recording, and the same sentence applies: a recording is not
-the chain. Give the configuration the address of a network endpoint to read one.
+It uses the same synthetic endpoint as the command example.
+For a network check, configure a trusted endpoint and use your own accepted package.
 
 The example leaves out proving, attestation, registration, and the signing of a
 reserve consent. Those belong to the issuer, who runs them from the command line
@@ -126,9 +123,8 @@ of this package, and no integrating team performs them.
 The protocol names the Poseidon2 instance of `noir-lang/poseidon` v0.2.0, file
 `src/poseidon2.nr`, over the BN254 scalar field, with state width 4, rate 3, and
 a sponge capacity that starts at the input count times 2^64. This package uses
-`@zkpassport/poseidon2`, pinned to one exact version. The mirror test reproduces
-every committed vector with it, which is the acceptance check that the
-specification names.
+`@zkpassport/poseidon2`, pinned to one exact version.
+The mirror test compares its output with every committed vector.
 
 The library also offers a variable-length mode, which absorbs one extra element
 and computes another function. This package calls the fixed-length hash only,
@@ -226,40 +222,6 @@ the flow is four separable steps.
 3. The holder runs `sign-entry` against its own key, on its own machine.
 4. `submit-registration` reassembles the call, refuses an incomplete or expired
    collection, signs the envelope, and submits.
-
-## What a live network has exercised
-
-The tests of this package run without a network. A test cannot reach the two
-calls that send a transaction and wait for its outcome, so those ran against the
-Stellar test network on August 17, 2026.
-
-**This run is not evidence for the validated artifact.** It provisioned its own
-issuer, its own asset, and its own reserve accounts, and the asset code says
-`THROWAWAY`. The record it left on the registry
-`CCHUTDKUPWXVUIX6D26SE5NZ5STP74VV4DY2CNVCMNJYOU5PTROLA7MY` is a record of a
-disposable asset, `CC3APVB2TJEKJYMS2NBFYLPT23JPCFXGNIRTWCNQKK7TCONBBHXS456D`.
-The soundness evidence of this project stands in `SECURITY.md`, and it names two
-other assets. Do not read this run as part of it.
-
-The run covered every path of this package that needs a network:
-
-- the registration, with the consent of two reserve addresses that each signed
-  its own authorization entry, accepted at ledger 4187501;
-- the record of the asset, the reserve observation, and the diagnosis of each
-  reserve balance on its own;
-- the proving driver, which produced a proof of 14,592 bytes with the pinned
-  prover;
-- the attestation, accepted at ledger 4187508, whose attested root equals the
-  root that the proof carries;
-- the attestation history from the event stream, which found the attestation
-  inside the retained window;
-- the customer check, which accepted three packages that the generator wrote and
-  which reported a root mismatch for a package with a changed balance.
-
-The run found one defect that no test without a network could find. The assembly
-of a simulated call already carries its time bounds, and a second call that set a
-timeout threw. That stopped the registration and the attestation before either
-one reached the network. Every test passed before that run.
 
 ## An inclusion package reveals a balance
 

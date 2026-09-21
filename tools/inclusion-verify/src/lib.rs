@@ -70,10 +70,10 @@ impl Verdict {
     pub fn solvency_lapsed(&self) -> bool {
         match self {
             Self::Included {
-                attested_ledger,
+                snapshot_ledger,
                 latest_ledger,
                 ..
-            } => *latest_ledger > attested_ledger.saturating_add(ATTESTATION_MAX_AGE_LEDGERS),
+            } => *latest_ledger > snapshot_ledger.saturating_add(ATTESTATION_MAX_AGE_LEDGERS),
             _ => false,
         }
     }
@@ -106,15 +106,17 @@ impl Verdict {
                 // first one holds whatever the second one says.
                 if self.solvency_lapsed() {
                     lines.push(format!(
-                        "SOLVENCY LAPSED: the registry read the reserves at ledger \
-                         {attested_ledger}, the network is at ledger {latest_ledger}, and the \
-                         window is {ATTESTATION_MAX_AGE_LEDGERS} ledgers. The inclusion above \
-                         stays valid. Ask the authority for a fresher attestation."
+                        "SOLVENCY LAPSED: the liability snapshot is ledger {snapshot_ledger}. \
+                         The network is at ledger {latest_ledger}, beyond the \
+                         {ATTESTATION_MAX_AGE_LEDGERS}-ledger window. The registry read the \
+                         reserves at ledger {attested_ledger}. The inclusion stays valid. Ask \
+                         the authority for a fresher attestation."
                     ));
                 } else {
                     lines.push(format!(
-                        "SOLVENCY CURRENT: the registry read the reserves at ledger \
-                         {attested_ledger}, and the network is at ledger {latest_ledger}."
+                        "SOLVENCY CURRENT: the liability snapshot is ledger {snapshot_ledger}. \
+                         The registry read the reserves at ledger {attested_ledger}, and the \
+                         network is at ledger {latest_ledger}."
                     ));
                 }
                 lines
@@ -157,7 +159,7 @@ impl Verdict {
                     "ROOT MISMATCH: the path reaches {recomputed}, and the registry attested \
                      {attested}."
                 ),
-                "A wrong balance, a wrong salt, and a changed path look the same from here. \
+                "A changed identifier, commitment, or path reaches another root. \
                  Obtain the package again from the authority before you conclude anything."
                     .to_string(),
             ],
@@ -233,21 +235,22 @@ pub fn verify(
     }
 
     // The address comes from the deployment record, never from the package.
-    let attestation = match chain.attestation(&generation.registry, &package.asset)? {
-        Entry::Attested(attestation) => attestation,
-        Entry::NoEntry => {
-            return Ok(Verdict::NoMatchingAttestation(format!(
-                "the registry {} holds no entry for the asset {}",
-                generation.registry, package.asset
-            )))
-        }
-        Entry::NoAttestation => {
-            return Ok(Verdict::NoMatchingAttestation(format!(
-                "the asset {} has an entry and no attestation",
-                package.asset
-            )))
-        }
-    };
+    let attestation =
+        match chain.attestation(&generation.registry, &package.asset, package.attestation_id)? {
+            Entry::Attested(attestation) => attestation,
+            Entry::NoEntry => {
+                return Ok(Verdict::NoMatchingAttestation(format!(
+                    "the registry {} holds no entry for the asset {}",
+                    generation.registry, package.asset
+                )))
+            }
+            Entry::NoAttestation => {
+                return Ok(Verdict::NoMatchingAttestation(format!(
+                    "the asset {} has no attestation with ID {}",
+                    package.asset, package.attestation_id
+                )))
+            }
+        };
     if attestation.snapshot_ledger != package.snapshot_ledger {
         return Ok(Verdict::NoMatchingAttestation(format!(
             "the package names the snapshot ledger {}, and the registry holds an attestation of \
@@ -255,12 +258,19 @@ pub fn verify(
             package.snapshot_ledger, attestation.snapshot_ledger
         )));
     }
+    if attestation.context_hash != package.context_hash {
+        return Ok(Verdict::NoMatchingAttestation(format!(
+            "the package names context {}, and attestation {} holds {}",
+            fr_hex(&package.context_hash),
+            package.attestation_id,
+            fr_hex(&attestation.context_hash),
+        )));
+    }
 
     let leaf = leaf_hash(
         env,
         &to_fr(env, &package.id),
-        package.balance,
-        &to_fr(env, &package.salt),
+        &to_fr(env, &package.commitment),
     );
     let siblings: Vec<_> = package.siblings.iter().map(|s| to_fr(env, s)).collect();
     // The depth check above already fixed the two shape rules, so a failure

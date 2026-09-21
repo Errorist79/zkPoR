@@ -93,6 +93,17 @@ PROVING_MARGIN_LEDGERS=120
 
 die() { echo -e "\n${RED}attest: $*${NC}" >&2; exit 1; }
 note() { echo -e "${BLUE}[attest]${NC} $*"; }
+read_attestation_id() {
+  python3 -c '
+import json, sys
+value = json.load(sys.stdin)
+if isinstance(value, bool) or not isinstance(value, (str, int)):
+    raise ValueError("the return value is not an attestation identifier")
+text = str(value)
+if not text.isascii() or not text.isdecimal() or not int(sys.argv[1]) <= int(text) < 2**64:
+    raise ValueError("the attestation identifier is outside the permitted u64 range")
+print(int(text))' "$1"
+}
 
 # The tools of a run are started and stopped by one shared file, which a test
 # sources and drives with a tool of its own. The guarantees live there with the
@@ -249,7 +260,9 @@ REMAINING=$((SNAPSHOT + WINDOW - LEDGER))
 [ "$REMAINING" -ge "$PROVING_MARGIN_LEDGERS" ] \
   || die "only $REMAINING ledgers of the window are left, and the proof needs more. Take a fresh snapshot."
 
-mkdir -p "$WORK"
+mkdir -p "$WORK" "$PACKAGES_OUT" || die "cannot create the work and package directories"
+WORK=$(cd "$WORK" && pwd) || die "cannot resolve the work directory"
+PACKAGES_OUT=$(cd "$PACKAGES_OUT" && pwd) || die "cannot resolve the package directory"
 
 # -----------------------------------------------------------------------------
 # 3. The context must equal the entry that the registry holds
@@ -273,10 +286,39 @@ DIFFERENCE=$(echo "$ENTRY" | python3 "$ROOT_DIR/scripts/compare_context.py" "$CO
 
 note "context=$CONTEXT_FILE customers=$ROWS of $CAPACITY snapshot=$SNAPSHOT window left=$REMAINING"
 
+# The prior manifest preserves every customer identifier, including closed accounts.
+PRIOR_COUNT=$(stellar contract invoke --id "$REGISTRY" --source "$STELLAR_SOURCE_ACCOUNT" \
+  --network "$ZKPOR_NETWORK" --send no -- attestation_count --asset "$ASSET" \
+  2>"$WORK/history.error") \
+  || die "the registry cannot read the attestation count:\n$(cat "$WORK/history.error")"
+PRIOR_ID=$(echo "$PRIOR_COUNT" | read_attestation_id 0) \
+  || die "the registry returned no valid attestation count"
+PRIOR_ARGS=()
+WITNESS_NETWORK_ARGS=()
+if [ "$PRIOR_ID" != "0" ]; then
+  PRIOR_MANIFEST="$PACKAGES_OUT/packages/$ZKPOR_NETWORK/$REGISTRY/$ASSET/$PRIOR_ID/generation.json"
+  [ -r "$PRIOR_MANIFEST" ] \
+    || die "the prior manifest is missing at $PRIOR_MANIFEST; restore it before a new attestation"
+  PRIOR_RECORD=$(stellar contract invoke --id "$REGISTRY" --source "$STELLAR_SOURCE_ACCOUNT" \
+    --network "$ZKPOR_NETWORK" --send no -- get_attestation --asset "$ASSET" --id "$PRIOR_ID" \
+    2>"$WORK/history.error") \
+    || die "the registry cannot read prior attestation $PRIOR_ID:\n$(cat "$WORK/history.error")"
+  PRIOR_FIELDS=$(echo "$PRIOR_RECORD" | python3 -c '
+import json, sys
+record = json.load(sys.stdin)
+print("%064x %064x" % (int(record["final_root"]), int(record["context_hash"])))') \
+    || die "the prior attestation carries no root or context hash"
+  read -r PRIOR_ROOT PRIOR_CONTEXT <<< "$PRIOR_FIELDS"
+  PRIOR_ARGS=(--prior-manifest "$PRIOR_MANIFEST" --prior-root "$PRIOR_ROOT" \
+    --prior-context "$PRIOR_CONTEXT" --prior-attestation-id "$PRIOR_ID")
+  WITNESS_NETWORK_ARGS=(--network "$ZKPOR_NETWORK" --registry "$REGISTRY")
+fi
+
 # -----------------------------------------------------------------------------
 # 3. Salts, witnesses, and one proof per batch
 # -----------------------------------------------------------------------------
 run_tool env -C "$GEN" cargo run --release --quiet -- witness "$CONTEXT_FILE" "$CUSTOMERS_FILE" \
+  "${WITNESS_NETWORK_ARGS[@]}" "${PRIOR_ARGS[@]}" \
   || die "the generator did not write the witnesses"
 cd "$INNER" || die "no inner circuit directory"
 rm -rf target out; run_tool nargo compile || die "the inner circuit did not compile"
@@ -326,11 +368,14 @@ SUBMISSION=$(stellar contract invoke --id "$REGISTRY" --source "$STELLAR_SOURCE_
   --network "$ZKPOR_NETWORK" --send yes -- submit_attestation \
   --asset "$(sed -nE 's/^asset *= *"(.*)".*/\1/p' "$CONTEXT_FILE")" \
   --snapshot_ledger "$SNAPSHOT" --final_root "$FINAL_ROOT" \
-  --total_liabilities "$TOTAL" --proof-file-path "$WORK/proof" 2>&1) \
-  || die "the registry refused the attestation:\n$SUBMISSION"
+  --total_liabilities "$TOTAL" --proof-file-path "$WORK/proof" 2>"$WORK/submission.error") \
+  || die "the registry refused the attestation:\n$(cat "$WORK/submission.error")\n$SUBMISSION"
+cat "$WORK/submission.error"
 echo "$SUBMISSION"
-TRANSACTION=$(echo "$SUBMISSION" | sed -nE 's/.*Signing transaction: ([0-9a-f]{64}).*/\1/p' | tail -1)
+TRANSACTION=$(sed -nE 's/.*Signing transaction: ([0-9a-f]{64}).*/\1/p' "$WORK/submission.error" | tail -1)
 [ -n "$TRANSACTION" ] || die "the submission names no transaction hash, so the record of the packages would carry none"
+ATTESTATION_ID=$(echo "$SUBMISSION" | read_attestation_id 1) \
+  || die "the successful transaction returned no valid attestation identifier:\n$SUBMISSION"
 
 # -----------------------------------------------------------------------------
 # 6. Write the packages of the customers, then remove the secrets of the run
@@ -341,12 +386,17 @@ TRANSACTION=$(echo "$SUBMISSION" | sed -nE 's/.*Signing transaction: ([0-9a-f]{6
 # attestation. The deletion below waits for that proof, because the salts are
 # the only other way to reach the packages.
 ATTESTED=$(stellar contract invoke --id "$REGISTRY" --source "$STELLAR_SOURCE_ACCOUNT" \
-  --network "$ZKPOR_NETWORK" -- entry --asset "$ASSET" 2>"$WORK/entry.error") \
-  || die "the registry holds no entry after the attestation:\n$(cat "$WORK/entry.error")"
-ATTESTED_ROOT=$(echo "$ATTESTED" | python3 -c "
+  --network "$ZKPOR_NETWORK" --send no -- get_attestation --asset "$ASSET" \
+  --id "$ATTESTATION_ID" 2>"$WORK/attestation.error") \
+  || die "the registry cannot read attestation $ATTESTATION_ID:\n$(cat "$WORK/attestation.error")"
+ATTESTED_FIELDS=$(echo "$ATTESTED" | python3 -c "
 import json,sys
-print('%064x' % int(json.load(sys.stdin)['attestation']['Filled']['final_root']))") \
-  || die "the registry entry carries no attested root:\n$ATTESTED"
+record = json.load(sys.stdin)
+if record['snapshot_ledger'] != int(sys.argv[1]):
+    raise ValueError('the stored attestation names another snapshot ledger')
+print('%064x %064x' % (int(record['final_root']), int(record['context_hash'])))" "$SNAPSHOT") \
+  || die "the stored attestation carries no matching snapshot, root, and context:\n$ATTESTED"
+read -r ATTESTED_ROOT ATTESTED_CONTEXT <<< "$ATTESTED_FIELDS"
 
 # The output goes through a file rather than a command substitution. A
 # substitution runs in a subshell, and a tool started there would leave no
@@ -354,12 +404,16 @@ print('%064x' % int(json.load(sys.stdin)['attestation']['Filled']['final_root'])
 run_tool env -C "$GEN" cargo run --release --quiet -- packages \
   "$CONTEXT_FILE" "$CUSTOMERS_FILE" "$PACKAGES_OUT" \
   --network "$ZKPOR_NETWORK" --registry "$REGISTRY" \
+  --attestation-id "$ATTESTATION_ID" \
+  "${PRIOR_ARGS[@]}" \
   --attested-root "$ATTESTED_ROOT" --attested-snapshot "$SNAPSHOT" \
+  --attested-context "$ATTESTED_CONTEXT" \
   --transaction "$TRANSACTION" --deployments "$DEPLOYMENTS" \
   --report-file "$WORK/packages.path" \
   > "$WORK/packages.out" 2>&1 \
   || die "the packages of the customers did not reach $PACKAGES_OUT, so the salts stay on disk:\n$(cat "$WORK/packages.out")"
 cat "$WORK/packages.out"
+note "retain the redacted manifests through the dispute target window; the next run also needs the latest manifest"
 # The generator names the directory it filled in a file this script chose. It
 # also prints that directory for a reader, and a script that read the printed
 # line would turn a sentence into an interface.
@@ -372,5 +426,5 @@ PACKAGES=$(cat "$WORK/packages.path" 2>/dev/null)
 clear_witnesses
 note "the balances, the salts, and the witnesses are removed"
 
-echo -e "\n${GREEN}The registry accepted the attestation of snapshot $SNAPSHOT.${NC}"
+echo -e "\n${GREEN}The registry accepted attestation $ATTESTATION_ID of snapshot $SNAPSHOT.${NC}"
 echo "the packages of the customers are under $PACKAGES"

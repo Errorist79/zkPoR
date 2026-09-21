@@ -173,10 +173,11 @@ async function runCliServed(
 }
 
 describe("which generation a read answers about", () => {
-  /** The three registries of the committed file, oldest first. */
+  /** The four registries of the committed file, oldest first. */
   const OLDEST = "CC4MA6FWDBG3Y4YXYGDHYEZ36O3YSP7DREGOLBWKP6ZTQQ6IYFFX3KQK";
   const MIDDLE = "CCHUTDKUPWXVUIX6D26SE5NZ5STP74VV4DY2CNVCMNJYOU5PTROLA7MY";
-  const NEWEST = "CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG";
+  const PREVIOUS = "CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG";
+  const NEWEST = "CAKCWWWKJYPWSFZHECKKL5PMPPQFOGX5UR5XNB3OYYB746ALBP6YNPUF";
 
   /** An asset address. The value is test data. */
   const ASSET = "CBSQOEUZDBCKO4NYNRJJSPOLEIXVWZZ66CZXWRSVUNZTNZK7IKHNNRY3";
@@ -219,7 +220,7 @@ describe("which generation a read answers about", () => {
     try {
       const answer = await runCliServed(["entry", ASSET], environment(endpoint.url));
       expect(answer.stdout).toContain(MIDDLE);
-      expect(endpoint.asked).toEqual([NEWEST, MIDDLE]);
+      expect(endpoint.asked).toEqual([NEWEST, PREVIOUS, MIDDLE]);
     } finally {
       await endpoint.close();
     }
@@ -271,9 +272,10 @@ describe("which generation a read answers about", () => {
     try {
       const answer = await runCliServed(["entry", ASSET], environment(endpoint.url));
       expect(answer.code).toBe(0);
-      for (const registry of [NEWEST, MIDDLE, OLDEST]) {
+      for (const registry of [NEWEST, PREVIOUS, MIDDLE, OLDEST]) {
         expect(answer.stdout).toContain(registry);
       }
+      expect(endpoint.asked).toEqual([NEWEST, PREVIOUS, MIDDLE, OLDEST]);
     } finally {
       await endpoint.close();
     }
@@ -284,7 +286,7 @@ describe("which generation a read answers about", () => {
     try {
       await runCliServed(["entry", ASSET], environment(endpoint.url));
       for (const contract of endpoint.asked) {
-        expect([OLDEST, MIDDLE, NEWEST], `the client asked ${contract}`).toContain(contract);
+        expect([OLDEST, MIDDLE, PREVIOUS, NEWEST], `the client asked ${contract}`).toContain(contract);
       }
       expect(endpoint.asked.length).toBeGreaterThan(0);
     } finally {
@@ -425,7 +427,7 @@ describe("what the command line writes to its output", () => {
     // path that exercises it.
     const directory = mkdtempSync(join(tmpdir(), "zkpor-cli-"));
     const path = join(directory, "customer.zkpor.json");
-    writeFileSync(path, '{"format":"zkpor-inclusion/1"}\n');
+    writeFileSync(path, '{"format":"zkpor-inclusion/2"}\n');
     const answer = runCli(["verify-inclusion", path], { ZKPOR_DEPLOYMENTS: DEPLOYMENTS });
     expect(answer.code).toBe(4);
     expect(answer.stdout).toContain("The package is malformed.");
@@ -811,15 +813,15 @@ describe("the sentence that follows a failure", () => {
  *
  * An example that nothing runs stops working quietly, and this one is the
  * deliverable a stranger meets first. The case runs the file itself rather than
- * reading it, so a change to the command line, to the recording, or to the
+ * reading it, so a change to the command line, to the synthetic endpoint, or to the
  * committed package fails here.
  */
 describe("the example of the customer check", () => {
-  /** The committed package that the recording attests. */
-  const INCLUDED = join(HERE, "..", "..", "fixtures", "example_package.zkpor.json");
+  /** The synthetic package that the endpoint accepts. */
+  const INCLUDED = join(HERE, "..", "..", "fixtures", "synthetic_package_v2.zkpor.json");
 
-  /** The committed package that the check refuses. */
-  const REFUSED = join(HERE, "..", "..", "fixtures", "example_package_wrong_balance.zkpor.json");
+  /** The synthetic package that the check refuses. */
+  const REFUSED = join(HERE, "..", "..", "fixtures", "synthetic_package_v2_wrong_path.zkpor.json");
 
   /** Runs one example file and reports what it printed and what code it gave. */
   async function ran(file: string, args: readonly string[] = []) {
@@ -843,7 +845,7 @@ describe("the example of the customer check", () => {
     expect(answer.code).toBe(0);
   }, 120_000);
 
-  it("answers the verdict of a wrong balance, and the code seven", async () => {
+  it("answers the verdict of a wrong path, and the code seven", async () => {
     // A check that only accepts proves half of the claim. So the package that
     // the check refuses is committed beside the one it accepts, and this case
     // runs the same example against it.
@@ -853,14 +855,15 @@ describe("the example of the customer check", () => {
     expect(answer.code).toBe(EXIT_CODES["root-mismatch"]);
   }, 120_000);
 
-  it("keeps the refused package one field away from the included one", () => {
+  it("keeps the refused package one sibling away from the included one", () => {
     // A refusal proves the check works only while the refused file stays a
     // well formed package of the same customer. A file that drifted into
     // another shape would refuse for a reason nobody demonstrates.
     const included = parsePackage(readFileSync(INCLUDED, "utf8"));
     const refused = parsePackage(readFileSync(REFUSED, "utf8"));
-    expect(refused.balance).not.toBe(included.balance);
-    expect({ ...refused, balance: included.balance }).toEqual(included);
+    expect(refused.siblings).not.toEqual(included.siblings);
+    expect(refused.siblings.filter((sibling, level) => sibling !== included.siblings[level])).toHaveLength(1);
+    expect({ ...refused, siblings: included.siblings }).toEqual(included);
   });
 
   it("shows a caller the three answers the library can give", async () => {
@@ -868,19 +871,16 @@ describe("the example of the customer check", () => {
     // refusal is an answer, and that a failure is not a verdict. A case that
     // read only the first would pass while the other two stopped working.
     const answer = await ran("verify-in-your-program.mjs");
-    expect(answer.out).toContain("included: leaf 0 holds 1000");
+    expect(answer.out).toContain("included: leaf 0 holds 0");
     expect(answer.out).toContain("root-mismatch");
     expect(answer.out).toContain("which is not a verdict");
     expect(answer.code).toBe(0);
   }, 120_000);
 
-  it("says that the answers came from a recording", async () => {
-    // A reader who takes the recording for the chain has learned something
-    // false. The file says so, and this reads the file rather than trusting it
-    // to stay said.
+  it("says that the answers came from a synthetic endpoint", async () => {
     for (const name of ["check-a-package.mjs", "verify-in-your-program.mjs"]) {
       const text = readFileSync(join(import.meta.dirname, "..", "examples", name), "utf8");
-      expect(text, name).toContain("A recording is not the chain.");
+      expect(text, name).toContain("A synthetic endpoint is not the chain.");
     }
   });
 });
