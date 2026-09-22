@@ -20,6 +20,7 @@ use zkpor_context::{leaf_hash, ATTESTATION_MAX_AGE_LEDGERS};
 use zkpor_package::{
     deployments::{self, DeploymentsError},
     fr::{fr_hex, to_big, to_fr},
+    identity::{derive_identifier, IdentifierRule},
     schema::{self, PackageError},
     tree::root_from_path,
 };
@@ -40,6 +41,7 @@ pub enum Verdict {
         attested_ledger: u32,
         latest_ledger: u32,
         total_liabilities: u128,
+        identity_confirmed: bool,
     },
     /// The file states a format that this reader does not know.
     UnsupportedFormat(String),
@@ -47,7 +49,10 @@ pub enum Verdict {
     Malformed(String),
     /// The network and the registry of the package match no deployment record
     /// of the verifier.
-    UntrustedDeployment { network: String, registry: String },
+    UntrustedDeployment {
+        network: String,
+        registry: String,
+    },
     /// The deployment records of the verifier contradict themselves, so the
     /// trust root answers nothing. This is a fault of the verifier's own file,
     /// and it says nothing about the package.
@@ -59,6 +64,9 @@ pub enum Verdict {
         recomputed: String,
         attested: String,
     },
+    ForeignIdentifier,
+    UnsupportedIdentifierRule,
+    InvalidIdentity(String),
 }
 
 impl Verdict {
@@ -90,6 +98,7 @@ impl Verdict {
                 attested_ledger,
                 latest_ledger,
                 total_liabilities,
+                identity_confirmed,
             } => {
                 let mut lines = vec![
                     format!(
@@ -118,6 +127,12 @@ impl Verdict {
                          The registry read the reserves at ledger {attested_ledger}, and the \
                          network is at ledger {latest_ledger}."
                     ));
+                }
+                if *identity_confirmed {
+                    lines.push(
+                        "The identifier matches the email and code in your local identity file."
+                            .into(),
+                    );
                 }
                 lines
             }
@@ -163,6 +178,17 @@ impl Verdict {
                  Obtain the package again from the authority before you conclude anything."
                     .to_string(),
             ],
+            Self::ForeignIdentifier => {
+                vec!["The package identifier does not match your email and code.".to_string()]
+            }
+            Self::UnsupportedIdentifierRule => vec![
+                "This historical package does not state an email and code identifier rule."
+                    .to_string(),
+            ],
+            Self::InvalidIdentity(reason) => vec![
+                "The local identity file is invalid.".to_string(),
+                reason.clone(),
+            ],
         }
     }
 }
@@ -178,6 +204,9 @@ pub fn exit_code(verdict: &Verdict) -> i32 {
         Verdict::NoMatchingAttestation(_) => 6,
         Verdict::RootMismatch { .. } => 7,
         Verdict::InvalidDeployments(_) => 9,
+        Verdict::ForeignIdentifier => 10,
+        Verdict::UnsupportedIdentifierRule => 11,
+        Verdict::InvalidIdentity(_) => 12,
     }
 }
 
@@ -192,6 +221,16 @@ pub fn verify(
     deployments_text: &str,
     chain: &dyn Chain,
 ) -> Result<Verdict, NoVerdict> {
+    verify_with_identity(env, package_text, deployments_text, chain, None)
+}
+
+pub fn verify_with_identity(
+    env: &Env,
+    package_text: &str,
+    deployments_text: &str,
+    chain: &dyn Chain,
+    identity_text: Option<&str>,
+) -> Result<Verdict, NoVerdict> {
     let package = match schema::parse(env, package_text) {
         Ok(package) => package,
         Err(PackageError::UnsupportedFormat(found)) => {
@@ -201,6 +240,35 @@ pub fn verify(
         }
         Err(error) => return Ok(Verdict::Malformed(error.to_string())),
     };
+
+    if let Some(identity_text) = identity_text {
+        if package.identifier_rule != IdentifierRule::EmailCodeV1 {
+            return Ok(Verdict::UnsupportedIdentifierRule);
+        }
+        let identity: serde_json::Value = match serde_json::from_str(identity_text) {
+            Ok(identity) => identity,
+            Err(_) => {
+                return Ok(Verdict::InvalidIdentity(
+                    "the identity file is not JSON".into(),
+                ))
+            }
+        };
+        let (Some(email), Some(code)) = (
+            identity.get("email").and_then(serde_json::Value::as_str),
+            identity.get("code").and_then(serde_json::Value::as_str),
+        ) else {
+            return Ok(Verdict::InvalidIdentity(
+                "the identity file needs an email and a code".into(),
+            ));
+        };
+        let own_id = match derive_identifier(env, email, code) {
+            Ok(id) => id,
+            Err(reason) => return Ok(Verdict::InvalidIdentity(reason.to_string())),
+        };
+        if own_id != package.id {
+            return Ok(Verdict::ForeignIdentifier);
+        }
+    }
 
     // The verifier resolves the deployment from its own file. A pair that no
     // record names is a signal, not a failure of the infrastructure.
@@ -299,5 +367,6 @@ pub fn verify(
         attested_ledger: attestation.attested_ledger,
         latest_ledger: chain.latest_ledger()?,
         total_liabilities: attestation.total_liabilities,
+        identity_confirmed: identity_text.is_some(),
     })
 }

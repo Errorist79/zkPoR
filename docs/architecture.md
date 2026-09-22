@@ -9,7 +9,7 @@ ceremony for each circuit), Barretenberg (`bb`, prover), a host-accelerated
 Soroban UltraHonk verifier built on the CAP-0080 BN254 host functions, Poseidon2
 (BN254 Fr), a TypeScript SDK, and an issuer dashboard.
 
-The source uses tagged leaves, fixed attestation identifiers, and version 2 customer packages.
+The source uses tagged leaves, fixed attestation identifiers, and version 2 or 3 customer packages.
 Circuit changes require matching verification keys and verifier contracts.
 
 ---

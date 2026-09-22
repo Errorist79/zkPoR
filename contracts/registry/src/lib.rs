@@ -38,10 +38,12 @@ use zkpor_context::{
 
 mod disputes;
 mod history;
+mod observations;
 pub mod params;
 
 pub use disputes::{Bond, Dispute, DisputeStatus, InclusionEvidence};
 pub use disputes::{ANSWER_WINDOW_LEDGERS, DISPUTE_DEPOSIT_STROOPS, TARGET_MAX_AGE_LEDGERS};
+pub use observations::{ObservationStatus, ReserveObservation};
 
 /// XDR discriminant of the native asset. The union carries no arm, so the
 /// serialized value is the discriminant alone.
@@ -159,6 +161,8 @@ pub enum Error {
     DeadlineOverflow = 31,
     InvalidBondAmount = 32,
     BondOverflow = 33,
+    ObservationNotFound = 34,
+    ObservationIdOverflow = 35,
 }
 
 /// The reasons of the shared encoding keep their identity here. A caller reads
@@ -185,6 +189,8 @@ pub enum DataKey {
     Attestation(Address, u64),
     Dispute(Address, u64, U256),
     Bond(Address),
+    Observation(Address, u64),
+    ObservationStatus(Address),
 }
 
 /// What the registry verified about the authority at registration.
@@ -260,20 +266,6 @@ pub struct AssetEntry {
     pub reserve_set_hash: U256,
     /// The last accepted attestation, or the empty slot.
     pub attestation: AttestationSlot,
-}
-
-/// A reading of the reserve balances that no attestation covers.
-///
-/// The field names do not repeat the names of the attestation record. A
-/// reader must never take this value for a number that a proof and a
-/// verifier stand behind.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ReserveObservation {
-    /// The sum of the reserve balances at the ledger of the reading.
-    pub observed_sum: i128,
-    /// The ledger of the reading.
-    pub observed_ledger: u32,
 }
 
 /// The registry accepted one attestation.
@@ -663,25 +655,6 @@ impl Registry {
         }
         .publish(&env);
         Ok(attestation_id)
-    }
-
-    /// Reads the reserve balances now.
-    ///
-    /// No attestation covers this value. It carries the ledger of the
-    /// reading, and its field names differ from the names of the attestation
-    /// record, so a reader cannot take one for the other. A read that fails
-    /// fails this call, by the rule that the attestation path follows, so a
-    /// reserve address that cannot hold the asset stays visible.
-    pub fn observe_reserves(env: Env, asset: Address) -> Result<ReserveObservation, Error> {
-        let entry: AssetEntry = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Asset(asset.clone()))
-            .ok_or(Error::AssetNotRegistered)?;
-        Ok(ReserveObservation {
-            observed_sum: reserve_sum(&env, &asset, &entry.reserves)?,
-            observed_ledger: env.ledger().sequence(),
-        })
     }
 
     /// The entry of one asset.

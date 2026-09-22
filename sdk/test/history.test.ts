@@ -8,10 +8,7 @@
  * empty page as the end of the range reports an asset that has attestations as
  * an asset that has none, which is the one answer this file guards against.
  *
- * The pages here carry the shape that the public test endpoint returned. A
- * request that started 17,288 ledgers back answered with no event and a cursor
- * about 10,000 ledgers later, and a second request from that cursor answered
- * with every event of the range.
+ * Synthetic pages exercise an empty page followed by an event-bearing page.
  */
 
 import { describe, expect, it } from "vitest";
@@ -22,6 +19,11 @@ import {
   readAttestationHistory,
   readStoredAttestation,
   readStoredAttestationHistory,
+  readObservationStatus,
+  readStoredObservation,
+  readStoredObservationHistory,
+  decodeReserveObservation,
+  decodeObservationStatus,
 } from "../src/registry.js";
 import { HISTORY_PAGE_LIMIT, MAX_U64 } from "../src/constants.js";
 import { InfrastructureError } from "../src/network.js";
@@ -106,6 +108,149 @@ function storedClient(responses: readonly (xdr.ScVal | string | Error)[]): {
   };
   return { server, requests };
 }
+
+function observationValue(id: bigint, baseline: bigint | null = 1n, low = false): xdr.ScVal {
+  return nativeToScVal({
+    observation_id: id,
+    observed_sum: 1_400n,
+    observed_ledger: LATEST,
+    reserve_set_hash: 3n,
+    attestation_id: baseline,
+    below_attested: low,
+  }, { type: {
+    observation_id: ["symbol", "u64"],
+    observed_sum: ["symbol", "i128"],
+    observed_ledger: ["symbol", "u32"],
+    reserve_set_hash: ["symbol", "u256"],
+    attestation_id: ["symbol", "u64"],
+    below_attested: ["symbol", null],
+  } });
+}
+
+function observationStatusValue(count: bigint, firstLow: bigint | null = null): xdr.ScVal {
+  return nativeToScVal({ observation_count: count, first_low_observation: firstLow }, { type: {
+    observation_count: ["symbol", "u64"],
+    first_low_observation: ["symbol", "u64"],
+  } });
+}
+
+describe("persistent reserve observations", () => {
+  it("reads a fixed identifier and its baseline without an event request", async () => {
+    const { server, requests } = storedClient([observationValue(2n, 1n, true)]);
+    const record = await readStoredObservation(NETWORK, REGISTRY, ASSET, 2n, { server });
+    expect(record).toEqual({
+      observationId: 2n, observedSum: 1_400n, observedLedger: LATEST,
+      reserveSetHash: 3n, attestationId: 1n, belowAttested: true,
+    });
+    expect(requests).toEqual([{ method: "get_observation", args: [ASSET, 2n] }]);
+  });
+
+  it("preserves an explicit absent baseline", async () => {
+    const { server } = storedClient([observationValue(1n, null)]);
+    expect(await readStoredObservation(NETWORK, REGISTRY, ASSET, 1n, { server }))
+      .toMatchObject({ attestationId: undefined, belowAttested: false });
+  });
+
+  it.each([7, 34])("reports explicit not-found error %i as absence", async (code) => {
+    const { server } = storedClient([`Error(Contract, #${code})`]);
+    expect(await readStoredObservation(NETWORK, REGISTRY, ASSET, 1n, { server })).toBeUndefined();
+  });
+
+  it("keeps a missing asset distinct from an empty observation status", async () => {
+    const missing = storedClient(["Error(Contract, #7)"]);
+    expect(await readObservationStatus(NETWORK, REGISTRY, ASSET, { server: missing.server })).toBeUndefined();
+    const empty = storedClient([observationStatusValue(0n)]);
+    expect(await readObservationStatus(NETWORK, REGISTRY, ASSET, { server: empty.server }))
+      .toEqual({ observationCount: 0n, firstLowObservation: undefined });
+  });
+
+  it.each([new Error("RPC unavailable"), "restore the archived state", "unknown function observation_status"])(
+    "does not convert infrastructure or old-API errors to absence: %s", async (failure) => {
+      const status = storedClient([failure]);
+      await expect(readObservationStatus(NETWORK, REGISTRY, ASSET, { server: status.server }))
+        .rejects.toThrow(InfrastructureError);
+      const record = storedClient([failure]);
+      await expect(readStoredObservation(NETWORK, REGISTRY, ASSET, 1n, { server: record.server }))
+        .rejects.toThrow(InfrastructureError);
+    },
+  );
+
+  it("does not convert a different contract refusal to absence", async () => {
+    const { server } = storedClient(["Error(Contract, #35)"]);
+    await expect(readStoredObservation(NETWORK, REGISTRY, ASSET, 1n, { server }))
+      .rejects.toThrow(RegistryRefusedError);
+  });
+
+  it("fixes the page count before record reads and returns the next identifier", async () => {
+    const { server, requests } = storedClient([
+      observationStatusValue(3n, 1n), observationValue(1n, 1n, true), observationValue(2n),
+    ]);
+    const page = await readStoredObservationHistory(NETWORK, REGISTRY, ASSET, { server, startId: 1n, count: 2 });
+    expect(page.observations.map((entry) => entry.observationId)).toEqual([1n, 2n]);
+    expect(page.totalCount).toBe(3n);
+    expect(page.nextId).toBe(3n);
+    expect(requests.map((request) => request.method)).toEqual([
+      "observation_status", "get_observation", "get_observation",
+    ]);
+  });
+
+  it("does not include identifiers above the initial count", async () => {
+    const { server, requests } = storedClient([observationStatusValue(1n), observationValue(1n)]);
+    const page = await readStoredObservationHistory(NETWORK, REGISTRY, ASSET, { server, startId: 1n, count: 20 });
+    expect(page.observations).toHaveLength(1);
+    expect(page.nextId).toBeUndefined();
+    expect(requests).toHaveLength(2);
+  });
+
+  it.each([0n, 2n])("returns an empty page beyond count %s", async (count) => {
+    const { server, requests } = storedClient([observationStatusValue(count)]);
+    expect(await readStoredObservationHistory(NETWORK, REGISTRY, ASSET, { server, startId: 3n, count: 2 }))
+      .toEqual({ observations: [], totalCount: count, nextId: undefined });
+    expect(requests).toHaveLength(1);
+  });
+
+  it("refuses a counted record that is missing or has another identifier", async () => {
+    const missing = storedClient([observationStatusValue(1n), "Error(Contract, #34)"]);
+    await expect(readStoredObservationHistory(NETWORK, REGISTRY, ASSET, { server: missing.server, startId: 1n, count: 1 }))
+      .rejects.toThrow("missing record 1");
+    const changed = storedClient([observationValue(2n)]);
+    await expect(readStoredObservation(NETWORK, REGISTRY, ASSET, 1n, { server: changed.server }))
+      .rejects.toThrow("different identifier");
+  });
+
+  it.each([0n, MAX_U64 + 1n])("rejects invalid identifiers before RPC: %s", async (id) => {
+    const { server, requests } = storedClient([]);
+    await expect(readStoredObservation(NETWORK, REGISTRY, ASSET, id, { server })).rejects.toThrow(RangeError);
+    await expect(readStoredObservationHistory(NETWORK, REGISTRY, ASSET, { server, startId: id, count: 1 }))
+      .rejects.toThrow(RangeError);
+    expect(requests).toHaveLength(0);
+  });
+
+  it.each([0, 1.5, HISTORY_PAGE_LIMIT + 1])("rejects an invalid count before RPC: %s", async (count) => {
+    const { server, requests } = storedClient([]);
+    await expect(readStoredObservationHistory(NETWORK, REGISTRY, ASSET, { server, startId: 1n, count }))
+      .rejects.toThrow(RangeError);
+    expect(requests).toHaveLength(0);
+  });
+
+  it("does not expose a simulation identifier as a stored observation", () => {
+    expect(decodeReserveObservation(scValToNative(observationValue(2n)))).toEqual({
+      observedSum: 1_400n, observedLedger: LATEST, supportsRecordedObservations: true,
+    });
+    expect(decodeReserveObservation({ observed_sum: 1_400n, observed_ledger: LATEST })).toEqual({
+      observedSum: 1_400n, observedLedger: LATEST, supportsRecordedObservations: false,
+    });
+  });
+
+  it("refuses a partial extended ABI and a low reading without a baseline", () => {
+    expect(() => decodeReserveObservation({ observed_sum: 1n, observed_ledger: LATEST, observation_id: 1n }))
+      .toThrow(InfrastructureError);
+    expect(() => decodeReserveObservation(scValToNative(observationValue(1n, null, true))))
+      .toThrow("names no baseline");
+    expect(() => decodeObservationStatus({ observation_count: 1n, first_low_observation: 2n }))
+      .toThrow("exceeds the observation count");
+  });
+});
 
 /** The cursor that names one ledger, in the form the endpoint returns. */
 function cursorAt(ledger: number): string {

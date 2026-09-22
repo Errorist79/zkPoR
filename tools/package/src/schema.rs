@@ -5,6 +5,7 @@
 //! so the writer and the reader stand next to each other here.
 
 use crate::fr::{fr_hex, parse_package_fr, to_big, to_fr};
+use crate::identity::{IdentifierRule, IDENTIFIER_RULE};
 use num_bigint::BigUint;
 use serde_json::Value;
 use soroban_sdk::Env;
@@ -13,6 +14,8 @@ use zkpor_context::balance_commitment;
 /// The version gate of the schema. A reader that does not know this exact
 /// string refuses to read any other field.
 pub const PACKAGE_FORMAT: &str = "zkpor-inclusion/2";
+/// The format of a package with an email-derived identifier.
+pub const IDENTITY_PACKAGE_FORMAT: &str = "zkpor-inclusion/3";
 /// Extension of a package file.
 pub const PACKAGE_EXTENSION: &str = "zkpor.json";
 /// Digits of the zero-padded leaf index in a package filename.
@@ -20,7 +23,7 @@ pub const PACKAGE_INDEX_DIGITS: usize = 6;
 /// Indentation of the package layout, in spaces.
 pub const JSON_INDENT: usize = 2;
 /// The keys of the schema, in the order that the format fixes.
-const FIELDS: [&str; 13] = [
+const FIELDS_V2: [&str; 13] = [
     "format",
     "network",
     "registry",
@@ -28,6 +31,22 @@ const FIELDS: [&str; 13] = [
     "snapshot_ledger",
     "context_hash",
     "attestation_id",
+    "leaf_index",
+    "id",
+    "commitment",
+    "balance",
+    "salt",
+    "siblings",
+];
+const FIELDS_V3: [&str; 14] = [
+    "format",
+    "network",
+    "registry",
+    "asset",
+    "snapshot_ledger",
+    "context_hash",
+    "attestation_id",
+    "identifier_rule",
     "leaf_index",
     "id",
     "commitment",
@@ -59,7 +78,7 @@ impl std::fmt::Display for PackageError {
             Self::UnsupportedFormat(found) => {
                 write!(
                     out,
-                    "this reader knows the format {PACKAGE_FORMAT}, and the file states {found}"
+                    "this reader knows {PACKAGE_FORMAT} and {IDENTITY_PACKAGE_FORMAT}, and the file states {found}"
                 )
             }
             Self::Malformed(reason) => write!(out, "{reason}"),
@@ -74,6 +93,7 @@ fn malformed<T>(reason: impl Into<String>) -> Result<T, PackageError> {
 /// The fields of one package, in the order that the schema fixes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Package {
+    pub identifier_rule: IdentifierRule,
     pub network: String,
     pub registry: String,
     pub asset: String,
@@ -101,8 +121,12 @@ impl Package {
     /// and one LF at the end of the file.
     pub fn to_json(&self) -> String {
         let pad = " ".repeat(JSON_INDENT);
+        let format = match self.identifier_rule {
+            IdentifierRule::Legacy => PACKAGE_FORMAT,
+            IdentifierRule::EmailCodeV1 => IDENTITY_PACKAGE_FORMAT,
+        };
         let mut lines = vec![
-            format!("{pad}\"format\": {}", json_string(PACKAGE_FORMAT)),
+            format!("{pad}\"format\": {}", json_string(format)),
             format!("{pad}\"network\": {}", json_string(&self.network)),
             format!("{pad}\"registry\": {}", json_string(&self.registry)),
             format!("{pad}\"asset\": {}", json_string(&self.asset)),
@@ -115,6 +139,14 @@ impl Package {
                 "{pad}\"attestation_id\": {}",
                 json_string(&self.attestation_id.to_string())
             ),
+        ];
+        if self.identifier_rule == IdentifierRule::EmailCodeV1 {
+            lines.push(format!(
+                "{pad}\"identifier_rule\": {}",
+                json_string(IDENTIFIER_RULE)
+            ));
+        }
+        lines.extend([
             format!("{pad}\"leaf_index\": {}", self.leaf_index),
             format!("{pad}\"id\": {}", json_string(&fr_hex(&self.id))),
             format!(
@@ -126,7 +158,7 @@ impl Package {
                 json_string(&self.balance.to_string())
             ),
             format!("{pad}\"salt\": {}", json_string(&fr_hex(&self.salt))),
-        ];
+        ]);
         let siblings: Vec<String> = self
             .siblings
             .iter()
@@ -186,16 +218,21 @@ pub fn parse(env: &Env, text: &str) -> Result<Package, PackageError> {
         Some(object) => object,
         None => return malformed("the file is not a JSON object"),
     };
-    match object.get("format").and_then(Value::as_str) {
-        Some(PACKAGE_FORMAT) => (),
+    let identifier_rule = match object.get("format").and_then(Value::as_str) {
+        Some(PACKAGE_FORMAT) => IdentifierRule::Legacy,
+        Some(IDENTITY_PACKAGE_FORMAT) => IdentifierRule::EmailCodeV1,
         Some(other) => return Err(PackageError::UnsupportedFormat(other.to_string())),
         None => return malformed("the file states no format"),
-    }
+    };
     // The format string is the version gate, and every change of the schema
     // changes it. A file of this format therefore holds these keys and no
     // other one. The rule also refuses a file that carries a root, a direction
     // bit, or another customer's data, which no package may hold.
-    if let Some(extra) = object.keys().find(|key| !FIELDS.contains(&key.as_str())) {
+    let fields: &[&str] = match identifier_rule {
+        IdentifierRule::Legacy => &FIELDS_V2,
+        IdentifierRule::EmailCodeV1 => &FIELDS_V3,
+    };
+    if let Some(extra) = object.keys().find(|key| !fields.contains(&key.as_str())) {
         return malformed(format!(
             "the package holds the field {extra}, which the format does not name"
         ));
@@ -207,6 +244,11 @@ pub fn parse(env: &Env, text: &str) -> Result<Package, PackageError> {
             .map(str::to_string)
             .ok_or_else(|| PackageError::Malformed(format!("{name} is not a string")))
     };
+    if identifier_rule == IdentifierRule::EmailCodeV1
+        && text_field("identifier_rule")? != IDENTIFIER_RULE
+    {
+        return malformed("the identifier rule is not supported");
+    }
     let contract_field = |name: &str| -> Result<String, PackageError> {
         let value = text_field(name)?;
         let body = value.strip_prefix(STRKEY_CONTRACT_PREFIX);
@@ -275,6 +317,7 @@ pub fn parse(env: &Env, text: &str) -> Result<Package, PackageError> {
         return malformed("the commitment does not match the balance and salt");
     }
     Ok(Package {
+        identifier_rule,
         network: text_field("network")?,
         registry: contract_field("registry")?,
         asset: contract_field("asset")?,
@@ -315,6 +358,7 @@ mod tests {
         let env = env();
         let salt = BigUint::from(9u32);
         Package {
+            identifier_rule: IdentifierRule::Legacy,
             network: "local".into(),
             registry: REGISTRY.into(),
             asset: ASSET.into(),
@@ -355,9 +399,9 @@ mod tests {
             .to_json()
             .lines()
             .filter_map(|line| line.trim().split('"').nth(1).map(str::to_string))
-            .take(FIELDS.len())
+            .take(FIELDS_V2.len())
             .collect();
-        assert_eq!(written, FIELDS);
+        assert_eq!(written, FIELDS_V2);
     }
 
     /// A file that carries a root, a direction bit, or any other field is not
@@ -376,6 +420,27 @@ mod tests {
     #[test]
     fn a_written_package_reads_back_as_the_same_package() {
         assert_eq!(parse(&env(), &package().to_json()).unwrap(), package());
+    }
+
+    #[test]
+    fn an_email_identifier_package_requires_its_rule() {
+        let mut entry = package();
+        entry.identifier_rule = IdentifierRule::EmailCodeV1;
+        let text = entry.to_json();
+        assert!(text.contains("\"format\": \"zkpor-inclusion/3\""));
+        assert!(text.contains("\"identifier_rule\": \"zkpor-email-code/1\""));
+        assert_eq!(parse(&env(), &text).unwrap(), entry);
+        assert!(matches!(
+            parse(&env(), &text.replace("zkpor-email-code/1", "zkpor-other/1")),
+            Err(PackageError::Malformed(_))
+        ));
+        assert!(matches!(
+            parse(
+                &env(),
+                &text.replace("  \"identifier_rule\": \"zkpor-email-code/1\",\n", "")
+            ),
+            Err(PackageError::Malformed(_))
+        ));
     }
 
     /// The layout is part of the format, so this pins the key order, the

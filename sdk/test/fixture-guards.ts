@@ -264,6 +264,9 @@ export interface Expected {
   attestation?: AttestationExpectation | null;
   observed_sum?: string;
   observed_ledger?: number;
+  observation_id?: string;
+  attestation_id?: string | null;
+  below_attested?: boolean;
 }
 
 export interface Returns {
@@ -292,11 +295,13 @@ function isExpected(value: unknown): value is Expected {
   const attestation = value["attestation"];
   const ledger = value["observed_ledger"];
   return (
-    ["authority", "tier", "reserve_set_hash", "observed_sum"].every((name) =>
+    ["authority", "tier", "reserve_set_hash", "observed_sum", "observation_id"].every((name) =>
       isOptionalString(value[name]),
     ) &&
     (reserves === undefined || isStringList(reserves)) &&
     (ledger === undefined || typeof ledger === "number") &&
+    (value["attestation_id"] === null || isOptionalString(value["attestation_id"])) &&
+    (value["below_attested"] === undefined || typeof value["below_attested"] === "boolean") &&
     (attestation === undefined ||
       attestation === null ||
       isAttestationExpectation(attestation))

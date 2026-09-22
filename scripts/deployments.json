@@ -34,5 +34,14 @@
     "tree_depth": 12,
     "registry_wasm_sha256": "7f1ee3926fef09138e18e2aff8825c5098206a6ac397c56f809ee0049d532ba4",
     "verifier_wasm_sha256": "1d8ccc231859e4515a47c121b5538b71f64a29e65fb568ca5230fca6463f19b0"
+  },
+  {
+    "network": "testnet",
+    "registry": "CDXEME3QB4MF6CNIZBSINW6SEON2H233ABYACFF7PF2YPKA34MPGVLAO",
+    "verifier": "CDD3YB7XHVPFJPDJOIRECV5VAJSTL4LRAHSAGYHS4SSJUFHHXZSLKBJV",
+    "aggregator_key_sha256": "92cd8deaf40d8024a9ece6c9d2395ea75cfe5a739b3e80eabf35703495f41f44",
+    "tree_depth": 12,
+    "registry_wasm_sha256": "a3c321ae4089036049f0671b289bee13976cf454bb6c68bc5ad85173a35e540f",
+    "verifier_wasm_sha256": "1d8ccc231859e4515a47c121b5538b71f64a29e65fb568ca5230fca6463f19b0"
   }
 ]

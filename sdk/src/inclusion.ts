@@ -26,6 +26,7 @@ import {
 } from "./inclusion-package.js";
 import type { InclusionPackage } from "./inclusion-package.js";
 import { leafHash } from "./hashes.js";
+import { checkOwnIdentifier } from "./identity.js";
 import { rootFromPath } from "./tree.js";
 import { toHex } from "./fr.js";
 import { groupedDigits } from "./report.js";
@@ -42,7 +43,10 @@ export type VerdictKind =
   | "untrusted-deployment"
   | "invalid-deployments"
   | "no-matching-attestation"
-  | "root-mismatch";
+  | "root-mismatch"
+  | "foreign-identifier"
+  | "unsupported-identifier-rule"
+  | "invalid-identity";
 
 /** The outcome of the check on one package. */
 export type Verdict =
@@ -60,6 +64,7 @@ export type Verdict =
       readonly reserveSum: bigint;
       readonly currentLedger: number;
       readonly solvencyLapsed: boolean;
+      readonly identityConfirmed?: true;
     }
   | { readonly kind: "unsupported-format"; readonly reason: string }
   | { readonly kind: "malformed"; readonly reason: string }
@@ -71,6 +76,9 @@ export type Verdict =
     }
   | { readonly kind: "invalid-deployments"; readonly reason: string }
   | { readonly kind: "no-matching-attestation"; readonly reason: string }
+  | { readonly kind: "foreign-identifier" }
+  | { readonly kind: "unsupported-identifier-rule" }
+  | { readonly kind: "invalid-identity"; readonly reason: string }
   | {
       readonly kind: "root-mismatch";
       readonly recomputed: bigint;
@@ -92,6 +100,9 @@ export const EXIT_CODES: Readonly<Record<VerdictKind, number>> = {
   "no-matching-attestation": 6,
   "root-mismatch": 7,
   "invalid-deployments": 9,
+  "foreign-identifier": 10,
+  "unsupported-identifier-rule": 11,
+  "invalid-identity": 12,
 };
 
 /** The exit code of a failure that gives no verdict. */
@@ -118,6 +129,7 @@ export async function verifyInclusion(input: {
   server: rpc.Server;
   config: NetworkConfig;
   readOptions: ReadOptions;
+  identityText?: string;
 }): Promise<Verdict> {
   let entry: InclusionPackage;
   try {
@@ -130,6 +142,22 @@ export async function verifyInclusion(input: {
       return { kind: "malformed", reason: cause.message };
     }
     throw cause;
+  }
+
+  if (input.identityText !== undefined) {
+    let ownership;
+    try {
+      ownership = checkOwnIdentifier(entry, input.identityText);
+    } catch (cause) {
+      const reason = cause instanceof Error ? cause.message : "the identity file is invalid";
+      return { kind: "invalid-identity", reason };
+    }
+    if (ownership.kind === "foreign") {
+      return { kind: "foreign-identifier" };
+    }
+    if (ownership.kind === "unsupported-identifier-rule") {
+      return { kind: "unsupported-identifier-rule" };
+    }
   }
 
   let generation;
@@ -212,6 +240,7 @@ export async function verifyInclusion(input: {
     reserveSum: attestation.reserveSum,
     currentLedger,
     solvencyLapsed: solvencyLapsed(attestation.snapshotLedger, currentLedger),
+    ...(input.identityText === undefined ? {} : { identityConfirmed: true }),
   };
 }
 
@@ -231,13 +260,19 @@ export function verdictLines(verdict: Verdict): string[] {
         "This client reads only the registries its own deployments file records. A package chooses among those, and one naming any other registry is refused.",
         `The leaf index is ${verdict.leafIndex}, and the balance is ${groupedDigits(verdict.balance)}.`,
         `The customer identifier in this package is ${toHex(verdict.id)}.`,
-        "This check reads that identifier from the package, and it cannot tell whose identifier it is.",
-        "Compare it with the identifier that your issuer gave you.",
-        "A package that carries another identifier proves the balance of another customer, and says nothing about your balance.",
         `The snapshot ledger is ${verdict.snapshotLedger}, and the registry read the reserves at ledger ${verdict.attestedLedger}.`,
         `The total liabilities under the root are ${groupedDigits(verdict.totalLiabilities)}.`,
         `The reserves at the attestation, at ledger ${verdict.attestedLedger}, were ${groupedDigits(verdict.reserveSum)}.`,
       ];
+      if (verdict.identityConfirmed === true) {
+        lines.push("The identifier matches the email and code in your local identity file.");
+      } else {
+        lines.push(
+          "This check reads that identifier from the package, and it cannot tell whose identifier it is.",
+          "Compare it with the identifier that your issuer gave you.",
+          "A package that carries another identifier proves the balance of another customer, and says nothing about your balance.",
+        );
+      }
       if (verdict.solvencyLapsed) {
         lines.push(
           "The inclusion is valid.",
@@ -266,5 +301,11 @@ export function verdictLines(verdict: Verdict): string[] {
         "A changed identifier, commitment, or path reaches another root.",
         "Obtain the package again from the authority before you conclude anything.",
       ];
+    case "foreign-identifier":
+      return ["The package identifier does not match your email and code."];
+    case "unsupported-identifier-rule":
+      return ["This historical package does not state an email and code identifier rule."];
+    case "invalid-identity":
+      return ["The local identity file is invalid.", verdict.reason];
   }
 }

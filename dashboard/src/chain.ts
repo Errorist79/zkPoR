@@ -14,10 +14,12 @@ import {
   latestLedger,
   observeReserves,
   readAttestationHistory,
+  readObservationStatus,
+  readStoredObservation,
 } from "@zkpor/sdk";
 import type { NetworkConfig, ReadOptions, openServer } from "@zkpor/sdk";
 import { attestedReserves, coverageOf, observedReserves, solvencyResult } from "./model.js";
-import type { AssetView, HistoryView } from "./model.js";
+import type { AssetView, HistoryView, RecordedObservationView } from "./model.js";
 import type { Log } from "./log.js";
 import { generationsNewestFirst, locateAsset } from "@zkpor/sdk";
 
@@ -108,14 +110,15 @@ export async function readAssetView(
   );
 
   let observed;
+  let supportsRecordedObservations;
   let observationFailure;
   let diagnosis;
   try {
-    observed = observedReserves(
-      await timed(reader, "observe_reserves", registry, () =>
-        observeReserves(reader.server, reader.config, reader.readOptions, registry, asset),
-      ),
+    const live = await timed(reader, "observe_reserves", registry, () =>
+      observeReserves(reader.server, reader.config, reader.readOptions, registry, asset),
     );
+    observed = observedReserves(live);
+    supportsRecordedObservations = live.supportsRecordedObservations;
   } catch (cause) {
     if (!(cause instanceof RegistryRefusedError) && !(cause instanceof InfrastructureError)) {
       throw cause;
@@ -141,10 +144,55 @@ export async function readAssetView(
         : solvencyResult(record.attestation, currentLedger),
     observed,
     observationFailure,
+    recordedObservations: supportsRecordedObservations === false
+      ? { kind: "unsupported" }
+      : await readRecordedObservations(reader, registry, asset),
     diagnosis,
     currentLedger,
   };
   return { view, asked };
+}
+
+async function readRecordedObservations(
+  reader: Reader,
+  registry: string,
+  asset: string,
+): Promise<RecordedObservationView> {
+  const options = { ...reader.readOptions, server: reader.server };
+  let firstLowId: bigint | undefined;
+  try {
+    const status = await timed(reader, "observation_status", registry, () =>
+      readObservationStatus(reader.config, registry, asset, options),
+    );
+    if (status === undefined) {
+      throw new InfrastructureError("the asset disappeared before its observation status read");
+    }
+    firstLowId = status.firstLowObservation;
+    const read = async (id: bigint) => {
+      const observation = await timed(reader, "get_observation", registry, () =>
+        readStoredObservation(reader.config, registry, asset, id, options),
+      );
+      if (observation === undefined) {
+        throw new InfrastructureError(`the observation status names the missing record ${id}`);
+      }
+      return observation;
+    };
+    const latest = status.observationCount === 0n ? undefined : await read(status.observationCount);
+    const firstLow = status.firstLowObservation === undefined
+      ? undefined
+      : status.firstLowObservation === latest?.observationId
+        ? latest
+        : await read(status.firstLowObservation);
+    if (firstLow !== undefined && !firstLow.belowAttested) {
+      throw new InfrastructureError("the first-low marker names an observation that is not low");
+    }
+    return { kind: "available", status, latest, firstLow };
+  } catch (cause) {
+    if (!(cause instanceof RegistryRefusedError) && !(cause instanceof InfrastructureError)) {
+      throw cause;
+    }
+    return { kind: "failed", reason: cause.message, firstLowId };
+  }
 }
 
 /**
@@ -153,10 +201,7 @@ export async function readAssetView(
  * The query names no ledger, so it reads the whole window that the endpoint
  * keeps, which is the same range the command line reads.
  *
- * The generations are read at the same time. The reads are independent, and one
- * after another the page waited for the sum of them: three generations over the
- * retained window took 5.2 seconds against 1.7 for the three together, over the
- * same request count.
+ * The generations are read concurrently because their reads are independent.
  */
 export async function readHistoryView(reader: Reader, asset: string): Promise<HistoryView> {
   const generations = generationsNewestFirst(reader.deploymentsText, reader.config.network);

@@ -95,6 +95,7 @@ function declaredDependencies(): string[] {
  */
 const PERMITTED: readonly { module: string; why: string }[] = [
   { module: "node:child_process", why: "starts the pinned tools of a proving run" },
+  { module: "node:crypto", why: "generates the private code and hashes its identifier" },
   { module: "node:fs", why: "reads and removes the files of a run without waiting" },
   { module: "node:fs/promises", why: "reads and writes the files of a run" },
   { module: "node:os", why: "names the directory that holds a scratch file of a run" },

@@ -45,6 +45,8 @@ export const REGISTRY_ERRORS: ReadonlyMap<number, string> = new Map([
   [31, "DeadlineOverflow"],
   [32, "InvalidBondAmount"],
   [33, "BondOverflow"],
+  [34, "ObservationNotFound"],
+  [35, "ObservationIdOverflow"],
 ]);
 
 /** The code that the registry returns when an asset has no record. */
@@ -52,6 +54,9 @@ export const ASSET_NOT_REGISTERED = 7;
 
 /** The code that the registry returns when an attestation has no record. */
 export const ATTESTATION_NOT_FOUND = 21;
+
+/** The code that the registry returns when an observation has no record. */
+export const OBSERVATION_NOT_FOUND = 34;
 
 /** The code that the registry returns when a reserve balance read fails. */
 export const RESERVE_BALANCE_UNAVAILABLE = 17;

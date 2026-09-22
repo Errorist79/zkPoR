@@ -5,14 +5,8 @@
  * the page states no verdict of its own, it prints the lines that the kit
  * writes and the exit code that the kit assigns.
  *
- * The tests come in two parts, and the split has a reason. Four outcomes need
- * no network, because the kit reads the package, checks the deployment claim,
- * and checks the depth before it reads the chain. Those four run end to end
- * here, through the real route, against a client whose endpoint nothing
- * listens on, so a test that reached the network would fail rather than pass on
- * a value from elsewhere. The other three outcomes need an attestation from the
- * chain, so the agreement for them is checked on the verdict itself, over every
- * kind that the kit defines.
+ * Local package refusals run through the route without a network endpoint.
+ * Separate cases check the fixed attestation read and render every SDK verdict.
  */
 
 import { mkdtempSync, writeFileSync } from "node:fs";
@@ -234,42 +228,39 @@ describe("the page and the command line, on one package", () => {
   });
 });
 
-/** One verdict of each kind, so the agreement covers every outcome the kit defines. */
+const INCLUDED_VERDICT: Extract<Verdict, { kind: "included" }> = {
+  kind: "included",
+  id: 0x2an,
+  asset: ASSET,
+  registry: REGISTRY,
+  leafIndex: 5,
+  balance: 100n,
+  snapshotLedger: 5_000,
+  attestedLedger: 5_100,
+  totalLiabilities: 1_000n,
+  reserveSum: 1_500n,
+  currentLedger: 5_200,
+  solvencyLapsed: false,
+};
+
+/** One verdict of each kind, including both optional statements of an included result. */
 const EVERY_VERDICT: readonly Verdict[] = [
+  INCLUDED_VERDICT,
   {
-    kind: "included",
-    id: 0x2an,
-    asset: ASSET,
-    registry: REGISTRY,
-    leafIndex: 5,
-    balance: 100n,
-    snapshotLedger: 5_000,
-    attestedLedger: 5_100,
-    totalLiabilities: 1_000n,
-    reserveSum: 1_500n,
-    currentLedger: 5_200,
-    solvencyLapsed: false,
-  },
-  {
-    kind: "included",
-    id: 0x2an,
-    asset: ASSET,
-    registry: REGISTRY,
-    leafIndex: 5,
-    balance: 100n,
-    snapshotLedger: 5_000,
-    attestedLedger: 5_100,
-    totalLiabilities: 1_000n,
-    reserveSum: 1_500n,
+    ...INCLUDED_VERDICT,
     currentLedger: 9_000,
     solvencyLapsed: true,
   },
+  { ...INCLUDED_VERDICT, identityConfirmed: true },
   { kind: "unsupported-format", reason: "another format" },
   { kind: "malformed", reason: "no salt" },
   { kind: "untrusted-deployment", reason: "no such registry", network: "testnet", registry: REGISTRY },
   { kind: "invalid-deployments", reason: "one pair twice" },
   { kind: "no-matching-attestation", reason: "another snapshot" },
   { kind: "root-mismatch", recomputed: 0x11n, attested: 0x22n },
+  { kind: "foreign-identifier" },
+  { kind: "unsupported-identifier-rule" },
+  { kind: "invalid-identity", reason: "the identity file needs an email and a code" },
 ];
 
 describe("the verdict page", () => {

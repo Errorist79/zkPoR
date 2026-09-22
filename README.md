@@ -12,8 +12,18 @@ See [the security model](SECURITY.md) for the trust assumptions and limits.
 ## Capabilities
 
 The registry stores each accepted attestation under a fixed identifier.
-Version 2 customer packages bind that identifier, the context hash, and a tagged balance commitment.
+Version 2 and 3 customer packages bind that identifier, the context hash, and a tagged balance commitment.
 A customer checks the package against the fixed attestation root.
+
+Version 3 also states the email and code identifier rule.
+A customer can check their identifier from a private identity file before the inclusion check.
+Version 2 remains available for historical inclusion checks.
+See [the SDK procedures](sdk/README.md#customer-identifiers) for private draft files and customer checks.
+
+Any transaction caller can record a reserve observation.
+The registry preserves the first observation below its referenced attested reserve sum.
+The dashboard separates these stored observations from live simulations.
+A lower reserve sum does not establish insolvency.
 
 An inclusion dispute uses redacted evidence without a customer balance or salt.
 The target window is 518,400 ledgers.
@@ -189,7 +199,7 @@ runs. It does not say that what the network runs is wrong.
 Each entry in the deployments file states both contract identifiers and their WASM hashes.
 The current registry ABI returns an attestation identifier from `submit_attestation`.
 It exposes `get_attestation` and `attestation_count`.
-Version 2 customer packages bind the context hash and fixed attestation identifier.
+Version 2 and 3 customer packages bind the context hash and fixed attestation identifier.
 
 ## Continuous integration
 

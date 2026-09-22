@@ -18,9 +18,8 @@
 //! The registry asks a token for two things. It calls `admin` at registration
 //! and compares the answer with the authority that the caller supplied. It
 //! calls `balance` once for each reserve address at attestation and adds the
-//! answers. Those two, a constructor that records the administrator, and a
-//! `mint` that gives the reserves something to hold, are the whole of this
-//! contract.
+//! answers. The administrator can mint demonstration balances. A holder can
+//! transfer them to demonstrate a reserve decrease after an attestation.
 //!
 //! It carries no `decimals`, no `name`, and no `symbol`. A reader who expects
 //! them of a thing called a token is reading the name rather than the contract,
@@ -30,10 +29,8 @@
 //! explorer page that has to show it, that is a reason and it can have one
 //! then.
 //!
-//! It also carries no `transfer` and no `allowance`. A share that moves between
-//! holders is a property of a real token and no part of what the registry
-//! reads, and a transfer here would be a second way to change a balance that
-//! nothing checks.
+//! It carries no allowance interface. A transfer requires the holder's
+//! authorization and cannot spend more than the holder's balance.
 //!
 //! # Why the mint asks for the administrator
 //!
@@ -46,7 +43,9 @@
 //! It accepts an administrator who mints without limit, so it must never reach
 //! a real network as anything but a demonstration.
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env};
+use soroban_sdk::{
+    contract, contracterror, contractevent, contractimpl, contracttype, Address, Env, MuxedAddress,
+};
 
 /// What this contract stores.
 #[contracttype]
@@ -71,6 +70,18 @@ pub enum Error {
     AmountNotPositive = 2,
     /// The balance of one holder would leave the range of the balance type.
     BalanceOverflow = 3,
+    AmountNegative = 4,
+    InsufficientBalance = 5,
+}
+
+#[contractevent(topics = ["transfer"])]
+pub struct Transfer {
+    #[topic]
+    pub from: Address,
+    #[topic]
+    pub to: Address,
+    pub amount: i128,
+    pub to_muxed_id: Option<u64>,
 }
 
 #[contract]
@@ -119,6 +130,39 @@ impl FundToken {
         env.storage().persistent().set(&key, &total);
         extend_balance(&env, &key);
         extend_contract(&env);
+        Ok(())
+    }
+
+    /// Moves demonstration balances under the holder's authorization.
+    pub fn transfer(env: Env, from: Address, to: MuxedAddress, amount: i128) -> Result<(), Error> {
+        from.require_auth();
+        if amount < 0 {
+            return Err(Error::AmountNegative);
+        }
+        let held = Self::balance(env.clone(), from.clone());
+        if held < amount {
+            return Err(Error::InsufficientBalance);
+        }
+        let recipient = to.address();
+        if from != recipient {
+            let received = Self::balance(env.clone(), recipient.clone())
+                .checked_add(amount)
+                .ok_or(Error::BalanceOverflow)?;
+            let from_key = DataKey::Balance(from.clone());
+            let to_key = DataKey::Balance(recipient.clone());
+            env.storage().persistent().set(&from_key, &(held - amount));
+            env.storage().persistent().set(&to_key, &received);
+            extend_balance(&env, &from_key);
+            extend_balance(&env, &to_key);
+        }
+        extend_contract(&env);
+        Transfer {
+            from,
+            to: recipient,
+            amount,
+            to_muxed_id: to.id(),
+        }
+        .publish(&env);
         Ok(())
     }
 }

@@ -1924,8 +1924,11 @@ dependencies = [
 name = "zkpor-package"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "getrandom",
  "num-bigint",
  "serde_json",
+ "sha2",
  "soroban-sdk",
  "zkpor-context",
 ]

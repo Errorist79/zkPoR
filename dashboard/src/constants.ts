@@ -190,6 +190,7 @@ export const SECTION_IDS = {
   headline: "solvency-headline",
   attestedReserves: "attested-reserves",
   observedReserves: "observed-reserves",
+  recordedObservations: "recorded-observations",
   registration: "registration",
   history: "attestation-history",
   verdict: "inclusion-verdict",

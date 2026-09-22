@@ -64,13 +64,14 @@ derivation of section 4.2 follows this rule.
 
 ### 1.3 Test vectors
 
-A hand computation of Poseidon2 is not practical. Therefore this document
-contains no example hash values. The shared Rust crate is the reference
-implementation of every algorithm in this document. It generates the test
-vector files. The Noir and TypeScript implementations must reproduce those
-vectors exactly, and their test suites must fail on any mismatch. The
-vectors cover computed values only. They do not fix the identity of a
-reported error, in agreement with section 3.3.
+A hand computation of Poseidon2 is not practical.
+The shared Rust reference generates the Poseidon2 test vectors.
+The Noir and TypeScript implementations must reproduce those vectors exactly.
+The Rust and TypeScript identifier implementations must match the independent SHA-256 vectors in `fixtures/identity_vectors.json`.
+Their test suites must fail on any mismatch.
+
+The vectors cover computed values only.
+They do not fix the identity of a reported error, in agreement with section 3.3.
 
 The vector file must cover each fixed input count of this protocol: 2,
 3, 4, and 7. The reserve set hash of section 3.3 has a variable count,
@@ -308,20 +309,12 @@ The circuit recomputes both hashes from the private balance and salt.
 An inclusion dispute exposes the identifier, commitment, position, and path.
 It does not expose the balance or salt.
 
-- `id` is an opaque customer identifier as an `Fr` element. It must not be
-  raw personal data. The authority keeps the mapping from `id` to the customer
-  outside this protocol. An identifier must not be zero, because section 4.3
-  reserves zero for padding. An identifier must not appear twice in one
-  liability set, because an inclusion package proves one leaf, and a
-  repeated identifier would let the authority split one liability across
-  two leaves that each show a partial balance.
-  A scheme that derives the identifier from customer data must meet two further
-  conditions, and both are easy to miss. The input must carry enough entropy,
-  because a package states the identifier in clear and the client prints it, so
-  a guessable input lets whoever holds a package name the customer. The input
-  must also come from the customer rather than from the authority, because an
-  authority that assigns the input can give one input to two customers, and one
-  leaf then answers to both while the rule above never fires.
+- `id` is a customer identifier as an `Fr` element, never raw personal data.
+  It must be nonzero and unique within the liability set.
+  Section 4.3 reserves zero for padding.
+  A repeated identifier could split one liability across leaves with partial balances.
+  Version 3 packages use the email and code rule of section 4.5.
+  Version 2 identifiers remain opaque and require an external customer mapping.
 - `balance` is the customer liability as a `u64`, embedded into `Fr`. The
   inner circuit must range-check it as `u64`. The sum accumulator must be
   `u128`.
@@ -423,6 +416,60 @@ These rules bind the tooling of an honest authority. A malicious
 authority can construct witnesses without any list, so the rejections
 are not a guarantee about the authority. Section 6.1 states what the
 customer inclusion check detects instead.
+
+### 4.5 Email and code identifiers
+
+The rule name is `zkpor-email-code/1`.
+It derives an identifier outside the circuit from an email address and a persistent random code.
+The circuit receives only the resulting identifier.
+A customer must recompute it from their own private inputs to check a package's identity claim.
+
+The supported email subset has these rules:
+
+- The address contains ASCII bytes only, with one `@` separator and no surrounding whitespace.
+- The local part uses dot-atom syntax and contains at most 64 bytes.
+- The local part retains its exact case, dots, and `+` suffixes.
+- The domain uses DNS labels of letters, digits, and interior hyphens.
+- Each domain label contains 1 to 63 bytes and starts and ends with a letter or digit.
+- The domain contains at most 253 bytes and is converted to lowercase.
+- The complete address contains at most 254 bytes.
+- Quoted local parts, domain literals, and non-ASCII addresses are unsupported.
+
+The code contains 32 random bytes from the operating system's random source.
+Its text form is canonical unpadded base64url with exactly 43 characters.
+A decoder must reject padding, noncanonical trailing bits, and any other byte count.
+The code remains stable across snapshots and zero-balance closure rows.
+Changing it changes the customer's identifier.
+The code is independent of the issuer master secret and package salts.
+
+Let `E` be the canonical email's ASCII bytes and `C` the decoded 32-byte code.
+For counter `k`, the exact hash preimage is:
+
+```text
+ASCII("zkpor-email-code-id-v1") || 0x00 || u16be(length(E)) || E || C || u32be(k)
+```
+
+Start `k` at zero.
+Compute SHA-256 over that preimage.
+Interpret the digest as an unsigned big-endian integer and reduce it modulo `r` from section 1.1.
+Accept the result if it is nonzero.
+Otherwise, increment `k` and repeat.
+Reject if the `u32` counter is exhausted.
+The [shared Rust implementation](../tools/package/src/identity.rs) defines the derivation and canonical encodings.
+
+The email subject is the identifier's 32-byte big-endian representation in canonical unpadded base64url.
+It contains exactly 43 characters and no prefix, suffix, whitespace, or folded line.
+The subject decoder rejects zero and values at or above `r`.
+The subject identifies the field value; it is not an email signature.
+
+`prepare-identifier-email` creates a private local JSON draft and refuses an existing output path.
+The draft format is `zkpor-identifier-email/1`.
+It contains `identifier_rule`, `email`, `code`, decimal `id`, `subject`, and `body`.
+The draft body contains the code.
+It also states the identifier rule.
+The file uses mode `0600` and requires private retention for later checks.
+The tool sends no email and does not establish mailbox control or signed email delivery.
+No expiration or deletion job manages the file.
 
 ## 5. Tree and authentication path
 
@@ -568,10 +615,11 @@ The two numbers are:
   balances that the registry read inside the attestation transaction, at
   ledger `e`. This value is part of the attestation record. Interfaces
   present it as "reserves at attestation (ledger e)".
-- `observe_reserves`: a separate read-only function that returns the current
-  sum and the ledger of the reading. No attestation covers this value.
-  Interfaces present it as an observation and must state that the
-  attestation does not cover it.
+- `observe_reserves`: a separate function that reads the current sum and ledger.
+  A successful transaction stores the observation under an asset-specific identifier.
+  A simulation stores nothing.
+  No attestation covers this reserve reading.
+  Interfaces must distinguish a stored observation from a live simulation.
 
 A balance read can fail. An account address without a trustline in the
 asset makes the read fail, while a contract address without a balance
@@ -587,7 +635,41 @@ the function returns no sum. One rule covers both readings, so a reserve
 address that cannot hold the asset stays visible on both paths, and a
 reader never sees a sum that a silent zero made complete.
 
-### 6.4 What an accepted attestation proves
+### 6.4 Recorded reserve observations
+
+Any transaction caller can invoke `observe_reserves` without issuer authorization.
+The caller pays the transaction fee.
+Observation identifiers start at one and increase for each accepted observation transaction.
+
+Each observation stores these fields:
+
+- `observation_id`: the asset-specific `u64` identifier;
+- `observed_sum`: the `i128` reserve sum;
+- `observed_ledger`: the `u32` execution ledger;
+- `reserve_set_hash`: the `U256` hash of the reserve set;
+- `attestation_id`: an optional `u64` baseline identifier;
+- `below_attested`: the result of the comparison with the baseline reserve sum.
+
+The baseline is the asset's current attestation, even after its snapshot expires.
+The comparison is `observed_sum < baseline.reserve_sum`.
+It does not compare reserves with liabilities and does not establish insolvency.
+Before the first attestation, no baseline exists.
+A reserve change clears the current attestation and also removes the baseline until another attestation succeeds.
+Without a baseline, `attestation_id` is absent and `below_attested` is false.
+This false value does not state that reserves cover liabilities.
+
+`get_observation(asset, id)` returns the fixed observation.
+`observation_status(asset)` returns `observation_count` and the optional `first_low_observation` identifier.
+The first low observation sets that marker.
+Later observations, attestations, and reserve changes do not clear it.
+An unknown observation returns `ObservationNotFound`.
+Identifier exhaustion returns `ObservationIdOverflow` and stores no observation.
+
+Stored observations remain subject to storage lifetime and restoration rules.
+A reader must report a failed restoration as a failure, not as an empty history.
+A bounded history query fixes the observation count before it reads a range of identifiers.
+
+### 6.5 What an accepted attestation proves
 
 An accepted attestation proves the following. The proof verified under the
 pinned verification keys. The proof binds the liabilities root, the total
@@ -854,9 +936,12 @@ registered asset. `observe_reserves` returns the reading of section 6.3.
 These functions encode their results as contract values of soroban-sdk 26.0.1.
 
 `entry` returns a map with five keys: `authority`, `tier`, `reserves`,
-`reserve_set_hash`, and `attestation`. `observe_reserves` returns a map
-with two keys: `observed_ledger` and `observed_sum`. A consumer must read
-each value by its key, never by its position.
+`reserve_set_hash`, and `attestation`.
+`observe_reserves` and `get_observation` return the six fields of section 6.4.
+`observation_status` returns `observation_count` and `first_low_observation`.
+A consumer must read each value by its key, never by its position.
+Legacy registries return only `observed_ledger` and `observed_sum` from `observe_reserves`.
+They do not support the stored observation API.
 
 A value that names one case of a closed set arrives as a vector. The
 first element is the symbol of the case. The second element, when the
@@ -896,7 +981,8 @@ with parties allowed to see the balance.
 ### 10.2 Schema
 
 The package is a JSON document, UTF-8, with the extension `.zkpor.json`.
-All fields are required, in this order, and no other field is permitted.
+All fields of the selected version are required, in this order.
+No other field is permitted.
 A reader must reject a package that carries a field this table does not
 name. The `format` string is the version gate, so a new field arrives
 only together with a new `format` string; a reader that tolerated unknown
@@ -905,19 +991,26 @@ fields would also tolerate a package that carries a root, which section
 
 | field | type | content |
 |-------|------|---------|
-| `format` | string | exactly `zkpor-inclusion/2` |
+| `format` | string | `zkpor-inclusion/2` or `zkpor-inclusion/3` |
 | `network` | string | the network name, as the deployments file records it |
 | `registry` | string | the registry contract id, StrKey `C...` |
 | `asset` | string | the asset contract id, StrKey `C...` |
 | `snapshot_ledger` | number | the `u32` snapshot ledger of the attestation |
 | `context_hash` | string | the context hash of the fixed attestation, `Fr` hex |
 | `attestation_id` | string | the positive `u64` identifier of the fixed attestation |
+| `identifier_rule` | string | required only in version 3; exactly `zkpor-email-code/1` |
 | `leaf_index` | number | the `u32` global leaf index of section 5.2 |
 | `id` | string | the customer identifier, `Fr` hex |
 | `commitment` | string | the balance commitment, `Fr` hex |
 | `balance` | string | the `u64` balance as a decimal string |
 | `salt` | string | the leaf salt, `Fr` hex |
 | `siblings` | array of string | the authentication path, `Fr` hex each |
+
+Version 2 must not contain `identifier_rule`.
+It remains available for historical inclusion checks with opaque identifiers.
+Version 3 requires the rule of section 4.5 and supports a separate local identity check.
+Both versions use the same tagged leaf construction and fixed attestation lookup.
+Version 1 uses an incompatible leaf construction and is unsupported.
 
 `Fr` hex is `0x` followed by exactly 64 lowercase hexadecimal characters,
 the 32-byte big-endian serialization of section 1.1. A parser must reject
@@ -975,6 +1068,7 @@ and locators. It must never contain:
   entry is the only root source a verifier may accept;
 - any other customer's identifier, balance, or salt;
 - the master secret or any value that derives salts;
+- an email address, private identifier code, email body, or identity draft;
 - direction bits. The direction derives from `leaf_index` per section
   5.4, and stored data that can disagree with derived data is forbidden.
 
@@ -1076,14 +1170,21 @@ The checks, in order:
 
 1. Parse and validate the package per section 10.2. Refuse an unknown
    `format` before reading any other field.
-2. Check `network` and `registry` against the verifier's deployments
+2. If the caller supplies a private identity file, derive its identifier under section 4.5.
+   Require that identifier to equal the package identifier.
+   Refuse a mismatch, malformed identity file, or version 2 package in this mode.
+3. Check `network` and `registry` against the verifier's deployments
    data, per the rule above. Refuse an unmatched pair.
-3. Fetch `get_attestation(asset, attestation_id)` from that registry.
+4. Fetch `get_attestation(asset, attestation_id)` from that registry.
    The stored root is the only root that the verifier may use.
-4. Reject when no entry or no attestation exists, or when the package's
-   `snapshot_ledger` does not equal the attested snapshot.
-5. Recompute the leaf per section 4.1 and walk the siblings per section
+5. Reject an absent attestation.
+   Require the package's `snapshot_ledger` and `context_hash` to equal the stored values.
+6. Recompute the leaf per section 4.1 and walk the siblings per section
    5.4. Accept only when the result equals the attested root.
+
+Without a private identity file, a successful result establishes inclusion only.
+With that file, success requires both identifier agreement and inclusion.
+A standalone identifier match does not establish inclusion or mailbox control.
 
 Each failure class must stay distinct in the result: unsupported format,
 malformed package, untrusted registry or network, no matching
@@ -1092,6 +1193,8 @@ verdict. On a root mismatch the
 verifier must state that a wrong balance, a wrong salt, and a tampered
 path are indistinguishable from its position, and that the customer
 re-obtains the package before concluding anything.
+
+An identity check also distinguishes a foreign identifier, an unsupported identifier rule, and an invalid private identity file.
 
 Inclusion and solvency currency are different claims. When the attested
 snapshot is older than the window of section 6.2, the verifier reports
@@ -1133,4 +1236,5 @@ This burn is an irrevocable allocation in the contract, not a reduction of the n
 
 This path requires earlier inclusion evidence.
 It does not establish a claim for a customer who never appeared in an attestation.
-It also does not bind an opaque identifier to a person.
+It does not prove mailbox control or a person's identity.
+An optional local check binds a version 3 identifier only to the email and code supplied by that customer.

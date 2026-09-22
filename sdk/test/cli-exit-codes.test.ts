@@ -31,7 +31,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { EXIT_CODES, EXIT_NO_VERDICT, EXIT_USAGE } from "../src/inclusion.js";
-import { parsePackage } from "../src/inclusion-package.js";
+import { parsePackage, serializePackage } from "../src/inclusion-package.js";
+import { deriveCustomerIdentifier } from "../src/identity.js";
 import { RegistryRefusedError } from "../src/registry.js";
 import { InfrastructureError } from "../src/network.js";
 import { attestAndReport, completeCommand, failureNote, runReport } from "../src/report.js";
@@ -173,11 +174,24 @@ async function runCliServed(
 }
 
 describe("which generation a read answers about", () => {
-  /** The four registries of the committed file, oldest first. */
+  /** The four registries of this test file, oldest first. */
   const OLDEST = "CC4MA6FWDBG3Y4YXYGDHYEZ36O3YSP7DREGOLBWKP6ZTQQ6IYFFX3KQK";
   const MIDDLE = "CCHUTDKUPWXVUIX6D26SE5NZ5STP74VV4DY2CNVCMNJYOU5PTROLA7MY";
   const PREVIOUS = "CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG";
   const NEWEST = "CAKCWWWKJYPWSFZHECKKL5PMPPQFOGX5UR5XNB3OYYB746ALBP6YNPUF";
+  const testDirectory = mkdtempSync(join(tmpdir(), "zkpor-generation-order-"));
+  const testDeployments = join(testDirectory, "deployments.json");
+  writeFileSync(testDeployments, JSON.stringify(
+    [OLDEST, MIDDLE, PREVIOUS, NEWEST].map((registry) => ({
+      network: "testnet",
+      registry,
+      verifier: registry,
+      aggregator_key_sha256: "aa",
+      registry_wasm_sha256: "bb",
+      verifier_wasm_sha256: "cc",
+      tree_depth: 12,
+    })),
+  ));
 
   /** An asset address. The value is test data. */
   const ASSET = "CBSQOEUZDBCKO4NYNRJJSPOLEIXVWZZ66CZXWRSVUNZTNZK7IKHNNRY3";
@@ -186,7 +200,7 @@ describe("which generation a read answers about", () => {
   const RECORD = assetRecordXdr({ authority: ACCOUNT, reserves: [ACCOUNT] });
 
   const environment = (url: string): Record<string, string> => ({
-    ZKPOR_DEPLOYMENTS: DEPLOYMENTS,
+    ZKPOR_DEPLOYMENTS: testDeployments,
     ZKPOR_RPC_URL: url,
   });
 
@@ -439,6 +453,44 @@ describe("what the command line writes to its output", () => {
     const answer = runCli(["entry", "not-an-address"]);
     expect(answer.stderr).toContain("not a Stellar account address");
     expect(answer.stdout).toBe("");
+  });
+});
+
+describe("the private identity option", () => {
+  it("refuses a legacy package and a foreign identifier before a chain read", () => {
+    const directory = mkdtempSync(join(tmpdir(), "zkpor-identity-cli-"));
+    const identityPath = join(directory, "identity.json");
+    const oldPath = join(directory, "legacy.zkpor.json");
+    const foreignPath = join(directory, "foreign.zkpor.json");
+    const code = "A".repeat(43);
+    const email = "Alice@example.com";
+    writeFileSync(identityPath, JSON.stringify({ email, code }));
+    const old = parsePackage(readFileSync(join(HERE, "..", "..", "fixtures", "synthetic_package_v2.zkpor.json"), "utf8"));
+    writeFileSync(oldPath, serializePackage(old));
+    const legacy = runCli(["verify-inclusion", oldPath, DEPLOYMENTS, "--identity-file", identityPath]);
+    expect(legacy.code, legacy.stderr).toBe(EXIT_CODES["unsupported-identifier-rule"]);
+    const ownId = deriveCustomerIdentifier(email, code);
+    writeFileSync(foreignPath, serializePackage({
+      ...old,
+      format: "zkpor-inclusion/3",
+      identifierRule: "zkpor-email-code/1",
+      id: ownId === 1n ? 2n : 1n,
+    }));
+    const foreign = runCli(["verify-inclusion", foreignPath, DEPLOYMENTS, "--identity-file", identityPath]);
+    expect(foreign.code).toBe(EXIT_CODES["foreign-identifier"]);
+    for (const answer of [legacy, foreign]) {
+      expect(answer.stdout).not.toContain(email);
+      expect(answer.stdout).not.toContain(code);
+      expect(answer.stderr).not.toContain(email);
+      expect(answer.stderr).not.toContain(code);
+    }
+  });
+
+  it("reports an absent private file without echoing its path", () => {
+    const path = join(tmpdir(), "zkpor-private-identity-that-is-absent.json");
+    const answer = runCli(["verify-inclusion", path, "--identity-file", path]);
+    expect(answer.code).toBe(EXIT_NO_VERDICT);
+    expect(answer.stderr).not.toContain(path);
   });
 });
 

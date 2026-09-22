@@ -13,6 +13,9 @@
  */
 
 import {
+  IDENTIFIER_RULE,
+  IDENTITY_PACKAGE_FIELDS,
+  IDENTITY_PACKAGE_FORMAT,
   JSON_INDENT,
   PACKAGE_EXTENSION,
   PACKAGE_FIELDS,
@@ -27,6 +30,7 @@ import { balanceCommitment } from "./hashes.js";
 /** The parsed content of one inclusion package. */
 export interface InclusionPackage {
   readonly format: string;
+  readonly identifierRule?: typeof IDENTIFIER_RULE;
   readonly network: string;
   readonly registry: string;
   readonly asset: string;
@@ -45,7 +49,7 @@ export interface InclusionPackage {
 export class UnsupportedFormatError extends Error {
   constructor(readonly found: string) {
     super(
-      `this reader supports the format ${PACKAGE_FORMAT} only, and the package names ${found}`,
+      `this reader supports ${PACKAGE_FORMAT} and ${IDENTITY_PACKAGE_FORMAT}, and the package names ${found}`,
     );
     this.name = "UnsupportedFormatError";
   }
@@ -116,19 +120,23 @@ export function parsePackage(text: string): InclusionPackage {
   if (typeof format !== "string") {
     malformed("the field format must be a string");
   }
-  if (format !== PACKAGE_FORMAT) {
+  if (format !== PACKAGE_FORMAT && format !== IDENTITY_PACKAGE_FORMAT) {
     throw new UnsupportedFormatError(format);
   }
+  const fields = format === PACKAGE_FORMAT ? PACKAGE_FIELDS : IDENTITY_PACKAGE_FIELDS;
 
   for (const key of Object.keys(source)) {
-    if (!PACKAGE_FIELDS.some((field) => field === key)) {
-      malformed(`the format ${PACKAGE_FORMAT} does not name the field ${key}`);
+    if (!fields.some((field) => field === key)) {
+      malformed(`the format ${format} does not name the field ${key}`);
     }
   }
-  for (const key of PACKAGE_FIELDS) {
+  for (const key of fields) {
     if (source[key] === undefined) {
       malformed(`the package carries no field ${key}`);
     }
+  }
+  if (format === IDENTITY_PACKAGE_FORMAT && stringField(source, "identifier_rule") !== IDENTIFIER_RULE) {
+    malformed("the identifier rule is not supported");
   }
 
   const siblingsValue = source["siblings"];
@@ -162,6 +170,7 @@ export function parsePackage(text: string): InclusionPackage {
   }
   return {
     format,
+    ...(format === IDENTITY_PACKAGE_FORMAT ? { identifierRule: IDENTIFIER_RULE } : {}),
     network: stringField(source, "network"),
     registry: stringField(source, "registry"),
     asset: stringField(source, "asset"),
@@ -205,14 +214,24 @@ export function checkDepth(entry: InclusionPackage, treeDepth: number): void {
  * spaces, one element per line, and one line feed at the end.
  */
 export function serializePackage(entry: InclusionPackage): string {
+  if (entry.format !== PACKAGE_FORMAT && entry.format !== IDENTITY_PACKAGE_FORMAT) {
+    throw new UnsupportedFormatError(entry.format);
+  }
+  if (
+    (entry.format === PACKAGE_FORMAT && entry.identifierRule !== undefined) ||
+    (entry.format === IDENTITY_PACKAGE_FORMAT && entry.identifierRule !== IDENTIFIER_RULE)
+  ) {
+    malformed("the identifier rule does not match the package format");
+  }
   const ordered = {
-    format: PACKAGE_FORMAT,
+    format: entry.format,
     network: entry.network,
     registry: entry.registry,
     asset: entry.asset,
     snapshot_ledger: entry.snapshotLedger,
     context_hash: toHex(entry.contextHash),
     attestation_id: entry.attestationId.toString(10),
+    ...(entry.format === IDENTITY_PACKAGE_FORMAT ? { identifier_rule: IDENTIFIER_RULE } : {}),
     leaf_index: entry.leafIndex,
     id: toHex(entry.id),
     commitment: toHex(entry.commitment),

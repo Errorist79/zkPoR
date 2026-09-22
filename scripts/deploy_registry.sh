@@ -2,11 +2,8 @@
 # Build and deploy the registry contract, and show that the wasm on chain is
 # the wasm this command produced.
 #
-# The registry had no deploy path. A contract deployed by hand carries whatever
-# the hand that deployed it built, and generation 2 shows what that costs: its
-# registry is 65,185 bytes where this command produces 33,364, because it was
-# built without the release profile of this workspace, so nobody can rebuild
-# what the network runs.
+# The release profile determines the contract bytes. This command compares
+# the deployed bytes with the build so that a reader can reproduce them.
 #
 # The order is not free. The registry constructor asks the verifier for its
 # verification key and refuses unless the key hashes to the value that the

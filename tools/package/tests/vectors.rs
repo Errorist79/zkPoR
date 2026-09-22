@@ -21,6 +21,7 @@ use std::{env as std_env, fs, path::PathBuf};
 use zkpor_context::{balance_commitment, leaf_hash, ADDRESS_PAYLOAD_BYTES};
 use zkpor_package::{
     fr::{fr_hex, to_big, to_fr},
+    identity::IdentifierRule,
     new_env,
     schema::{
         json_string, package_filename, Package, JSON_INDENT, PACKAGE_EXTENSION, PACKAGE_FORMAT,
@@ -227,6 +228,7 @@ fn package_json(
 ) -> String {
     let (id, balance, salt) = leaf_parts(env, tree, index);
     let package = Package {
+        identifier_rule: IdentifierRule::Legacy,
         network: NETWORK.to_string(),
         registry: strkey(env, REGISTRY_PAYLOAD),
         asset: strkey(env, ASSET_PAYLOAD),

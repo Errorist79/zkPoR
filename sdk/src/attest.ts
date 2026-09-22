@@ -17,7 +17,7 @@ import {
   nativeToScVal,
   rpc,
 } from "@stellar/stellar-sdk";
-import { ATTESTATION_MAX_AGE_LEDGERS, MAX_U32 } from "./constants.js";
+import { ATTESTATION_MAX_AGE_LEDGERS, MAX_U32, SUBMISSION_TIMEOUT_SECONDS } from "./constants.js";
 import { InfrastructureError, latestLedger } from "./network.js";
 import type { NetworkConfig } from "./network.js";
 import { registryErrorCode } from "./registry-errors.js";
@@ -102,7 +102,7 @@ export async function submitAttestation(
         nativeToScVal(Buffer.from(input.proof), { type: "bytes" }),
       ),
     )
-    .setTimeout(300)
+    .setTimeout(SUBMISSION_TIMEOUT_SECONDS)
     .build();
 
   let answer: rpc.Api.SimulateTransactionResponse;

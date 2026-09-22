@@ -12,7 +12,9 @@
  * attestation record. The observation never enters it.
  */
 
-import type { Attestation, AssetRecord, ReserveDiagnosis, ReserveObservation } from "@zkpor/sdk";
+import type {
+  Attestation, AssetRecord, ObservationStatus, ReserveDiagnosis, ReserveObservation, StoredReserveObservation,
+} from "@zkpor/sdk";
 import { solvencyLapsed } from "@zkpor/sdk";
 
 /**
@@ -35,6 +37,17 @@ export interface ObservedReserves {
   readonly sum: bigint;
   readonly observedLedger: number;
 }
+
+/** A stored status cannot be inferred from the result of a live simulation. */
+export type RecordedObservationView =
+  | { readonly kind: "unsupported" }
+  | { readonly kind: "failed"; readonly reason: string; readonly firstLowId: bigint | undefined }
+  | {
+    readonly kind: "available";
+    readonly status: ObservationStatus;
+    readonly latest: StoredReserveObservation | undefined;
+    readonly firstLow: StoredReserveObservation | undefined;
+  };
 
 /** Whether the attested reserves reach the attested liabilities. */
 export type Coverage = "reserves-reach-liabilities" | "reserves-fall-short";
@@ -117,6 +130,7 @@ export interface AssetView {
   readonly observed: ObservedReserves | undefined;
   /** The reason the observation gave no sum, when the read failed. */
   readonly observationFailure: string | undefined;
+  readonly recordedObservations: RecordedObservationView;
   /**
    * The balance of each reserve address on its own.
    *

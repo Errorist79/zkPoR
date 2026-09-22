@@ -118,13 +118,22 @@ fn record_case(env: &Env, case: &str, registry: &Address, asset: &Address) -> St
 /// The reserve observation, encoded, with the values it must decode to.
 fn observation_case(env: &Env, case: &str, registry: &Address, asset: &Address) -> String {
     let observation = RegistryClient::new(env, registry).observe_reserves(asset);
+    let attestation_id = observation
+        .attestation_id
+        .map(|id| quoted(&id.to_string()))
+        .unwrap_or_else(|| String::from("null"));
     std::format!(
         "{{\"case\": {}, \"call\": \"observe_reserves\", \"scval\": {},\n      \
-         \"expected\": {{\"observed_sum\": {}, \"observed_ledger\": {}}}}}",
+         \"expected\": {{\"observation_id\": {}, \"observed_sum\": {}, \
+         \"observed_ledger\": {}, \"reserve_set_hash\": {}, \
+         \"attestation_id\": {attestation_id}, \"below_attested\": {}}}}}",
         quoted(case),
         quoted(&encoded(env, &observation)),
+        quoted(&observation.observation_id.to_string()),
         quoted(&std::format!("{}", observation.observed_sum)),
-        observation.observed_ledger
+        observation.observed_ledger,
+        quoted(&hex_u256(&observation.reserve_set_hash)),
+        observation.below_attested
     )
 }
 

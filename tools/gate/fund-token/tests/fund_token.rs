@@ -1,13 +1,12 @@
 //! What this token answers, and what it refuses.
 //!
-//! The cases read the two functions that the registry calls, and the mint that
-//! puts a balance there to read. Each refusal names the state it creates rather
-//! than the line it expects to reach.
+//! The cases cover the registry interface, mint authorization, and holder transfers.
 
 use gate_fund_token::{Error, FundToken, FundTokenClient};
 use soroban_sdk::{
-    testutils::{Address as _, MockAuth, MockAuthInvoke},
-    Address, Env, IntoVal,
+    testutils::{Address as _, Events as _, MockAuth, MockAuthInvoke},
+    token::TokenClient,
+    Address, Env, IntoVal, MuxedAddress,
 };
 
 /// One token, with a fresh administrator.
@@ -129,4 +128,106 @@ fn a_mint_without_the_administrator_is_refused() {
         .try_mint(&holder, &500);
     assert!(result.is_err());
     assert_eq!(token.balance(&holder), 0);
+}
+
+const TRANSFER_BALANCE: i128 = 500;
+const TRANSFER_AMOUNT: i128 = 100;
+
+#[test]
+fn the_standard_client_moves_only_the_requested_balance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, token) = token(&env);
+    let holder = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    token.mint(&holder, &TRANSFER_BALANCE);
+    TokenClient::new(&env, &token.address).transfer(
+        &holder,
+        MuxedAddress::from(&recipient),
+        &TRANSFER_AMOUNT,
+    );
+    assert_eq!(env.events().all().events().len(), 1);
+    assert_eq!(token.balance(&holder), TRANSFER_BALANCE - TRANSFER_AMOUNT);
+    assert_eq!(token.balance(&recipient), TRANSFER_AMOUNT);
+}
+
+#[test]
+fn an_administrator_cannot_transfer_a_holders_balance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, token) = token(&env);
+    let holder = Address::generate(&env);
+    let recipient = MuxedAddress::from(Address::generate(&env));
+    token.mint(&holder, &TRANSFER_BALANCE);
+    env.mock_auths(&[]);
+    let result = token
+        .mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &token.address,
+                fn_name: "transfer",
+                args: (holder.clone(), recipient.clone(), TRANSFER_AMOUNT).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .try_transfer(&holder, &recipient, &TRANSFER_AMOUNT);
+    assert!(result.is_err());
+    assert_eq!(token.balance(&holder), TRANSFER_BALANCE);
+    assert_eq!(token.balance(&recipient.address()), 0);
+    token
+        .mock_auths(&[MockAuth {
+            address: &holder,
+            invoke: &MockAuthInvoke {
+                contract: &token.address,
+                fn_name: "transfer",
+                args: (holder.clone(), recipient.clone(), TRANSFER_AMOUNT).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .transfer(&holder, &recipient, &TRANSFER_AMOUNT);
+    assert_eq!(token.balance(&holder), TRANSFER_BALANCE - TRANSFER_AMOUNT);
+}
+
+#[test]
+fn negative_excess_and_overflow_transfers_change_neither_balance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, token) = token(&env);
+    let holder = Address::generate(&env);
+    let recipient = MuxedAddress::from(Address::generate(&env));
+    token.mint(&holder, &TRANSFER_BALANCE);
+    assert_eq!(
+        token.try_transfer(&holder, &recipient, &-1),
+        Err(Ok(Error::AmountNegative))
+    );
+    assert_eq!(
+        token.try_transfer(&holder, &recipient, &(TRANSFER_BALANCE + 1)),
+        Err(Ok(Error::InsufficientBalance))
+    );
+    assert_eq!(token.balance(&holder), TRANSFER_BALANCE);
+    assert_eq!(token.balance(&recipient.address()), 0);
+    token.mint(&recipient.address(), &i128::MAX);
+    assert_eq!(
+        token.try_transfer(&holder, &recipient, &TRANSFER_AMOUNT),
+        Err(Ok(Error::BalanceOverflow))
+    );
+    assert_eq!(token.balance(&holder), TRANSFER_BALANCE);
+    assert_eq!(token.balance(&recipient.address()), i128::MAX);
+}
+
+#[test]
+fn self_and_zero_transfers_preserve_balances() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, token) = token(&env);
+    let holder = Address::generate(&env);
+    let recipient = MuxedAddress::from(Address::generate(&env));
+    token.mint(&holder, &i128::MAX);
+    token.transfer(&holder, MuxedAddress::from(&holder), &i128::MAX);
+    token.transfer(&holder, &recipient, &0);
+    assert_eq!(token.balance(&holder), i128::MAX);
+    assert_eq!(token.balance(&recipient.address()), 0);
+    token.transfer(&holder, &recipient, &i128::MAX);
+    assert_eq!(token.balance(&holder), 0);
+    assert_eq!(token.balance(&recipient.address()), i128::MAX);
 }

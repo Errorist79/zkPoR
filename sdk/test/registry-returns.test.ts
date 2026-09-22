@@ -18,6 +18,7 @@ import {
   decodeAttestationEvent,
   decodeReserveObservation,
   decodeStoredAttestation,
+  decodeStoredObservation,
 } from "../src/registry.js";
 import { InfrastructureError } from "../src/network.js";
 import { toHex } from "../src/fr.js";
@@ -109,10 +110,18 @@ describe("the reserve observation", () => {
 
   it.each(observations)("the client decoder reads the case $case", (entry) => {
     const decoded = decodedRecord(decode(entry.scval));
-    expect(Object.keys(decoded).sort()).toEqual(["observed_ledger", "observed_sum"]);
+    expect(Object.keys(decoded).sort()).toEqual([
+      "attestation_id", "below_attested", "observation_id", "observed_ledger", "observed_sum", "reserve_set_hash",
+    ]);
     const observation = decodeReserveObservation(decode(entry.scval));
     expect(observation.observedSum.toString(10)).toBe(entry.expected.observed_sum);
     expect(observation.observedLedger).toBe(entry.expected.observed_ledger);
+    expect(observation.supportsRecordedObservations).toBe(true);
+    const stored = decodeStoredObservation(decoded);
+    expect(stored.observationId.toString()).toBe(entry.expected.observation_id);
+    expect(stored.attestationId?.toString() ?? null).toBe(entry.expected.attestation_id);
+    expect(stored.belowAttested).toBe(entry.expected.below_attested);
+    expect(toHex(stored.reserveSetHash)).toBe(entry.expected.reserve_set_hash);
   });
 });
 

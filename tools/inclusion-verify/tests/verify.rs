@@ -7,10 +7,11 @@ use std::cell::RefCell;
 use zkpor_context::{balance_commitment, leaf_hash, ATTESTATION_MAX_AGE_LEDGERS};
 use zkpor_inclusion_verify::{
     chain::{Attestation, Chain, Entry, NoVerdict},
-    exit_code, verify, Verdict,
+    exit_code, verify, verify_with_identity, Verdict,
 };
 use zkpor_package::{
     fr::{to_big, to_fr},
+    identity::{derive_identifier, encode_code, IdentifierRule, IDENTIFIER_BYTES},
     new_env,
     schema::{Package, PACKAGE_FORMAT},
     tree::{path_in_levels, subtree_root, tree_levels},
@@ -74,6 +75,7 @@ fn fixture(env: &Env) -> (Package, Attestation) {
     let siblings = path_in_levels(&tree_levels(env, &leaves), LEAF as usize);
     let (id, balance, salt) = row(LEAF as usize);
     let package = Package {
+        identifier_rule: IdentifierRule::Legacy,
         network: NETWORK.to_string(),
         registry: RETIRED.to_string(),
         asset: ASSET.to_string(),
@@ -162,6 +164,95 @@ fn a_package_of_a_retired_generation_verifies_against_the_attested_root() {
         chain.asked_ids.borrow().as_slice(),
         [package.attestation_id]
     );
+}
+
+fn own_identity_fixture(env: &Env) -> (Package, Attestation, String) {
+    let code = encode_code(&[0u8; IDENTIFIER_BYTES]);
+    let id = derive_identifier(env, "Alice@EXAMPLE.COM", &code).unwrap();
+    let identity = serde_json::json!({"email": "Alice@example.com", "code": code}).to_string();
+    let (mut package, mut attestation) = fixture(env);
+    package.id = id;
+    package.identifier_rule = IdentifierRule::EmailCodeV1;
+    let mut leaves: Vec<U256> = (0..CAPACITY).map(|index| leaf(env, index)).collect();
+    leaves[LEAF as usize] = leaf_hash(
+        env,
+        &to_fr(env, &package.id),
+        &to_fr(env, &package.commitment),
+    );
+    package.siblings = path_in_levels(&tree_levels(env, &leaves), LEAF as usize)
+        .iter()
+        .map(to_big)
+        .collect();
+    attestation.final_root = to_big(&subtree_root(env, &leaves));
+    (package, attestation, identity)
+}
+
+#[test]
+fn own_identity_requires_both_the_id_match_and_the_attested_root() {
+    let env = new_env();
+    let (package, attestation, identity) = own_identity_fixture(&env);
+    let chain = FakeChain::holding(attestation.clone());
+    let own = verify_with_identity(
+        &env,
+        &package.to_json(),
+        &deployments(),
+        &chain,
+        Some(&identity),
+    )
+    .unwrap();
+    assert!(matches!(
+        own,
+        Verdict::Included {
+            identity_confirmed: true,
+            ..
+        }
+    ));
+    assert_eq!(exit_code(&own), 0);
+
+    let foreign = identity.replace("Alice", "alice");
+    let chain = FakeChain::holding(attestation.clone());
+    let verdict = verify_with_identity(
+        &env,
+        &package.to_json(),
+        &deployments(),
+        &chain,
+        Some(&foreign),
+    )
+    .unwrap();
+    assert_eq!(verdict, Verdict::ForeignIdentifier);
+    assert!(chain.asked.borrow().is_empty());
+
+    let mut wrong = attestation;
+    wrong.final_root += BigUint::from(1u8);
+    let chain = FakeChain::holding(wrong);
+    let verdict = verify_with_identity(
+        &env,
+        &package.to_json(),
+        &deployments(),
+        &chain,
+        Some(&identity),
+    )
+    .unwrap();
+    assert!(matches!(verdict, Verdict::RootMismatch { .. }));
+}
+
+#[test]
+fn a_legacy_package_cannot_claim_an_email_identity() {
+    let env = new_env();
+    let (package, attestation) = fixture(&env);
+    let chain = FakeChain::holding(attestation);
+    let identity =
+        r#"{"email":"Alice@example.com","code":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#;
+    let verdict = verify_with_identity(
+        &env,
+        &package.to_json(),
+        &deployments(),
+        &chain,
+        Some(identity),
+    )
+    .unwrap();
+    assert_eq!(verdict, Verdict::UnsupportedIdentifierRule);
+    assert!(chain.asked.borrow().is_empty());
 }
 
 #[test]

@@ -75,8 +75,8 @@ import type { CommandResult } from "./report.js";
 const USAGE = `zkpor <command> [arguments]
 
 Commands:
-  verify-inclusion <package.zkpor.json> [deployments.json]
-      Check one customer package against the registry.
+  verify-inclusion <package.zkpor.json> [deployments.json] [--identity-file <private.json>]
+      Check one package against the registry and, if supplied, your own email and code.
 
   entry <asset>
       Print the registry record of one asset.
@@ -193,13 +193,38 @@ async function commandVerifyInclusion(args: readonly string[]): Promise<CommandR
   if (packagePath === undefined) {
     fail(USAGE, EXIT_USAGE);
   }
+  let deploymentsPath: string | undefined;
+  let identityPath: string | undefined;
+  for (let index = 1; index < args.length; index += 1) {
+    const value = args[index];
+    if (value === "--identity-file") {
+      if (identityPath !== undefined || args[index + 1] === undefined) {
+        fail(USAGE, EXIT_USAGE);
+      }
+      identityPath = args[index + 1];
+      index += 1;
+    } else if (value !== undefined && !value.startsWith("--") && deploymentsPath === undefined) {
+      deploymentsPath = value;
+    } else {
+      fail(USAGE, EXIT_USAGE);
+    }
+  }
+  let identityText: string | undefined;
+  if (identityPath !== undefined) {
+    try {
+      identityText = await readFile(identityPath, "utf8");
+    } catch {
+      fail("the private identity file cannot be read", EXIT_NO_VERDICT);
+    }
+  }
   const config = networkConfig();
   const verdict = await verifyInclusion({
     packageText: await readFile(packagePath, "utf8"),
-    deploymentsText: await deploymentsText(args[1]),
+    deploymentsText: await deploymentsText(deploymentsPath),
     server: openServer(config),
     config,
     readOptions: readOptions(),
+    ...(identityText === undefined ? {} : { identityText }),
   });
   return { lines: verdictLines(verdict), code: exitCode(verdict) };
 }

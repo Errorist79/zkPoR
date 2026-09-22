@@ -74,6 +74,27 @@ export const MAX_U32 = 4294967295;
 /** The exact `format` string of the inclusion package schema. */
 export const PACKAGE_FORMAT = "zkpor-inclusion/2";
 
+/** The package format that states the email and code identifier rule. */
+export const IDENTITY_PACKAGE_FORMAT = "zkpor-inclusion/3";
+
+/** The identifier rule that the email and code define. */
+export const IDENTIFIER_RULE = "zkpor-email-code/1";
+
+/** The tag and separator that start an identifier hash. */
+export const IDENTIFIER_DOMAIN = "zkpor-email-code-id-v1\0";
+
+/** The byte count of a random identifier code. */
+export const IDENTIFIER_CODE_BYTES = FR_BYTES;
+
+/** The character count of a code or identifier in base64url form. */
+export const IDENTIFIER_TEXT_CHARS = 43;
+
+/** The maximum byte counts that the supported mailbox form accepts. */
+export const EMAIL_LOCAL_MAX_BYTES = 64;
+export const EMAIL_ADDRESS_MAX_BYTES = 254;
+export const EMAIL_DOMAIN_MAX_BYTES = 253;
+export const EMAIL_DOMAIN_LABEL_MAX_BYTES = 63;
+
 /** The filename extension of an inclusion package. */
 export const PACKAGE_EXTENSION = "zkpor.json";
 
@@ -98,6 +119,13 @@ export const PACKAGE_FIELDS = [
   "balance",
   "salt",
   "siblings",
+] as const;
+
+/** The fields of a package with an email and code identifier. */
+export const IDENTITY_PACKAGE_FIELDS = [
+  ...PACKAGE_FIELDS.slice(0, 7),
+  "identifier_rule",
+  ...PACKAGE_FIELDS.slice(7),
 ] as const;
 
 /** The element count of the aggregator public input vector. */
@@ -145,7 +173,10 @@ export const FIXTURE_DIRECTORY = "fixtures";
 /** The name of the directory that holds the packages of the customers. */
 export const PACKAGES_DIRECTORY_NAME = "packages";
 
-/** The largest event count that one history page requests. */
+/** The maximum lifetime of a submitted transaction, in seconds. */
+export const SUBMISSION_TIMEOUT_SECONDS = 300;
+
+/** The largest record or event count that one history page requests. */
 export const HISTORY_PAGE_LIMIT = 200;
 
 /** The file mode that the master secret file must not exceed. */

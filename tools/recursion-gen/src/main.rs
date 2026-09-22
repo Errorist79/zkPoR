@@ -69,6 +69,10 @@ use zkpor_context::{
 use zkpor_package::{
     deployments,
     fr::{fr_hex, hex_bytes, parse_fr, to_big, to_fr},
+    identity::{
+        derive_identifier, prepare_identifier_email, IdentifierRule, IDENTIFIER_RULE,
+        LEGACY_IDENTIFIER_RULE,
+    },
     new_env,
     schema::{package_filename, Package},
     tree::{path_in_levels, root_from_path, subtree_root, tree_levels},
@@ -99,6 +103,7 @@ const DEPLOYMENTS_FILE: &str = "scripts/deployments.json";
 /// The authority-side redacted tree of one generation run.
 const GENERATION_FILE: &str = "generation.json";
 const ANSWER_MANIFEST_FORMAT: &str = "zkpor-redacted-tree/1";
+const IDENTIFIER_EMAIL_DRAFT_FORMAT: &str = "zkpor-identifier-email/1";
 /// Mode of every directory that the generation step creates, and of every file
 /// it writes. A package holds one customer's balance.
 const PACKAGE_DIR_MODE: u32 = 0o700;
@@ -191,24 +196,122 @@ fn assert_identifier_rules(env: &Env, rows: &[(BigUint, u64)]) {
 /// rules run before the reader returns. An invalid list therefore never
 /// becomes a tree: a tree that a wrong list builds is already wrong, and an
 /// attestation over it can leave a customer without a provable leaf.
-fn read_customers(env: &Env, path: &Path) -> Vec<(BigUint, u64)> {
-    let mut rows = Vec::new();
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CustomerEntry {
+    id: BigUint,
+    balance: u64,
+    identifier_rule: IdentifierRule,
+}
+
+const VERSIONED_CUSTOMER_HEADER: &str = "id,balance,identifier_rule,email,code";
+const LEGACY_CUSTOMER_HEADER: &str = "id,balance";
+
+fn versioned_decimal(value: &str) -> bool {
+    !value.is_empty()
+        && (value == "0" || !value.starts_with('0'))
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn read_customer_entries(env: &Env, path: &Path) -> Vec<CustomerEntry> {
     let text = fs::read_to_string(path).unwrap_or_else(|_| panic!("read {}", path.display()));
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with("id,") {
-            continue;
+    let mut lines = text.lines().enumerate().filter_map(|(number, line)| {
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            None
+        } else {
+            Some((number + 1, line))
         }
-        let (id, bal) = line.split_once(',').expect("id,balance");
-        let id = id
-            .trim()
-            .parse::<BigUint>()
-            .expect("id is a non-negative integer");
-        let bal = bal.trim().parse::<u64>().expect("balance is u64");
-        rows.push((id, bal));
+    });
+    let first = lines.next();
+    let versioned = first.is_some_and(|(_, line)| line == VERSIONED_CUSTOMER_HEADER);
+    let legacy_header = first.is_some_and(|(_, line)| line == LEGACY_CUSTOMER_HEADER);
+    let data = first
+        .filter(|_| !versioned && !legacy_header)
+        .into_iter()
+        .chain(lines);
+    let mut entries = Vec::new();
+    for (number, line) in data {
+        if versioned {
+            let fields: Vec<&str> = line.split(',').collect();
+            assert_eq!(fields.len(), 5, "row {number} needs five customer fields");
+            assert!(
+                versioned_decimal(fields[1]),
+                "row {number} needs a decimal balance"
+            );
+            let balance = fields[1]
+                .parse::<u64>()
+                .unwrap_or_else(|_| panic!("row {number} needs a u64 balance"));
+            let (id, identifier_rule) = match fields[2] {
+                LEGACY_IDENTIFIER_RULE => {
+                    assert!(
+                        fields[3].is_empty() && fields[4].is_empty(),
+                        "row {number} is legacy and cannot carry an email or code"
+                    );
+                    assert!(
+                        versioned_decimal(fields[0]),
+                        "row {number} needs a decimal identifier"
+                    );
+                    let id = fields[0]
+                        .parse::<BigUint>()
+                        .unwrap_or_else(|_| panic!("row {number} needs a decimal identifier"));
+                    (id, IdentifierRule::Legacy)
+                }
+                IDENTIFIER_RULE => {
+                    let id = derive_identifier(env, fields[3], fields[4])
+                        .unwrap_or_else(|reason| panic!("row {number}: {reason}"));
+                    if !fields[0].is_empty() {
+                        assert!(
+                            versioned_decimal(fields[0]),
+                            "row {number} needs a decimal identifier"
+                        );
+                        let supplied = fields[0]
+                            .parse::<BigUint>()
+                            .unwrap_or_else(|_| panic!("row {number} needs a decimal identifier"));
+                        assert_eq!(
+                            supplied, id,
+                            "row {number} identifier differs from its email and code"
+                        );
+                    }
+                    (id, IdentifierRule::EmailCodeV1)
+                }
+                _ => panic!("row {number} has an unsupported identifier rule"),
+            };
+            entries.push(CustomerEntry {
+                id,
+                balance,
+                identifier_rule,
+            });
+        } else {
+            let (id, balance) = line
+                .split_once(',')
+                .unwrap_or_else(|| panic!("row {number} needs id,balance"));
+            let id = id
+                .trim()
+                .parse::<BigUint>()
+                .unwrap_or_else(|_| panic!("row {number} needs a decimal identifier"));
+            let balance = balance
+                .trim()
+                .parse::<u64>()
+                .unwrap_or_else(|_| panic!("row {number} needs a u64 balance"));
+            entries.push(CustomerEntry {
+                id,
+                balance,
+                identifier_rule: IdentifierRule::Legacy,
+            });
+        }
     }
+    let rows: Vec<(BigUint, u64)> = entries
+        .iter()
+        .map(|entry| (entry.id.clone(), entry.balance))
+        .collect();
     assert_identifier_rules(env, &rows);
-    rows
+    entries
+}
+
+fn read_customers(env: &Env, path: &Path) -> Vec<(BigUint, u64)> {
+    read_customer_entries(env, path)
+        .into_iter()
+        .map(|entry| (entry.id, entry.balance))
+        .collect()
 }
 
 struct PriorInput {
@@ -914,6 +1017,41 @@ fn write_private(path: &Path, text: &str) {
         .unwrap_or_else(|_| panic!("write {}", path.display()));
 }
 
+fn write_private_new(path: &Path, text: &str) {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(PACKAGE_FILE_MODE)
+        .open(path)
+        .expect("create a new private identifier email draft");
+    file.write_all(text.as_bytes())
+        .expect("write the private identifier email draft");
+}
+
+fn cmd_prepare_identifier_email(input: &Path, output: &Path) {
+    let text = fs::read_to_string(input).expect("read the private identifier email input");
+    let value: serde_json::Value =
+        serde_json::from_str(&text).expect("the identifier email input is JSON");
+    let email = value
+        .get("email")
+        .and_then(serde_json::Value::as_str)
+        .expect("the identifier email input needs an email string");
+    let draft =
+        prepare_identifier_email(&new_env(), email).expect("prepare the identifier email draft");
+    let output_text = serde_json::to_string_pretty(&serde_json::json!({
+        "format": IDENTIFIER_EMAIL_DRAFT_FORMAT,
+        "identifier_rule": draft.identifier_rule,
+        "email": draft.email,
+        "code": draft.code,
+        "id": draft.id.to_string(),
+        "subject": draft.subject,
+        "body": draft.body,
+    }))
+    .expect("serialize the identifier email draft");
+    write_private_new(output, &(output_text + "\n"));
+    println!("private identifier email draft prepared");
+}
+
 /// The values that a read of the registry entry supplies. No value here comes
 /// from a person: a typed ledger number proves nothing about the chain.
 struct AttestedEntry {
@@ -1000,7 +1138,11 @@ fn write_packages(
         "the context file does not match the stored attestation"
     );
 
-    let customers = read_customers(env, request.customers_file);
+    let customer_entries = read_customer_entries(env, request.customers_file);
+    let customers: Vec<(BigUint, u64)> = customer_entries
+        .iter()
+        .map(|entry| (entry.id.clone(), entry.balance))
+        .collect();
     match request.prior {
         Some(prior) => {
             assert_eq!(prior.id.checked_add(1), Some(request.attested.id));
@@ -1088,6 +1230,7 @@ fn write_packages(
         let siblings: Vec<BigUint> = path_in_levels(&levels, index).iter().map(to_big).collect();
         let leaf_index = index as u32;
         let package = Package {
+            identifier_rule: customer_entries[index].identifier_rule,
             network: request.network.to_string(),
             registry: generation.registry.clone(),
             asset: context.asset.clone(),
@@ -1478,7 +1621,8 @@ fn write_registry_params(key_sha256: &str, inner_key_hash: &BigUint, positions: 
     .expect("write the registry parameters");
 }
 
-const USAGE: &str = "usage: recursion-gen witness <context.toml> <customers.csv> [--network <name> --registry <address> --prior-manifest <file> --prior-attestation-id <id> --prior-root <hex> --prior-context <hex>]\n\
+const USAGE: &str = "usage: recursion-gen prepare-identifier-email <input.json> <new-private-output.json>\n\
+                            recursion-gen witness <context.toml> <customers.csv> [--network <name> --registry <address> --prior-manifest <file> --prior-attestation-id <id> --prior-root <hex> --prior-context <hex>]\n\
                             recursion-gen path <context.toml> <customers.csv> <customer_id>\n\
                             recursion-gen packages <context.toml> <customers.csv> <out_dir> \
                             --network <name> --registry <address> --attested-root <hex> --attested-context <hex> \
@@ -1512,6 +1656,12 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let arg = |i: usize| args.get(i).map(PathBuf::from);
     match args.get(1).map(String::as_str) {
+        Some("prepare-identifier-email") => match (arg(2), arg(3)) {
+            (Some(input), Some(output)) if args.len() == 4 => {
+                cmd_prepare_identifier_email(&input, &output)
+            }
+            _ => usage(),
+        },
         Some("witness") => match (arg(2), arg(3)) {
             (Some(context), Some(customers)) => {
                 let prior = prior_input(&args);
@@ -1770,6 +1920,40 @@ mod tests {
         let rows = read_list("zkpor_rows_ok.csv", "3");
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[2], (BigUint::from(3u32), 30));
+    }
+
+    #[test]
+    fn a_mixed_file_keeps_legacy_ids_and_derives_email_ids() {
+        let env = new_env();
+        let code =
+            zkpor_package::identity::encode_code(&[0u8; zkpor_package::identity::IDENTIFIER_BYTES]);
+        let expected = derive_identifier(&env, "Alice@example.com", &code).unwrap();
+        let path = write_temp(
+            "zkpor_mixed_identity_rows.csv",
+            &format!(
+                "{VERSIONED_CUSTOMER_HEADER}\n1,0,{LEGACY_IDENTIFIER_RULE},,\n,90,{IDENTIFIER_RULE},Alice@EXAMPLE.COM,{code}\n"
+            ),
+        );
+        let entries = read_customer_entries(&env, &path);
+        assert_eq!(entries[0].id, BigUint::from(1u8));
+        assert_eq!(entries[0].balance, 0);
+        assert_eq!(entries[0].identifier_rule, IdentifierRule::Legacy);
+        assert_eq!(entries[1].id, expected);
+        assert_eq!(entries[1].identifier_rule, IdentifierRule::EmailCodeV1);
+    }
+
+    #[test]
+    fn a_supplied_email_id_must_match_the_email_and_code() {
+        let code =
+            zkpor_package::identity::encode_code(&[0u8; zkpor_package::identity::IDENTIFIER_BYTES]);
+        let path = write_temp(
+            "zkpor_wrong_identity_row.csv",
+            &format!(
+                "{VERSIONED_CUSTOMER_HEADER}\n1,90,{IDENTIFIER_RULE},Alice@example.com,{code}\n"
+            ),
+        );
+        let rejected = std::panic::catch_unwind(|| read_customer_entries(&new_env(), &path));
+        assert!(rejected.is_err());
     }
 
     #[test]

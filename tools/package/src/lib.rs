@@ -10,6 +10,7 @@
 
 pub mod deployments;
 pub mod fr;
+pub mod identity;
 pub mod schema;
 pub mod tree;
 

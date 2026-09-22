@@ -114,6 +114,7 @@ or a headline.
   and the liabilities beside it.
 - **Reserves observed now.** A separate read at the ledger it names. No
   attestation covers it, and it enters no comparison on the page.
+  This live simulation creates no stored observation.
 
 The two live in two sibling sections, each with its own name and its own ledger.
 The headline states the result and carries neither number. A test renders the
@@ -124,6 +125,21 @@ nowhere else.
 The observation fails as a whole when one balance read fails, and it names no
 address. The dashboard then reads each reserve balance on its own, which is the
 one read that can name the address that the registry cannot read.
+
+## Recorded reserve observations
+
+The asset page shows stored observations separately from the live simulation.
+It displays the latest stored observation and the permanent first-low observation.
+Each observation names its ledger, reserve set, and optional baseline attestation.
+
+The first-low marker means that recorded reserves fell below the referenced attested reserve sum.
+It does not establish insolvency.
+Later observations, attestations, and reserve changes do not clear the marker.
+An absent baseline means that no comparison occurred.
+
+The page marks legacy observation history as unavailable.
+It reports RPC or restoration failures without presenting an empty history or a clean status.
+If record details fail after the status read, the page still shows the known first-low identifier.
 
 ## A stale attestation
 

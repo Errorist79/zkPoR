@@ -51,36 +51,18 @@ The system does not guarantee the following:
   an old balance set with a fresh ledger passes every check the registry makes.
   The same social mitigation applies as for completeness: a customer whose
   balance changed sees the old figure when they check their own leaf.
-- That the leaf a customer checks belongs to that customer. An inclusion package
-  proves that one leaf sits under the attested root. It does not prove whose
-  leaf it is. The identifier inside the package is opaque, and the mapping from
-  an identifier to a person lives outside this protocol, so nothing on chain
-  binds a package to the person who holds it. An issuer who gives one package to
-  two customers satisfies both checks with one leaf, and the total under the
-  root counts that liability once. The protocol forbids a repeated identifier
-  inside one liability set, which stops one liability being split across two
-  leaves. That rule does not reach the handing out of the files. This limit
-  reaches the mitigation that the two limits above rest on. Those state that a
-  customer who checks their own leaf makes an omission visible. A customer who
-  receives the package of another customer runs the same check, reads a true
-  answer, and sees nothing wrong. So the check passes and tells that customer
-  nothing about their own balance. A customer who cannot confirm that the
-  identifier is theirs trusts the issuer for that step, and trusts it also when
-  the check passes. The client states the identifier for that comparison, and it
-  cannot tell whose identifier it is. A customer who receives the leaf of
-  another customer usually sees a balance that is not their own, and that
-  comparison is the one signal available today. It fails when two customers hold
-  the same balance, which is common at a large issuer for a small round amount.
-  This closes when the identifier commits to something that only the customer
-  can produce. A secret that the customer chooses at enrolment is the cheapest
-  form. The customer recomputes the identifier and compares it with the one the
-  client states, and no key infrastructure is needed. A signing key is the
-  strongest form. A derivation from data that the issuer assigns, such as an
-  account number, does not close it, because the issuer can give two customers
-  one input and a single leaf then answers to both. Such an input must also
-  carry enough entropy, because the package states the identifier in clear, and
-  a guessable input would let whoever holds a package name the customer. This
-  project does none of these.
+- Identity and mailbox control. An inclusion check alone proves that a leaf belongs to an attested root.
+  It does not establish who owns that leaf.
+  Version 2 packages carry an opaque identifier and require an external customer mapping.
+  Version 3 states the `zkpor-email-code/1` identifier rule.
+  With a private identity file, the verifier also checks the identifier against the customer's email and persistent code.
+  A successful combined check requires both identifier agreement and inclusion.
+
+  The customer must use their own email and retained code.
+  Accepting an unfamiliar identity file together with a package does not establish that the package belongs to that customer.
+  Matching an email and code does not prove mailbox control, email delivery, or a person's identity.
+  The draft helper creates no email signature and sends no email.
+  The balance and the completeness of the liability set remain separate claims.
 - The real existence of the off-chain reserves. This is out of scope. It needs an
   auditor attestation or an oracle attestation. The system commits the
   liabilities and leaves an attestation interface.
@@ -98,6 +80,13 @@ Public dispute evidence contains the identifier, commitment, position, and path.
 It contains no balance or salt.
 A customer package still contains its recipient's balance and salt and must remain private.
 
+The email and persistent code stay outside the customer package and public dispute evidence.
+The private identity draft contains both inputs and a body that repeats the code.
+Retain that file privately for future package checks.
+Changing the code changes the identifier and breaks continuity with the previous identifier.
+A leaked code can expose the link between an email address and its public identifier.
+The code does not derive package salts and is not the issuer's master secret.
+
 Each attestation has an asset-specific identifier and a persistent record.
 Package checks select that record, so a later attestation does not change the expected root.
 Persistent records still require storage lifetime management and restoration when the network requires it.
@@ -114,6 +103,18 @@ An unanswered dispute returns that deposit to the disputer and permanently locks
 The bond has no withdrawal path, even before a dispute.
 The protocol pays no bounty and does not reduce the native asset supply.
 Service failure can cause the same nonresponse outcome as an omitted customer.
+
+## Recorded reserve limits
+
+A recorded observation compares current reserves with the referenced attestation's reserve sum, not with its liabilities.
+The first-low marker remains after reserves recover, another attestation succeeds, or the reserve set changes.
+That marker is a historical decrease, not a current insolvency verdict.
+An observation without a baseline makes no comparison.
+The absence of a low marker does not establish continuous coverage between observations.
+
+The dashboard's live simulation stores no observation.
+Stored status reads remain subject to storage lifetime and restoration requirements.
+A failed read must not appear as an empty history or a clean status.
 
 ## Trust assumptions
 

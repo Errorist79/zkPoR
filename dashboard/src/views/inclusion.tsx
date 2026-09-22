@@ -64,7 +64,7 @@ export function InclusionForm(input: { reason?: string }) {
 /**
  * The registry that a verdict names, or nothing when it names none.
  *
- * Only the successful verdict carries one. The six that refuse name two roots,
+ * Only the successful verdict carries one. Refusals name two roots,
  * a reason, or nothing at all, so any sentence about "the registry above"
  * points at something those pages do not show. On the untrusted-deployment
  * verdict it was worse than dangling: the page refuses to read an address and

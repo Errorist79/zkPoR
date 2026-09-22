@@ -31,6 +31,7 @@ import type { ConsentEntry } from "./consent.js";
 import { registryErrorCode } from "./registry-errors.js";
 import { RegistryRefusedError } from "./registry.js";
 import { addressParts } from "./address.js";
+import { SUBMISSION_TIMEOUT_SECONDS } from "./constants.js";
 
 /** The authenticity argument of a registration, one tier per variant. */
 export type AssetAuthenticity =
@@ -148,7 +149,7 @@ async function prepare(
     networkPassphrase: config.networkPassphrase,
   })
     .addOperation(operation)
-    .setTimeout(300)
+    .setTimeout(SUBMISSION_TIMEOUT_SECONDS)
     .build();
 
   let answer: rpc.Api.SimulateTransactionResponse;

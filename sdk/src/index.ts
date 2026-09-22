@@ -35,3 +35,4 @@ export * from "./runlifecycle.js";
 export * from "./runlock.js";
 export * from "./versions.js";
 export * from "./secret.js";
+export * from "./identity.js";
