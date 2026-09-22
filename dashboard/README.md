@@ -231,15 +231,19 @@ bypasses one.
 ## Disputes and issuer answers
 
 Open **Disputes** and select the trusted registry.
-Enter the asset, fixed target attestation ID, and customer identifier.
-Use the canonical hexadecimal identifier that the customer package or watchdog reports.
+Use **Compare full registry addresses** to match the selected address.
+For package evidence, copy the package's registry, asset, and hexadecimal identifier.
+Use the target attestation ID from the watchdog output or opening request.
+The older evidence package can name a different attestation.
+For email evidence, use the values supplied when the dispute opened.
 
-The page shows the stored status and evidence origin.
+The page explains the outcome, deposit settlement, and next steps.
+**Technical details and full identifiers** contains addresses, the contract status, and ledger numbers.
 It distinguishes an absent dispute from a failed read.
 An open dispute remains open after its deadline until a resolution transaction settles.
 `OmissionProven` records nonresponse under the protocol. It is not a cryptographic proof of omission.
 
-For an open dispute, enter the retained `generation.json` path.
+For an open dispute within its answer window, enter the retained `generation.json` path.
 Select **Build and submit answer**.
 The process checks that its issuer key matches the asset authority.
 It checks the complete retained tree against the fixed target before it signs the answer.

@@ -559,6 +559,170 @@ button {
   margin-top: 1.5rem;
   padding: 0.55rem 1.1rem;
 }
+
+.dispute-page {
+  min-width: 0;
+}
+
+.dispute-page h1 {
+  font-size: 1.6rem;
+  margin-bottom: 0.65rem;
+}
+
+.dispute-intro {
+  color: var(--ink-soft);
+  margin-bottom: 1.6rem;
+  max-width: 68ch;
+}
+
+.dispute-page form {
+  margin-bottom: 0;
+}
+
+.dispute-field {
+  margin-top: 1.5rem;
+  min-width: 0;
+}
+
+.dispute-field:first-child {
+  margin-top: 0;
+}
+
+.dispute-field label {
+  font-size: 0.95rem;
+  margin-top: 0;
+}
+
+.dispute-page input:not([type="hidden"]),
+.dispute-page select {
+  background: var(--panel);
+  border: 1px solid var(--edge-strong);
+  border-radius: 2px;
+  box-sizing: border-box;
+  color: var(--ink);
+  display: block;
+  font-size: 1rem;
+  line-height: 1.4;
+  max-width: 100%;
+  min-height: 2.75rem;
+  min-width: 0;
+  padding: 0.6rem 0.7rem;
+  width: 100%;
+}
+
+.dispute-page select,
+.dispute-page option {
+  background: var(--panel);
+  color: var(--ink);
+  font-family: inherit;
+}
+
+.dispute-help {
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin-top: 0.5rem;
+  max-width: 74ch;
+}
+
+.dispute-field-pair {
+  display: grid;
+  gap: 1.5rem;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  margin-top: 1.5rem;
+}
+
+.dispute-field-pair .dispute-field {
+  margin-top: 0;
+}
+
+.dispute-page summary {
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0.3rem 0;
+}
+
+.dispute-registry-details {
+  font-size: 0.85rem;
+  margin-top: 0.65rem;
+}
+
+.dispute-registry-details dl > div + div {
+  margin-top: 1rem;
+}
+
+.dispute-outcome {
+  border-color: var(--edge-strong);
+}
+
+.dispute-outcome h2 {
+  font-size: 1.5rem;
+  line-height: 1.35;
+  max-width: 40ch;
+}
+
+.dispute-answered h2 {
+  color: var(--reach);
+}
+
+.dispute-guidance {
+  border-top: 1px solid var(--edge);
+  display: grid;
+  gap: 1.75rem;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  margin: 1.25rem 0;
+  padding-top: 1.25rem;
+}
+
+.dispute-guidance h3 {
+  margin: 0 0 0.55rem;
+}
+
+.dispute-guidance ul {
+  margin-top: 0;
+}
+
+.dispute-guidance li + li {
+  margin-top: 0.65rem;
+}
+
+.dispute-signing {
+  margin-top: 1.25rem;
+}
+
+.dispute-technical {
+  border-block: 1px solid var(--edge);
+  margin-bottom: 1.5rem;
+  padding: 0.75rem 0;
+}
+
+.dispute-technical dd {
+  overflow-wrap: anywhere;
+}
+
+.dispute-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.5rem;
+}
+
+.dispute-page button:disabled {
+  background: var(--panel);
+  border-color: var(--edge);
+  color: var(--ink-soft);
+}
+
+@media (max-width: 40rem) {
+  .dispute-page section {
+    padding: 1.1rem;
+  }
+
+  .dispute-field-pair,
+  .dispute-guidance {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 `;
 
 /**

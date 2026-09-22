@@ -350,7 +350,7 @@ async function disputePage(query: URLSearchParams, dashboard: Dashboard): Promis
   } catch (cause) {
     return html(400, renderPage(<DisputeForm generations={generationsNewestFirst(
       dashboard.reader.deploymentsText, dashboard.reader.config.network,
-    )} reason={cause instanceof Error ? cause.message : "The dispute selection is invalid."} />, frame));
+    )} fields={query} reason={cause instanceof Error ? cause.message : "The dispute selection is invalid."} />, frame));
   }
   try {
     return html(200, renderPage(<DisputePage view={await readDisputeView(dashboard.reader, selection)} />, frame));

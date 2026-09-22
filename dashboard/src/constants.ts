@@ -134,6 +134,8 @@ export const DISPUTE_FIELDS = {
 } as const;
 
 export const ANSWER_GENERATOR_DIRECTORY = "tools/recursion-gen";
+export const DISPUTE_ADDRESS_PREVIEW_LENGTH = 6;
+export const DISPUTE_DEPOSIT_LABEL = "10 XLM";
 export const ANSWER_TEMP_PREFIX = "zkpor-answer-";
 
 /** The form fields of an attestation run. */
