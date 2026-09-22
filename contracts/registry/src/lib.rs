@@ -37,12 +37,18 @@ use zkpor_context::{
 };
 
 mod disputes;
+mod email;
+pub mod email_params;
 mod history;
 mod observations;
 pub mod params;
 
-pub use disputes::{Bond, Dispute, DisputeStatus, InclusionEvidence};
+pub use disputes::{
+    Bond, Dispute, DisputeEvidence, DisputeOrigin, DisputeStatus, EmailEvidence, InclusionEvidence,
+    InclusionOpening,
+};
 pub use disputes::{ANSWER_WINDOW_LEDGERS, DISPUTE_DEPOSIT_STROOPS, TARGET_MAX_AGE_LEDGERS};
+pub use email::{DkimKey, DkimKeyInput};
 pub use observations::{ObservationStatus, ReserveObservation};
 
 /// XDR discriminant of the native asset. The union carries no arm, so the
@@ -163,6 +169,13 @@ pub enum Error {
     BondOverflow = 33,
     ObservationNotFound = 34,
     ObservationIdOverflow = 35,
+    DkimKeyNotFound = 36,
+    DkimKeyIdOverflow = 37,
+    InvalidDkimKey = 38,
+    InvalidEmailIdentifier = 39,
+    EmailVerifierNotSet = 40,
+    EmailVerifierKeyMismatch = 41,
+    EmailProofRejected = 42,
 }
 
 /// The reasons of the shared encoding keep their identity here. A caller reads
@@ -183,6 +196,7 @@ impl From<ContextError> for Error {
 pub enum DataKey {
     /// The verifier contract that this registry reads proofs through.
     Verifier,
+    EmailVerifier,
     /// The entry of one asset.
     Asset(Address),
     AttestationCount(Address),
@@ -191,6 +205,8 @@ pub enum DataKey {
     Bond(Address),
     Observation(Address, u64),
     ObservationStatus(Address),
+    DkimKeyCount(Address),
+    DkimKey(Address, u64),
 }
 
 /// What the registry verified about the authority at registration.
@@ -475,12 +491,23 @@ impl Registry {
     /// that the registry reads here is the key that the address verifies under
     /// for its whole life. A configured address alone proves nothing, so the
     /// deployment fails when the key is another one.
-    pub fn __constructor(env: Env, verifier: Address) -> Result<(), Error> {
+    pub fn __constructor(
+        env: Env,
+        verifier: Address,
+        email_verifier: Address,
+    ) -> Result<(), Error> {
         let key: Bytes = env.invoke_contract(&verifier, &VK_BYTES_FN, Vec::new(&env));
         if env.crypto().sha256(&key).to_array() != params::AGGREGATOR_KEY_SHA256 {
             return Err(Error::VerifierKeyMismatch);
         }
         env.storage().instance().set(&DataKey::Verifier, &verifier);
+        let email_key: Bytes = env.invoke_contract(&email_verifier, &VK_BYTES_FN, Vec::new(&env));
+        if env.crypto().sha256(&email_key).to_array() != email_params::EMAIL_KEY_SHA256 {
+            return Err(Error::EmailVerifierKeyMismatch);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::EmailVerifier, &email_verifier);
         extend_contract(&env);
         Ok(())
     }

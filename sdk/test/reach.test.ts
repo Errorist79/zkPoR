@@ -194,28 +194,28 @@ const PERMITTED_GLOBALS: readonly {
  * What this package may take from the file system, and which module may take
  * each one.
  *
- * The generator holds the generation gate, and it is the one writer of
- * per-customer files. That rule is prose in the documents, and this table is
- * what keeps it true: a module of this package that could open a customer file
- * and write to it would make a second writer, whatever the prose says.
+ * The generator writes customer packages. The watchdog writes only its own
+ * private transaction journal. This table names both write boundaries.
  *
- * So the entries that change a file are named one by one, with the module that
- * may take each. Nothing here writes the content of a file the caller names.
- * `writeSync` belongs to the run lock and to nothing else, and the lock holds a
- * process identifier rather than anything of a customer.
+ * The entries that change a file are named one by one, with the module that
+ * may take each. `writeSync` belongs to the run lock and writes only its process
+ * identifier.
  */
 const FILE_SYSTEM: readonly { entry: string; modules: readonly string[]; why: string }[] = [
   { entry: "readFile", modules: [], why: "reads a file the caller names" },
   { entry: "readFileSync", modules: [], why: "reads a file the caller names" },
   { entry: "readdirSync", modules: ["witnesses.ts"], why: "lists what the sweep must remove" },
   { entry: "existsSync", modules: ["witnesses.ts"], why: "asks whether the sweep has work" },
-  { entry: "stat", modules: ["secret.ts"], why: "reads the mode of the secret file" },
+  { entry: "stat", modules: ["secret.ts", "watchdog.ts"], why: "checks private file and directory modes" },
+  { entry: "lstat", modules: ["watchdog.ts"], why: "rejects a state file that is not private" },
   {
     entry: "copyFile",
     modules: ["proving.ts"],
     why: "puts the prover input of one batch where the prover reads it",
   },
-  { entry: "mkdir", modules: ["proving.ts"], why: "makes the output directory of a batch" },
+  { entry: "mkdir", modules: ["proving.ts", "watchdog.ts"], why: "makes a batch directory or a private state directory" },
+  { entry: "open", modules: ["watchdog.ts"], why: "creates and syncs only private transaction journal files" },
+  { entry: "rename", modules: ["watchdog.ts"], why: "replaces a private transaction journal atomically" },
   {
     entry: "mkdtemp",
     modules: ["proving.ts"],
@@ -241,6 +241,7 @@ const WRITERS = [
   "appendFileSync",
   "createWriteStream",
   "open",
+  "rename",
 ] as const;
 
 const WATCHED = PERMITTED_GLOBALS.map((each) => each.name);
@@ -327,16 +328,17 @@ describe("what every module of this package may reach", () => {
     expect(counted).toBeGreaterThan(5);
   }, READING_DEADLINE);
 
-  it("names no entry that writes the content of a file, so the generator stays the one writer", () => {
+  it("allows only the watchdog to write a private journal beside the generator", () => {
     for (const name of sourceFiles()) {
       for (const named of namedModulesOf(name)) {
         if (named.specifier !== "node:fs" && named.specifier !== "node:fs/promises") {
           continue;
         }
         for (const entry of named.names) {
+          const writesContent = WRITERS.some((each) => each === entry);
           expect(
-            WRITERS.some((each) => each === entry),
-            `${name} takes ${entry}, which writes the content of a file that a caller names`,
+            writesContent && !(name === "watchdog.ts" && (entry === "open" || entry === "rename")),
+            `${name} takes ${entry}, which can write a file outside the private watchdog journal`,
           ).toBe(false);
         }
       }

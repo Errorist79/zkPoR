@@ -1,0 +1,8 @@
+{
+  "name": "zkpor-email-tools",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22 <23" },
+  "dependencies": { "@zk-email/zkemail-nr": "2.0.0" }
+}

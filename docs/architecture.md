@@ -119,6 +119,8 @@ Components:
    script from this process, and that script follows the run. No
    project-operated service receives a raw balance, a salt, a path, a witness,
    or a key.
+   The dispute page reads a fixed dispute and answers from a retained redacted tree.
+   A separate local answer command uses the same issuer operation.
 6. **TypeScript SDK.** A library that wraps the proof generation flow and the
    verification flow, for other teams to integrate.
 
@@ -274,6 +276,8 @@ A dispute requires a 10 XLM deposit.
 A valid answer transfers the deposit to the issuer.
 Nonresponse returns it to the disputer and permanently locks the optional bond.
 The bond has no withdrawal path, and the protocol pays no bounty.
+The local answer driver validates the complete retained tree against the fixed target.
+It sends only a redacted inclusion path and rereads the dispute after settlement.
 
 ---
 

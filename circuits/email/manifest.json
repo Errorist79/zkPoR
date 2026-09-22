@@ -1,0 +1,12 @@
+{
+  "format": "zkpor-email-circuit/1",
+  "nargo": "1.0.0-beta.5",
+  "bb": "0.87.0",
+  "scheme": "ultra_honk",
+  "oracle_hash": "keccak",
+  "zkemail_commit": "8264758c6dbd6d5e29a3d58b482c3eb014424efb",
+  "key_sha256": "dc8216da163a16da9dfef9a2dbe78d74b40b575fa6cccbdcd033277c520f45ef",
+  "key_bytes": 1760,
+  "source_sha256": "fc3ab54a20ee826127919314a852906749d6989adbf0cdddd293e577867217c2",
+  "public_input_count": 9
+}

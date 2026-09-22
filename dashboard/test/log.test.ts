@@ -154,6 +154,7 @@ describe("what a whole session writes to the log", () => {
             submit: async () =>
               await Promise.resolve({
                 ledger: 5_010,
+                attestationId: 2n,
                 transactionHash: "a".repeat(64),
                 registry: "CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG",
               }),

@@ -175,6 +175,9 @@ export const PACKAGES_DIRECTORY_NAME = "packages";
 
 /** The maximum lifetime of a submitted transaction, in seconds. */
 export const SUBMISSION_TIMEOUT_SECONDS = 300;
+export const DISPUTE_ANSWER_WINDOW_LEDGERS = 51_840;
+export const DISPUTE_TARGET_MAX_AGE_LEDGERS = 518_400;
+export const WATCHDOG_DELIVERY_GRACE_LEDGERS = DISPUTE_ANSWER_WINDOW_LEDGERS;
 
 /** The largest record or event count that one history page requests. */
 export const HISTORY_PAGE_LIMIT = 200;

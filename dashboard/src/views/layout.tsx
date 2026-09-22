@@ -97,13 +97,16 @@ export function Layout(input: {
             <Entry href={ROUTES.inclusion} current={frame.current}>
               Inclusion check
             </Entry>
+            <Entry href={ROUTES.dispute} current={frame.current}>
+              Disputes
+            </Entry>
           </nav>
           <p className="deployment">
             Network <strong>{frame.network}</strong>
           </p>
           <p className="local">
-            This dashboard runs on this machine. It sends nothing anywhere except the read calls
-            that it makes to the network endpoint you configured.
+            This dashboard runs on this machine. It reads the configured network endpoint.
+            Issuer actions sign and send transactions to that endpoint.
           </p>
         </header>
         <main>{input.children}</main>

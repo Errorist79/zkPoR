@@ -74,6 +74,7 @@ use zkpor_package::{
         LEGACY_IDENTIFIER_RULE,
     },
     new_env,
+    retained::{AnswerRequest, RetainedTree, RETAINED_TREE_FORMAT},
     schema::{package_filename, Package},
     tree::{path_in_levels, root_from_path, subtree_root, tree_levels},
 };
@@ -102,7 +103,6 @@ const INNER_PUBLIC_INPUTS: [&str; 3] = ["batch_slot", "subroot", "subtotal"];
 const DEPLOYMENTS_FILE: &str = "scripts/deployments.json";
 /// The authority-side redacted tree of one generation run.
 const GENERATION_FILE: &str = "generation.json";
-const ANSWER_MANIFEST_FORMAT: &str = "zkpor-redacted-tree/1";
 const IDENTIFIER_EMAIL_DRAFT_FORMAT: &str = "zkpor-identifier-email/1";
 /// Mode of every directory that the generation step creates, and of every file
 /// it writes. A package holds one customer's balance.
@@ -357,59 +357,18 @@ fn check_prior(
 ) {
     let text = fs::read_to_string(&prior.manifest_file)
         .unwrap_or_else(|_| panic!("read {}", prior.manifest_file.display()));
-    let manifest: serde_json::Value =
-        serde_json::from_str(&text).expect("the prior redacted tree is JSON");
-    assert_eq!(manifest["format"], ANSWER_MANIFEST_FORMAT);
-    assert_eq!(manifest["network"], network);
-    assert_eq!(manifest["registry"], registry);
-    assert_eq!(manifest["asset"], asset);
-    assert_eq!(manifest["attestation_id"], prior.id.to_string());
-    assert_eq!(manifest["root"], fr_hex(&prior.root));
-    assert_eq!(manifest["context_hash"], fr_hex(&prior.context));
-    assert_eq!(
-        manifest["tree_depth"].as_u64(),
-        Some(u64::from(capacity.trailing_zeros()))
-    );
-
-    let entries = manifest["leaves"]
-        .as_array()
-        .expect("the prior redacted tree has leaves");
-    assert_eq!(entries.len(), capacity, "the prior tree has every leaf");
-    let mut prior_ids = HashSet::new();
-    let mut padded = false;
-    let mut leaves = Vec::with_capacity(capacity);
-    for entry in entries {
-        let read_fr = |key: &str| -> BigUint {
-            let value = entry[key].as_str().expect("a prior leaf field is text");
-            let parsed = parse_fr(env, value).expect("a prior leaf field is valid");
-            assert_eq!(value, fr_hex(&parsed), "a prior leaf field is canonical");
-            parsed
-        };
-        let id = read_fr("id");
-        let commitment = read_fr("commitment");
-        if id == BigUint::from(PADDING_LEAF_ID) {
-            padded = true;
-        } else {
-            assert!(!padded, "a prior customer follows a padding leaf");
-            assert!(prior_ids.insert(id.clone()), "a prior identifier repeats");
-        }
-        leaves.push(leaf_hash(env, &to_fr(env, &id), &to_fr(env, &commitment)));
-    }
-    let (batch_size, _, _) = read_shape();
-    assert_eq!(
-        manifest["count"].as_u64(),
-        Some(prior_ids.len() as u64),
-        "the prior customer count differs from its leaves"
-    );
-    assert_eq!(
-        to_big(&folded_root(env, &leaves, batch_size)),
-        prior.root,
-        "the prior redacted tree does not reach the on-chain root"
-    );
+    let tree = RetainedTree::parse(env, &text).expect("the prior redacted tree is complete");
+    assert_eq!(tree.binding.network, network);
+    assert_eq!(tree.binding.registry, registry);
+    assert_eq!(tree.binding.asset, asset);
+    assert_eq!(tree.binding.attestation_id, prior.id);
+    assert_eq!(tree.binding.root, prior.root);
+    assert_eq!(tree.binding.context_hash, prior.context);
+    assert_eq!(tree.binding.tree_depth, capacity.trailing_zeros());
     let current_ids: HashSet<BigUint> = current.iter().map(|(id, _)| id.clone()).collect();
-    for id in prior_ids {
+    for id in tree.identifiers() {
         assert!(
-            current_ids.contains(&id),
+            current_ids.contains(id),
             "the current customer file omits prior identifier {id}; keep a closed account as an explicit zero row"
         );
     }
@@ -969,7 +928,7 @@ fn generation_json(
         })
         .collect();
     let manifest = serde_json::json!({
-        "format": ANSWER_MANIFEST_FORMAT,
+        "format": RETAINED_TREE_FORMAT,
         "network": request.network,
         "registry": registry,
         "asset": asset,
@@ -1023,9 +982,22 @@ fn write_private_new(path: &Path, text: &str) {
         .create_new(true)
         .mode(PACKAGE_FILE_MODE)
         .open(path)
-        .expect("create a new private identifier email draft");
+        .expect("create a new private output file");
     file.write_all(text.as_bytes())
-        .expect("write the private identifier email draft");
+        .expect("write the private output file");
+}
+
+fn cmd_answer(tree: &Path, request: &Path, output: &Path) {
+    let env = new_env();
+    let request_text = fs::read_to_string(request).expect("read the answer request");
+    let request = AnswerRequest::parse(&env, &request_text).expect("validate the answer request");
+    let tree_text = fs::read_to_string(tree).expect("read the retained redacted tree");
+    let tree = RetainedTree::parse(&env, &tree_text).expect("validate the retained redacted tree");
+    let answer = tree
+        .answer(&request)
+        .expect("answer from the fixed attestation tree");
+    write_private_new(output, &answer);
+    println!("redacted inclusion answer prepared");
 }
 
 fn cmd_prepare_identifier_email(input: &Path, output: &Path) {
@@ -1622,6 +1594,7 @@ fn write_registry_params(key_sha256: &str, inner_key_hash: &BigUint, positions: 
 }
 
 const USAGE: &str = "usage: recursion-gen prepare-identifier-email <input.json> <new-private-output.json>\n\
+                            recursion-gen answer <generation.json> <request.json> <new-answer.json>\n\
                             recursion-gen witness <context.toml> <customers.csv> [--network <name> --registry <address> --prior-manifest <file> --prior-attestation-id <id> --prior-root <hex> --prior-context <hex>]\n\
                             recursion-gen path <context.toml> <customers.csv> <customer_id>\n\
                             recursion-gen packages <context.toml> <customers.csv> <out_dir> \
@@ -1656,6 +1629,12 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let arg = |i: usize| args.get(i).map(PathBuf::from);
     match args.get(1).map(String::as_str) {
+        Some("answer") => match (arg(2), arg(3), arg(4)) {
+            (Some(tree), Some(request), Some(output)) if args.len() == 5 => {
+                cmd_answer(&tree, &request, &output)
+            }
+            _ => usage(),
+        },
         Some("prepare-identifier-email") => match (arg(2), arg(3)) {
             (Some(input), Some(output)) if args.len() == 4 => {
                 cmd_prepare_identifier_email(&input, &output)
@@ -2174,6 +2153,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_retained_tree_produces_a_private_answer_without_customer_secrets() {
+        let env = new_env();
+        let tree_file = generated().join(GENERATION_FILE);
+        let manifest: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&tree_file).expect("the retained tree"))
+                .expect("the retained tree JSON");
+        let request = serde_json::json!({
+            "network": manifest["network"], "registry": manifest["registry"],
+            "asset": manifest["asset"], "attestation_id": manifest["attestation_id"],
+            "context_hash": manifest["context_hash"], "root": manifest["root"],
+            "snapshot_ledger": manifest["snapshot_ledger"], "tree_depth": manifest["tree_depth"],
+            "identifier": fr_hex(&fixture_rows(&env)[0].0),
+        });
+        let request_file = write_temp("zkpor_answer_request.json", &request.to_string());
+        let output = env::temp_dir().join("zkpor_private_answer.json");
+        let _ = fs::remove_file(&output);
+        cmd_answer(&tree_file, &request_file, &output);
+        let answer: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&output).expect("the answer"))
+                .expect("the answer JSON");
+        let fields: HashSet<&str> = answer
+            .as_object()
+            .expect("the answer object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            fields,
+            HashSet::from(["id", "commitment", "position", "path"])
+        );
+        assert_eq!(
+            fs::metadata(&output).unwrap().permissions().mode() & 0o777,
+            PACKAGE_FILE_MODE
+        );
+        assert!(
+            std::panic::catch_unwind(|| cmd_answer(&tree_file, &request_file, &output)).is_err()
+        );
+        fs::remove_file(output).expect("remove the test answer");
+    }
+
     /// The report file names the directory that this run filled.
     ///
     /// A caller that needs the path must not read the sentence this tool
@@ -2345,7 +2365,7 @@ mod tests {
             json["context_hash"],
             fr_hex(&to_big(&fixture_context(&new_env()).hash))
         );
-        assert_eq!(json["format"], ANSWER_MANIFEST_FORMAT);
+        assert_eq!(json["format"], RETAINED_TREE_FORMAT);
         assert_eq!(json["root"], fr_hex(&fixture_attestation().root));
         assert_eq!(json["transaction_hash"], TEST_TRANSACTION);
         assert_eq!(json["network"], TEST_NETWORK);

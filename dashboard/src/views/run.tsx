@@ -171,7 +171,7 @@ function Produced(input: { run: Run }) {
         <>
           <p>
             The registry <span className="address">{submission.registry}</span> accepted the
-            attestation at ledger {submission.ledger}. The transaction is{" "}
+            attestation {submission.attestationId.toString()} at ledger {submission.ledger}. The transaction is{" "}
             <span className="address">{submission.transactionHash}</span>.
           </p>
           <p>

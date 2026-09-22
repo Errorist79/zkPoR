@@ -63,6 +63,9 @@ console.log(packageValue.asset);
 console.log(packageValue.attestationId.toString());
 console.log(packageValue.id.toString());
 console.log(JSON.stringify(evidence));
+console.log(JSON.stringify({ Inclusion: {
+  attestation_id: packageValue.attestationId.toString(), inclusion: evidence,
+} }));
 JAVASCRIPT
 
 {
@@ -71,6 +74,7 @@ JAVASCRIPT
   IFS= read -r ATTESTATION_ID
   IFS= read -r IDENTIFIER
   IFS= read -r EVIDENCE
+  IFS= read -r OPENING
 } <"$PUBLIC_INPUT"
 
 invoke() {
@@ -90,7 +94,7 @@ case "$MODE" in
   open)
     DISPUTER=$(stellar keys address "$STELLAR_SOURCE_ACCOUNT")
     invoke yes open_dispute --asset "$ASSET" --disputer "$DISPUTER" \
-      --evidence_id "$ATTESTATION_ID" --target "${VALUE:-null}" --evidence "$EVIDENCE"
+      --target "${VALUE:-null}" --evidence "$OPENING"
     ;;
   answer)
     invoke yes answer_dispute --asset "$ASSET" --target_id "$ATTESTATION_ID" \

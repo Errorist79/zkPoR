@@ -63,6 +63,9 @@ export const RESERVE_SECRET_ENV = "ZKPOR_RESERVE_SECRET";
 /** The environment variable that carries the secret key of the authority. */
 export const AUTHORITY_SECRET_ENV = "ZKPOR_AUTHORITY_SECRET";
 
+/** The environment variable that carries the account key of the disputer. */
+export const DISPUTER_SECRET_ENV = "ZKPOR_DISPUTER_SECRET";
+
 /** The environment, as a process gives it: a name maps to a value or to nothing. */
 export type Environment = Readonly<Partial<Record<string, string>>>;
 

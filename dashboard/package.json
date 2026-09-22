@@ -6,7 +6,8 @@
   "type": "module",
   "private": true,
   "bin": {
-    "zkpor-dashboard": "./dist/main.js"
+    "zkpor-dashboard": "./dist/main.js",
+    "zkpor-answer": "./dist/answer-main.js"
   },
   "scripts": {
     "build": "tsup",

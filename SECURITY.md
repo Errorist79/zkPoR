@@ -42,7 +42,8 @@ The system does not guarantee the following:
 - Completeness, that the tree contains all real customers and no other leaf.
   An earlier inclusion permits a dispute against a later stored attestation.
   Nonresponse records a protocol outcome. It is not a cryptographic proof of absence.
-  This path does not cover a customer who never appeared in an attestation.
+  An email proof under an issuer-authorized DKIM registration permits a dispute for a never-included identifier.
+  Neither evidence path proves the amount that the issuer owes.
 - That the balances belong to the ledger the attestation names. The context hash
   covers the authority, the asset, the reserve set and the snapshot ledger. It
   does not cover the customer balances, which reach the chain as the root and
@@ -76,7 +77,7 @@ asserts the liabilities for a ledger, and nothing binds them to it.
 
 The circuit first hashes a domain tag, balance, and salt into a balance commitment.
 It then hashes a different domain tag, customer identifier, and commitment into the leaf.
-Public dispute evidence contains the identifier, commitment, position, and path.
+Public inclusion evidence contains the identifier, commitment, position, and path.
 It contains no balance or salt.
 A customer package still contains its recipient's balance and salt and must remain private.
 
@@ -103,6 +104,25 @@ An unanswered dispute returns that deposit to the disputer and permanently locks
 The bond has no withdrawal path, even before a dispute.
 The protocol pays no bounty and does not reduce the native asset supply.
 Service failure can cause the same nonresponse outcome as an omitted customer.
+
+## Email evidence limits
+
+The asset authority authorizes an RSA key, DKIM domain, and exact canonical From field for that asset.
+The registry does not resolve DNS or prove domain ownership.
+The email proof authenticates the signed header and the customer's identifier in its Subject.
+Its public inputs contain registered commitments and hashes, plus the Subject token.
+The header, RSA key, and signature remain private circuit inputs.
+
+The proof does not verify body content or its hash.
+It proves no balance, private code, email date, receipt time, or ordering relative to the target attestation.
+The email does not name an asset. Each asset authority must explicitly authorize the signer binding that its registry accepts.
+The customer's local identifier check remains separate from this proof.
+
+An earlier key registration remains valid after rotation.
+This preserves original signatures, including signatures created before registration.
+It also preserves the authority of a compromised registered key.
+The issuer must account for this persistent authority before registration.
+See [the protocol](docs/protocol.md#112-email-evidence) for the supported header and RSA constraints.
 
 ## Recorded reserve limits
 

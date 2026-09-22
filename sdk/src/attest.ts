@@ -15,9 +15,10 @@ import {
   Keypair,
   TransactionBuilder,
   nativeToScVal,
+  scValToNative,
   rpc,
 } from "@stellar/stellar-sdk";
-import { ATTESTATION_MAX_AGE_LEDGERS, MAX_U32, SUBMISSION_TIMEOUT_SECONDS } from "./constants.js";
+import { ATTESTATION_MAX_AGE_LEDGERS, MAX_U32, MAX_U64, SUBMISSION_TIMEOUT_SECONDS } from "./constants.js";
 import { InfrastructureError, latestLedger } from "./network.js";
 import type { NetworkConfig } from "./network.js";
 import { registryErrorCode } from "./registry-errors.js";
@@ -32,6 +33,11 @@ export class AttestationInputError extends Error {
     super(message);
     this.name = "AttestationInputError";
   }
+}
+
+/** The fixed identifier that the successful contract call returned. */
+export interface AttestationSubmitResult extends SubmitResult {
+  readonly attestationId: bigint;
 }
 
 /**
@@ -62,7 +68,7 @@ export async function submitAttestation(
     totalLiabilities: bigint;
     proof: Uint8Array;
   },
-): Promise<SubmitResult> {
+): Promise<AttestationSubmitResult> {
   if (!Number.isInteger(input.snapshotLedger) || input.snapshotLedger < 0 || input.snapshotLedger > MAX_U32) {
     throw new AttestationInputError("the snapshot ledger must be a sequence that a u32 holds");
   }
@@ -122,7 +128,15 @@ export async function submitAttestation(
   // second setTimeout call refuses to overwrite them.
   const ready = rpc.assembleTransaction(transaction, answer).build();
   ready.sign(input.authoritySigner);
-  return sendAndSettle(server, ready);
+  const settled = await sendAndSettle(server, ready);
+  if (settled.returnValue === undefined) {
+    throw new InfrastructureError("the accepted attestation returned no identifier");
+  }
+  const identifier: unknown = scValToNative(settled.returnValue);
+  if (typeof identifier !== "bigint" || identifier < 1n || identifier > MAX_U64) {
+    throw new InfrastructureError("the accepted attestation returned no positive u64 identifier");
+  }
+  return { ...settled, attestationId: identifier };
 }
 
 /** The values of one attestation, without the keys that sign it. */
@@ -147,7 +161,7 @@ export async function attestWithAuthority(
   config: NetworkConfig,
   authoritySecret: string,
   values: AttestationValues,
-): Promise<SubmitResult> {
+): Promise<AttestationSubmitResult> {
   let authority: Keypair;
   try {
     authority = Keypair.fromSecret(authoritySecret);

@@ -14,7 +14,7 @@
 # wrong. The contract makes the same refusal afterwards and names neither.
 #
 # Usage:
-#   bash scripts/deploy_registry.sh [verifier-contract-id]
+#   bash scripts/deploy_registry.sh [verifier-contract-id] [email-verifier-id]
 #
 # The verifier comes from the argument, then from ZKPOR_VERIFIER, then from the
 # file that scripts/deploy.sh writes.
@@ -36,6 +36,25 @@ else
     exit 1
   }
 fi
+
+EMAIL_VERIFIER="${2-${ZKPOR_EMAIL_VERIFIER:-}}"
+if [ "$#" -lt 2 ] && [ -z "$EMAIL_VERIFIER" ]; then
+  EMAIL_VERIFIER=$(cat "$EMAIL_CONTRACT_ID_FILE" 2>/dev/null || true)
+fi
+[ -n "$EMAIL_VERIFIER" ] || {
+  echo "Give an email verifier, set ZKPOR_EMAIL_VERIFIER, or run scripts/deploy_email_verifier.sh." >&2
+  exit 1
+}
+python3 "$ROOT_DIR/scripts/check_pins.py"
+EMAIL_KEY=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["key_sha256"])' "$EMAIL_MANIFEST_FILE")
+EMAIL_KEY_QUOTED=$(stellar contract invoke \
+  --id "$EMAIL_VERIFIER" --network "$ZKPOR_NETWORK" \
+  --source "$STELLAR_SOURCE_ACCOUNT" --send=no -- vk_bytes)
+EMAIL_CHAIN_KEY=$(python3 -c 'import hashlib,json,sys;print(hashlib.sha256(bytes.fromhex(json.loads(sys.argv[1]))).hexdigest())' "$EMAIL_KEY_QUOTED")
+[ "$EMAIL_CHAIN_KEY" = "$EMAIL_KEY" ] || {
+  echo "The email verifier key does not match the email manifest." >&2
+  exit 1
+}
 
 echo -e "${BLUE}1. Checking the registry source against the manifest...${NC}"
 [ -f "$MANIFEST_FILE" ] || {
@@ -95,7 +114,7 @@ for attempt in $(seq 1 "$STELLAR_DEPLOY_RETRIES"); do
     --source "$STELLAR_SOURCE_ACCOUNT" \
     --network "$ZKPOR_NETWORK" \
     -- \
-    --verifier "$VERIFIER"); then
+    --verifier "$VERIFIER" --email_verifier "$EMAIL_VERIFIER"); then
     DEPLOY_OK=1; break
   fi
   echo -e "${RED}  deploy failed, retrying in ${STELLAR_DEPLOY_RETRY_INTERVAL}s...${NC}"
@@ -121,10 +140,11 @@ echo -e "\n${GREEN}Deployed: $REGISTRY_ID${NC} (saved to $(basename "$REGISTRY_I
 echo -e "${GREEN}Wasm: $CHAIN_SHA${NC} (saved to $(basename "$REGISTRY_SHA_FILE"))"
 echo
 echo "Add this record to $(basename "$DEPLOYMENTS_FILE"), so a later reader checks it without asking:"
-python3 - "$ZKPOR_NETWORK" "$REGISTRY_ID" "$VERIFIER" "$MANIFEST_KEY" "$CHAIN_SHA" "$MANIFEST_FILE" <<'PYTHON'
+python3 - "$ZKPOR_NETWORK" "$REGISTRY_ID" "$VERIFIER" "$MANIFEST_KEY" "$CHAIN_SHA" "$MANIFEST_FILE" "$EMAIL_VERIFIER" "$EMAIL_KEY" <<'PYTHON'
 import json, math, sys
 
 network, registry, verifier, key, wasm, manifest_path = sys.argv[1:7]
+email_verifier, email_key = sys.argv[7:9]
 manifest = json.load(open(manifest_path))
 depth = int(math.log2(manifest["batch_b"] * manifest["num_batches_k"]))
 record = {
@@ -134,6 +154,8 @@ record = {
     "aggregator_key_sha256": key,
     "tree_depth": depth,
     "registry_wasm_sha256": wasm,
+    "email_verifier": email_verifier,
+    "email_key_sha256": email_key,
 }
 print(json.dumps(record, indent=2))
 PYTHON

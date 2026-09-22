@@ -44,6 +44,7 @@ jobs:
           {
             echo "RUST_VERSION=$RUST_VERSION"
             echo "NARGO_VERSION=$NARGO_VERSION"
+            echo "EMAIL_NARGO_VERSION=$EMAIL_NARGO_VERSION"
             echo "STELLAR_JS_SDK_VERSION=$STELLAR_JS_SDK_VERSION"
             echo "STELLAR_CLI_VERSION=$STELLAR_CLI_VERSION"
           } >> "$GITHUB_ENV"
@@ -161,6 +162,16 @@ jobs:
             exit 1
           fi
 
+      - name: Install the separate email compiler
+        run: |
+          set -euo pipefail
+          directory="$RUNNER_TEMP/zkpor-email-nargo"
+          mkdir -p "$directory"
+          curl -fL "https://github.com/noir-lang/noir/releases/download/v${EMAIL_NARGO_VERSION}/nargo-x86_64-unknown-linux-gnu.tar.gz" -o "$directory/nargo.tar.gz"
+          tar -xzf "$directory/nargo.tar.gz" -C "$directory"
+          test "$("$directory/nargo" --version | head -1)" = "nargo version = $EMAIL_NARGO_VERSION"
+          echo "ZKPOR_EMAIL_NARGO=$directory/nargo" >> "$GITHUB_ENV"
+
       - name: Check every pinned dependency against versions.env
         run: |
           set -euo pipefail
@@ -171,7 +182,11 @@ jobs:
           set -euo pipefail
           for package in $(bash scripts/ci_targets.sh noir-packages); do
             echo "testing: $package"
-            (cd "$package" && nargo test)
+            compiler=nargo
+            if [ "$package" = circuits/email ]; then
+              compiler="$ZKPOR_EMAIL_NARGO"
+            fi
+            (cd "$package" && "$compiler" test)
           done
 
       - name: Install Node at the pinned version

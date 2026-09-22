@@ -1,11 +1,11 @@
 use soroban_sdk::{
-    contractimpl, contracttype, token::TokenClient, Address, Env, MuxedAddress, Vec, U256,
+    contractimpl, contracttype, token::TokenClient, Address, Bytes, Env, MuxedAddress, Vec, U256,
 };
 use zkpor_context::{fr_in_range, leaf_hash, node_hash, PADDING_LEAF_ID};
 
 use crate::{
-    extend_contract, extend_entry, history, native_asset_contract, params, AssetEntry, DataKey,
-    Error, Registry, RegistryArgs, RegistryClient,
+    email, extend_contract, extend_entry, history, native_asset_contract, params, AssetEntry,
+    DataKey, Error, Registry, RegistryArgs, RegistryClient,
 };
 
 pub const ANSWER_WINDOW_LEDGERS: u32 = 51_840;
@@ -23,6 +23,35 @@ pub struct InclusionEvidence {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InclusionOpening {
+    pub attestation_id: u64,
+    pub inclusion: InclusionEvidence,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmailEvidence {
+    pub key_id: u64,
+    pub id: U256,
+    pub proof: Bytes,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DisputeEvidence {
+    Inclusion(InclusionOpening),
+    Email(EmailEvidence),
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DisputeOrigin {
+    Inclusion(u64),
+    Email(u64),
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DisputeStatus {
     Open,
     Answered,
@@ -34,7 +63,7 @@ pub enum DisputeStatus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Dispute {
     pub disputer: Address,
-    pub evidence_id: u64,
+    pub origin: DisputeOrigin,
     pub target_id: u64,
     pub identifier: U256,
     pub opened_ledger: u32,
@@ -127,15 +156,14 @@ fn open_record(env: &Env, key: &DataKey) -> Result<Dispute, Error> {
 
 #[contractimpl]
 impl Registry {
-    /// Fixes the target and holds the deposit after an old inclusion check.
+    /// Fixes the target and holds the deposit after the evidence check.
     /// An absent target selects the newest attestation.
     pub fn open_dispute(
         env: Env,
         asset: Address,
         disputer: Address,
-        evidence_id: u64,
         target: Option<u64>,
-        evidence: InclusionEvidence,
+        evidence: DisputeEvidence,
     ) -> Result<Dispute, Error> {
         asset_entry(&env, &asset)?;
         let target_id = target.unwrap_or_else(|| history::count(&env, &asset));
@@ -146,12 +174,24 @@ impl Registry {
         {
             return Err(Error::TargetOutsideWindow);
         }
-        if evidence_id >= target_id {
-            return Err(Error::EvidenceNotOlder);
-        }
-        let old = history::read(&env, &asset, evidence_id)?;
-        inclusion(&env, &old.final_root, &evidence)?;
-        let key = DataKey::Dispute(asset, target_id, evidence.id.clone());
+        let (identifier, origin) = match evidence {
+            DisputeEvidence::Inclusion(opening) => {
+                if opening.attestation_id >= target_id {
+                    return Err(Error::EvidenceNotOlder);
+                }
+                let old = history::read(&env, &asset, opening.attestation_id)?;
+                inclusion(&env, &old.final_root, &opening.inclusion)?;
+                (
+                    opening.inclusion.id,
+                    DisputeOrigin::Inclusion(opening.attestation_id),
+                )
+            }
+            DisputeEvidence::Email(evidence) => {
+                email::verify(&env, &asset, &evidence)?;
+                (evidence.id, DisputeOrigin::Email(evidence.key_id))
+            }
+        };
+        let key = DataKey::Dispute(asset, target_id, identifier.clone());
         if env.storage().persistent().has(&key) {
             return Err(Error::DisputeAlreadyExists);
         }
@@ -161,9 +201,9 @@ impl Registry {
         disputer.require_auth();
         let dispute = Dispute {
             disputer: disputer.clone(),
-            evidence_id,
+            origin,
             target_id,
-            identifier: evidence.id,
+            identifier,
             opened_ledger: now,
             deadline,
             status: DisputeStatus::Open,

@@ -2,16 +2,17 @@ mod common;
 
 use common::{
     expect_authorization_failure, expect_error, registered_token, test_env, Registered,
-    StubTokenClient,
+    StubTokenClient, StubVerifierClient,
 };
 use soroban_sdk::{
     contract, contractimpl,
     testutils::{Address as _, Ledger as _},
-    Address, Bytes, Env, MuxedAddress, Vec, U256,
+    Address, Bytes, BytesN, Env, MuxedAddress, Vec, U256,
 };
 use zkpor_context::{balance_commitment, context_hash, fr_modulus, leaf_hash, node_hash};
 use zkpor_registry::{
-    params, AttestationSlot, DataKey, DisputeStatus, Error, InclusionEvidence, RegistryClient,
+    params, AttestationSlot, DataKey, DisputeEvidence, DisputeOrigin, DisputeStatus, DkimKeyInput,
+    EmailEvidence, Error, InclusionEvidence, InclusionOpening, RegistryClient,
     ANSWER_WINDOW_LEDGERS, DISPUTE_DEPOSIT_STROOPS, NATIVE_ASSET_XDR, TARGET_MAX_AGE_LEDGERS,
 };
 
@@ -22,6 +23,32 @@ const RESERVE_BALANCE: i128 = 1_000;
 const CUSTOMER_BALANCE: u64 = 50;
 const CUSTOMER_ID: u32 = 7;
 const CUSTOMER_SALT: u32 = 11;
+
+fn dkim_key(env: &Env) -> DkimKeyInput {
+    DkimKeyInput {
+        modulus_hash: U256::from_u32(env, 71),
+        redc_hash: U256::from_u32(env, 73),
+        domain_hash: BytesN::from_array(env, &[7; 32]),
+        from_header_hash: BytesN::from_array(env, &[9; 32]),
+    }
+}
+
+fn email_evidence(env: &Env, key_id: u64, id: &U256) -> DisputeEvidence {
+    DisputeEvidence::Email(EmailEvidence {
+        key_id,
+        id: id.clone(),
+        proof: Bytes::new(env),
+    })
+}
+
+fn email_verifier(env: &Env, registry: &Address) -> Address {
+    env.as_contract(registry, || {
+        env.storage()
+            .instance()
+            .get(&DataKey::EmailVerifier)
+            .unwrap()
+    })
+}
 
 #[contract]
 struct NativeToken;
@@ -127,14 +154,280 @@ fn open(env: &Env, fixture: &Fixture) {
     RegistryClient::new(env, &fixture.registered.registry).open_dispute(
         &fixture.registered.asset,
         &fixture.disputer,
-        &1,
         &None,
-        &fixture.evidence,
+        &DisputeEvidence::Inclusion(InclusionOpening {
+            attestation_id: 1,
+            inclusion: fixture.evidence.clone(),
+        }),
     );
 }
 
 fn advance(env: &Env, ledger: u32) {
     env.ledger().with_mut(|info| info.sequence_number = ledger);
+}
+
+#[test]
+fn signer_registration_needs_issuer_auth_and_keeps_each_historical_key() {
+    let env = test_env();
+    let fixture = ready(&env);
+    let registry = RegistryClient::new(&env, &fixture.registered.registry);
+    env.mock_auths(&[]);
+    expect_authorization_failure(
+        registry.try_register_dkim_key(&fixture.registered.asset, &dkim_key(&env)),
+    );
+    assert_eq!(registry.dkim_key_count(&fixture.registered.asset), 0);
+    env.mock_all_auths();
+    assert_eq!(
+        registry.register_dkim_key(&fixture.registered.asset, &dkim_key(&env)),
+        1
+    );
+    let first = registry.get_dkim_key(&fixture.registered.asset, &1);
+    let mut changed = dkim_key(&env);
+    changed.from_header_hash = BytesN::from_array(&env, &[10; 32]);
+    assert_eq!(
+        registry.register_dkim_key(&fixture.registered.asset, &changed),
+        2
+    );
+    let second = registry.get_dkim_key(&fixture.registered.asset, &2);
+    assert_eq!(first.registered_ledger, second.registered_ledger);
+    assert_ne!(first.context_hash, second.context_hash);
+    registry.set_reserves(&fixture.registered.asset, &fixture.registered.reserves);
+    assert_eq!(registry.get_dkim_key(&fixture.registered.asset, &1), first);
+    let opened = registry.open_dispute(
+        &fixture.registered.asset,
+        &fixture.disputer,
+        &None,
+        &email_evidence(&env, 1, &fixture.evidence.id),
+    );
+    assert_eq!(opened.origin, DisputeOrigin::Email(1));
+}
+
+#[test]
+fn invalid_keys_missing_keys_and_key_counter_overflow_fail() {
+    let env = test_env();
+    let fixture = ready(&env);
+    let registry = RegistryClient::new(&env, &fixture.registered.registry);
+    for value in [U256::from_u32(&env, 0), fr_modulus(&env)] {
+        let mut bad = dkim_key(&env);
+        bad.modulus_hash = value.clone();
+        expect_error(
+            registry.try_register_dkim_key(&fixture.registered.asset, &bad),
+            Error::InvalidDkimKey,
+        );
+        bad = dkim_key(&env);
+        bad.redc_hash = value;
+        expect_error(
+            registry.try_register_dkim_key(&fixture.registered.asset, &bad),
+            Error::InvalidDkimKey,
+        );
+    }
+    expect_error(
+        registry.try_register_dkim_key(&Address::generate(&env), &dkim_key(&env)),
+        Error::AssetNotRegistered,
+    );
+    expect_error(
+        registry.try_get_dkim_key(&fixture.registered.asset, &0),
+        Error::DkimKeyNotFound,
+    );
+    expect_error(
+        registry.try_get_dkim_key(&fixture.registered.asset, &1),
+        Error::DkimKeyNotFound,
+    );
+    env.as_contract(&fixture.registered.registry, || {
+        env.storage().persistent().set(
+            &DataKey::DkimKeyCount(fixture.registered.asset.clone()),
+            &u64::MAX,
+        );
+    });
+    expect_error(
+        registry.try_register_dkim_key(&fixture.registered.asset, &dkim_key(&env)),
+        Error::DkimKeyIdOverflow,
+    );
+}
+
+#[test]
+fn an_email_opening_uses_the_registered_inputs_and_the_same_answer_settlement() {
+    let env = test_env();
+    let fixture = ready(&env);
+    let registry = RegistryClient::new(&env, &fixture.registered.registry);
+    registry.register_dkim_key(&fixture.registered.asset, &dkim_key(&env));
+    let record = registry.get_dkim_key(&fixture.registered.asset, &1);
+    let opened = registry.open_dispute(
+        &fixture.registered.asset,
+        &fixture.disputer,
+        &None,
+        &email_evidence(&env, 1, &fixture.evidence.id),
+    );
+    assert_eq!(opened.origin, DisputeOrigin::Email(1));
+    assert_eq!(opened.target_id, 2);
+    assert_eq!(opened.deadline, START_LEDGER + ANSWER_WINDOW_LEDGERS);
+    let actual = StubVerifierClient::new(&env, &email_verifier(&env, &fixture.registered.registry))
+        .last_public_inputs();
+    let mut expected = record.context_hash.to_be_bytes();
+    expected.append(&U256::from_u32(&env, 71).to_be_bytes());
+    expected.append(&U256::from_u32(&env, 73).to_be_bytes());
+    for byte in [7, 7, 9, 9] {
+        let mut field = [0; 32];
+        field[16..].fill(byte);
+        expected.extend_from_array(&field);
+    }
+    let mut first = [b'A'; 32];
+    first[0] = 0;
+    expected.extend_from_array(&first);
+    let mut second = [0; 32];
+    second[1..12].fill(b'A');
+    second[12] = b'c';
+    expected.extend_from_array(&second);
+    assert_eq!(actual, expected);
+    submit(&env, &fixture, &fixture.root);
+    registry.answer_dispute(&fixture.registered.asset, &2, &fixture.evidence);
+    assert_eq!(
+        registry
+            .get_dispute(&fixture.registered.asset, &2, &fixture.evidence.id)
+            .status,
+        DisputeStatus::Answered
+    );
+    let token = NativeTokenClient::new(&env, &fixture.native);
+    assert_eq!(
+        token.balance(&fixture.disputer),
+        INITIAL_FUNDS - DISPUTE_DEPOSIT_STROOPS
+    );
+    assert_eq!(
+        token.balance(&fixture.registered.authority),
+        INITIAL_FUNDS + DISPUTE_DEPOSIT_STROOPS
+    );
+}
+
+#[test]
+fn an_email_identifier_needs_no_prior_inclusion_and_timeout_stays_permanent() {
+    let env = test_env();
+    let fixture = ready(&env);
+    let registry = RegistryClient::new(&env, &fixture.registered.registry);
+    registry.register_dkim_key(&fixture.registered.asset, &dkim_key(&env));
+    registry.fund_bond(&fixture.registered.asset, &BOND_AMOUNT);
+    let omitted = U256::from_u32(&env, CUSTOMER_ID + 1);
+    registry.open_dispute(
+        &fixture.registered.asset,
+        &fixture.disputer,
+        &None,
+        &email_evidence(&env, 1, &omitted),
+    );
+    advance(&env, START_LEDGER + ANSWER_WINDOW_LEDGERS + 1);
+    env.mock_auths(&[]);
+    registry.resolve_dispute(&fixture.registered.asset, &2, &omitted);
+    let closed = registry.get_dispute(&fixture.registered.asset, &2, &omitted);
+    assert_eq!(closed.status, DisputeStatus::OmissionProven);
+    assert_eq!(closed.burned_bond, BOND_AMOUNT);
+    assert_eq!(
+        NativeTokenClient::new(&env, &fixture.native).balance(&fixture.disputer),
+        INITIAL_FUNDS
+    );
+    expect_error(
+        registry.try_resolve_dispute(&fixture.registered.asset, &2, &omitted),
+        Error::DisputeClosed,
+    );
+}
+
+#[test]
+fn evidence_paths_and_rotated_keys_share_the_same_duplicate_guard() {
+    let env = test_env();
+    let fixture = ready(&env);
+    let registry = RegistryClient::new(&env, &fixture.registered.registry);
+    registry.register_dkim_key(&fixture.registered.asset, &dkim_key(&env));
+    open(&env, &fixture);
+    expect_error(
+        registry.try_open_dispute(
+            &fixture.registered.asset,
+            &fixture.disputer,
+            &None,
+            &email_evidence(&env, 1, &fixture.evidence.id),
+        ),
+        Error::DisputeAlreadyExists,
+    );
+    submit(&env, &fixture, &fixture.root);
+    registry.open_dispute(
+        &fixture.registered.asset,
+        &fixture.disputer,
+        &None,
+        &email_evidence(&env, 1, &fixture.evidence.id),
+    );
+    registry.register_dkim_key(&fixture.registered.asset, &dkim_key(&env));
+    expect_error(
+        registry.try_open_dispute(
+            &fixture.registered.asset,
+            &fixture.disputer,
+            &None,
+            &email_evidence(&env, 2, &fixture.evidence.id),
+        ),
+        Error::DisputeAlreadyExists,
+    );
+    expect_error(
+        registry.try_open_dispute(
+            &fixture.registered.asset,
+            &fixture.disputer,
+            &None,
+            &DisputeEvidence::Inclusion(InclusionOpening {
+                attestation_id: 1,
+                inclusion: fixture.evidence.clone(),
+            }),
+        ),
+        Error::DisputeAlreadyExists,
+    );
+}
+
+#[test]
+fn invalid_email_evidence_or_missing_auth_cannot_charge_a_deposit() {
+    let env = test_env();
+    let fixture = ready(&env);
+    let registry = RegistryClient::new(&env, &fixture.registered.registry);
+    registry.register_dkim_key(&fixture.registered.asset, &dkim_key(&env));
+    for id in [U256::from_u32(&env, 0), fr_modulus(&env)] {
+        expect_error(
+            registry.try_open_dispute(
+                &fixture.registered.asset,
+                &fixture.disputer,
+                &None,
+                &email_evidence(&env, 1, &id),
+            ),
+            Error::InvalidEmailIdentifier,
+        );
+    }
+    expect_error(
+        registry.try_open_dispute(
+            &fixture.registered.asset,
+            &fixture.disputer,
+            &None,
+            &email_evidence(&env, 2, &fixture.evidence.id),
+        ),
+        Error::DkimKeyNotFound,
+    );
+    env.mock_auths(&[]);
+    expect_authorization_failure(registry.try_open_dispute(
+        &fixture.registered.asset,
+        &fixture.disputer,
+        &None,
+        &email_evidence(&env, 1, &fixture.evidence.id),
+    ));
+    env.mock_all_auths();
+    StubVerifierClient::new(&env, &email_verifier(&env, &fixture.registered.registry))
+        .set_accepts(&false);
+    expect_error(
+        registry.try_open_dispute(
+            &fixture.registered.asset,
+            &fixture.disputer,
+            &None,
+            &email_evidence(&env, 1, &fixture.evidence.id),
+        ),
+        Error::EmailProofRejected,
+    );
+    expect_error(
+        registry.try_get_dispute(&fixture.registered.asset, &2, &fixture.evidence.id),
+        Error::DisputeNotFound,
+    );
+    assert_eq!(
+        NativeTokenClient::new(&env, &fixture.native).balance(&fixture.disputer),
+        INITIAL_FUNDS
+    );
 }
 
 #[test]
@@ -214,9 +507,11 @@ fn an_answer_pays_only_the_deposit_and_preserves_the_bond() {
         registry.try_open_dispute(
             &fixture.registered.asset,
             &fixture.disputer,
-            &1,
             &None,
-            &fixture.evidence,
+            &DisputeEvidence::Inclusion(InclusionOpening {
+                attestation_id: 1,
+                inclusion: fixture.evidence.clone(),
+            }),
         ),
         Error::DisputeAlreadyExists,
     );
@@ -297,9 +592,11 @@ fn targets_are_fixed_and_eligible_through_the_age_boundary() {
     registry.open_dispute(
         &fixture.registered.asset,
         &fixture.disputer,
-        &1,
         &Some(3),
-        &fixture.evidence,
+        &DisputeEvidence::Inclusion(InclusionOpening {
+            attestation_id: 1,
+            inclusion: fixture.evidence.clone(),
+        }),
     );
     assert_eq!(
         registry
@@ -318,9 +615,11 @@ fn stale_future_and_nonlater_targets_are_refused() {
         registry.try_open_dispute(
             &fixture.registered.asset,
             &fixture.disputer,
-            &2,
             &Some(2),
-            &fixture.evidence,
+            &DisputeEvidence::Inclusion(InclusionOpening {
+                attestation_id: 2,
+                inclusion: fixture.evidence.clone(),
+            }),
         ),
         Error::EvidenceNotOlder,
     );
@@ -329,9 +628,11 @@ fn stale_future_and_nonlater_targets_are_refused() {
         registry.try_open_dispute(
             &fixture.registered.asset,
             &fixture.disputer,
-            &1,
             &None,
-            &fixture.evidence,
+            &DisputeEvidence::Inclusion(InclusionOpening {
+                attestation_id: 1,
+                inclusion: fixture.evidence.clone(),
+            }),
         ),
         Error::TargetOutsideWindow,
     );
@@ -340,9 +641,11 @@ fn stale_future_and_nonlater_targets_are_refused() {
         registry.try_open_dispute(
             &fixture.registered.asset,
             &fixture.disputer,
-            &1,
             &None,
-            &fixture.evidence,
+            &DisputeEvidence::Inclusion(InclusionOpening {
+                attestation_id: 1,
+                inclusion: fixture.evidence.clone(),
+            }),
         ),
         Error::TargetOutsideWindow,
     );
@@ -383,9 +686,11 @@ fn malformed_or_foreign_inclusion_evidence_cannot_open_a_dispute() {
             registry.try_open_dispute(
                 &fixture.registered.asset,
                 &fixture.disputer,
-                &1,
                 &None,
-                &evidence,
+                &DisputeEvidence::Inclusion(InclusionOpening {
+                    attestation_id: 1,
+                    inclusion: evidence.clone(),
+                }),
             ),
             Error::InvalidInclusion,
         );
@@ -426,9 +731,11 @@ fn open_answer_and_bond_need_the_correct_authorization() {
     expect_authorization_failure(registry.try_open_dispute(
         &fixture.registered.asset,
         &fixture.disputer,
-        &1,
         &None,
-        &fixture.evidence,
+        &DisputeEvidence::Inclusion(InclusionOpening {
+            attestation_id: 1,
+            inclusion: fixture.evidence.clone(),
+        }),
     ));
     expect_authorization_failure(registry.try_fund_bond(&fixture.registered.asset, &BOND_AMOUNT));
     env.mock_all_auths();
@@ -454,9 +761,11 @@ fn concurrent_disputes_have_separate_deposits_and_burn_once() {
     registry.open_dispute(
         &fixture.registered.asset,
         &fixture.disputer,
-        &1,
         &Some(3),
-        &fixture.evidence,
+        &DisputeEvidence::Inclusion(InclusionOpening {
+            attestation_id: 1,
+            inclusion: fixture.evidence.clone(),
+        }),
     );
     advance(&env, START_LEDGER + ANSWER_WINDOW_LEDGERS + 1);
     registry.resolve_dispute(&fixture.registered.asset, &2, &fixture.evidence.id);
@@ -488,9 +797,11 @@ fn failed_deposit_cannot_create_a_dispute_or_use_the_bond() {
         .try_open_dispute(
             &fixture.registered.asset,
             &fixture.disputer,
-            &1,
             &None,
-            &fixture.evidence
+            &DisputeEvidence::Inclusion(InclusionOpening {
+                attestation_id: 1,
+                inclusion: fixture.evidence.clone(),
+            }),
         )
         .is_err());
     expect_error(
@@ -542,9 +853,11 @@ fn the_answer_deadline_cannot_wrap() {
         registry.try_open_dispute(
             &fixture.registered.asset,
             &fixture.disputer,
-            &1,
             &None,
-            &fixture.evidence,
+            &DisputeEvidence::Inclusion(InclusionOpening {
+                attestation_id: 1,
+                inclusion: fixture.evidence.clone(),
+            }),
         ),
         Error::DeadlineOverflow,
     );
@@ -564,9 +877,11 @@ fn an_explicit_target_can_precede_the_newest_attestation() {
     registry.open_dispute(
         &fixture.registered.asset,
         &fixture.disputer,
-        &1,
         &Some(2),
-        &fixture.evidence,
+        &DisputeEvidence::Inclusion(InclusionOpening {
+            attestation_id: 1,
+            inclusion: fixture.evidence.clone(),
+        }),
     );
     registry.answer_dispute(&fixture.registered.asset, &2, &fixture.evidence);
     assert_eq!(

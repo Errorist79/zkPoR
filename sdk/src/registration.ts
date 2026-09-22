@@ -241,6 +241,7 @@ export async function prepareReserveChange(
 export interface SubmitResult {
   readonly transactionHash: string;
   readonly ledger: number;
+  readonly returnValue?: xdr.ScVal;
 }
 
 /**
@@ -312,5 +313,9 @@ export async function sendAndSettle(
       `the transaction ${sent.hash} did not succeed: ${settled.status}`,
     );
   }
-  return { transactionHash: sent.hash, ledger: settled.ledger };
+  return {
+    transactionHash: sent.hash,
+    ledger: settled.ledger,
+    ...(settled.returnValue === undefined ? {} : { returnValue: settled.returnValue }),
+  };
 }

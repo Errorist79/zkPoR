@@ -1201,9 +1201,12 @@ snapshot is older than the window of section 6.2, the verifier reports
 inclusion as valid and reports the solvency claim as lapsed, in two
 separate statements.
 
-## 11. Inclusion disputes
+## 11. Disputes
 
-A disputer supplies an inclusion path from an earlier stored attestation.
+The `open_dispute` entry point accepts `Inclusion` or `Email` evidence.
+The stored origin identifies the earlier attestation or registered email key.
+
+For `Inclusion`, a disputer supplies a path from an earlier stored attestation.
 The public evidence contains the identifier, balance commitment, leaf position, and sibling hashes.
 It contains no balance or salt.
 The target is a later attestation of the same asset.
@@ -1222,7 +1225,7 @@ The answer may use a different commitment because the balance and salt can chang
 The issuer authorizes the answer and receives the deposit.
 No answer can retarget the dispute to a later attestation.
 
-After the deadline, an unanswered dispute receives the status `OmissionProven`.
+After the deadline, a successful resolution transaction sets an unanswered dispute to `OmissionProven`.
 That name denotes a protocol outcome: the issuer did not supply a valid answer in time.
 It is not a cryptographic proof that the customer was absent.
 The disputer receives the deposit back.
@@ -1234,7 +1237,82 @@ An unanswered dispute moves the entire available bond into the burned allocation
 The contract retains that allocation permanently and provides no transfer path for it.
 This burn is an irrevocable allocation in the contract, not a reduction of the native asset supply.
 
-This path requires earlier inclusion evidence.
-It does not establish a claim for a customer who never appeared in an attestation.
+The inclusion path requires earlier inclusion evidence.
+The email path permits a claim for an identifier that never appeared in an attestation.
 It does not prove mailbox control or a person's identity.
 An optional local check binds a version 3 identifier only to the email and code supplied by that customer.
+
+### 11.1. Answer from a retained tree
+
+The issuer retains one complete `zkpor-redacted-tree/1` manifest for each attestation ID.
+Its ordered leaves contain only identifiers and balance commitments, including padding leaves.
+The manifest binds the network, registry, asset, attestation ID, context hash, snapshot ledger, tree depth, and root.
+It also records the customer count and attestation transaction hash.
+
+The local answer driver reads the dispute and its fixed target from the trusted registry.
+It requires an open dispute whose answer deadline has not passed.
+It checks that the configured signer is the asset authority.
+It supplies the target fields to `recursion-gen answer` through a request file.
+
+The generator validates every retained leaf and reconstructs the complete root.
+It rejects duplicate customer identifiers, customers after padding, missing leaves, and unexpected fields.
+It compares the manifest with every field in the request before it selects the requested identifier.
+An absent identifier produces no answer.
+
+The answer file contains exactly `id`, `commitment`, `position`, and `path`.
+The generator creates the file with mode `0600` and refuses to replace an existing file.
+The driver checks the answer path against the fixed root before it submits the issuer transaction.
+It then reads the same dispute to confirm the stored status.
+
+The dashboard exposes the same operation through a form on its loopback page.
+Its origin guard applies before the process reads local files or submits an answer.
+Neither interface needs the balance file, salts, or master secret.
+
+### 11.2. Email evidence
+
+The asset authority registers a DKIM signer through `register_dkim_key(asset, key)`.
+Each registration receives a new key ID. The registry never replaces or revokes an earlier registration.
+The registered fields are:
+
+- The RSA modulus commitment, `modulus_hash`.
+- The RSA reduction commitment, `redc_hash`.
+- The SHA-256 hash of the lowercase ASCII DKIM domain, `domain_hash`.
+- The SHA-256 hash of the complete canonical From field, `from_header_hash`.
+
+The From hash includes the literal `from:` prefix and value. It excludes the final CRLF.
+A changed display name or From format requires a new registration.
+Registration authorizes that key, domain, and exact From field for the asset, including emails signed before registration.
+The registry derives a context from its network, address, asset, authority, key ID, and registered fields.
+
+`Email` evidence contains a registered key ID, nonzero customer identifier, and proof bytes.
+The registry reconstructs the identifier's canonical 43-character Subject token and the expected public inputs.
+It verifies the proof with the configured email verifier before it takes the deposit.
+The nine public fields are:
+
+1. The registration context.
+2. The RSA modulus commitment.
+3. The RSA reduction commitment.
+4. The first 16-byte half of the domain hash.
+5. The second 16-byte half of the domain hash.
+6. The first 16-byte half of the From hash.
+7. The second 16-byte half of the From hash.
+8. The first block of the Subject, with at most 31 bytes.
+9. The remaining block of the Subject.
+
+The authenticated header, RSA key, signature, and field positions remain private circuit inputs.
+The circuit authenticates exactly one signed From field and one signed Subject field.
+It supports RSA-2048 with exponent 65537, `rsa-sha256`, and `relaxed/relaxed` canonicalization.
+The signed header must contain fewer than 1,024 bytes.
+The complete From field permits at most 320 bytes. The domain permits at most 253 bytes, with labels of at most 63 bytes.
+
+The email itself does not name an asset.
+It can qualify for another asset only if that asset's authority registers the same signer binding.
+The proof establishes no email date, receipt time, body content, private code, or balance.
+It does not establish that the email predates the target attestation.
+It authenticates the signed header but does not verify the body hash.
+The registry does not derive a customer identity from this proof.
+The customer's local email and code check remains a separate operation.
+
+Original registrations remain usable after key rotation.
+This preserves earlier claims, but it also preserves the authority of a compromised registered key.
+The issuer must account for that risk before it authorizes a signer.

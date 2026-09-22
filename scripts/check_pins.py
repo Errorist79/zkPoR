@@ -13,6 +13,8 @@ until it passes. `scripts/ci_targets.sh` reads the index for the same reason.
 """
 
 import re
+import hashlib
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -110,6 +112,7 @@ def main() -> int:
     versions = pinned_versions()
     manifests = tracked_manifests()
     failures: list[str] = []
+    check_email_pins(versions, failures)
 
     for name, entry in TABLE.items():
         variable = entry["variable"]
@@ -162,6 +165,41 @@ def main() -> int:
     total = sum(len(entry["manifests"]) for entry in TABLE.values())
     print(f"every pinned dependency agrees with scripts/versions.env, in {total} declarations")
     return 0
+
+
+def check_email_pins(versions: dict[str, str], failures: list[str]) -> None:
+    circuit = ROOT / "circuits" / "email"
+    manifest = json.loads((circuit / "manifest.json").read_text())
+    expected = {
+        "nargo": versions["EMAIL_NARGO_VERSION"],
+        "bb": versions["BB_VERSION"].removeprefix("v"),
+        "scheme": versions["PROOF_SCHEME"],
+        "oracle_hash": versions["TERMINAL_ORACLE_HASH"],
+        "zkemail_commit": versions["ZKEMAIL_REV"],
+    }
+    for field, value in expected.items():
+        if manifest.get(field) != value:
+            failures.append(f"email manifest {field} does not match versions.env")
+    dependency = declaration("circuits/email/Nargo.toml", "zkemail") or ""
+    if not re.search(r'tag\s*=\s*"v%s"' % re.escape(versions["ZKEMAIL_VERSION"]), dependency):
+        failures.append("the email circuit does not pin the selected zkemail version")
+    package = json.loads((ROOT / "tools/email/package.json").read_text())
+    if package["dependencies"].get("@zk-email/zkemail-nr") != versions["ZKEMAIL_VERSION"]:
+        failures.append("the email preprocessor does not pin the selected zkemail version")
+    key = (circuit / "vk").read_bytes()
+    key_hash = hashlib.sha256(key).hexdigest()
+    if manifest.get("key_sha256") != key_hash or manifest.get("key_bytes") != len(key):
+        failures.append("the email verification key does not match its manifest")
+    source_hash = hashlib.sha256()
+    names = ["Nargo.toml"] + [str(path.relative_to(circuit)) for path in (circuit / "src").rglob("*.nr")]
+    for name in sorted(names):
+        source_hash.update(name.encode() + b"\0" + (circuit / name).read_bytes() + b"\0")
+    if manifest.get("source_sha256") != source_hash.hexdigest():
+        failures.append("the email circuit source does not match its manifest")
+    params = (ROOT / "contracts/registry/src/email_params.rs").read_text()
+    source_key = bytes(int(value, 16) for value in re.findall(r"0x([0-9a-f]{2})", params)).hex()
+    if source_key != key_hash:
+        failures.append("the registry email key pin does not match the email verification key")
 
 
 if __name__ == "__main__":

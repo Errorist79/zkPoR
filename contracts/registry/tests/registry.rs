@@ -16,9 +16,10 @@
 mod common;
 
 use common::{
-    account, addresses, canonical_address, classic_asset, classic_fixture, deploy_registry,
-    expect_authorization_failure, expect_error, test_env, PassiveContract, PermissiveAccount,
-    StubVerifier, ASSET_CODE12, ASSET_CODE4, ISSUER_KEY, OTHER_ACCOUNT_KEY, RELEASE_KEY,
+    account, addresses, canonical_address, classic_asset, classic_fixture, deploy_email_verifier,
+    deploy_registry, expect_authorization_failure, expect_error, test_env, PassiveContract,
+    PermissiveAccount, StubVerifier, ASSET_CODE12, ASSET_CODE4, ISSUER_KEY, OTHER_ACCOUNT_KEY,
+    RELEASE_KEY,
 };
 use soroban_sdk::{
     testutils::{
@@ -48,7 +49,10 @@ fn the_deployment_reads_the_key_of_a_real_verifier() {
         ultrahonk_verifier::UltraHonkVerifierContract,
         (Bytes::from_slice(&env, RELEASE_KEY),),
     );
-    let registry_id = env.register(Registry, (verifier.clone(),));
+    let registry_id = env.register(
+        Registry,
+        (verifier.clone(), deploy_email_verifier(&env, true)),
+    );
 
     env.as_contract(&registry_id, || {
         let stored: Address = env.storage().instance().get(&DataKey::Verifier).unwrap();
@@ -66,7 +70,16 @@ fn the_deployment_refuses_a_verifier_that_holds_another_key() {
     key.set(0, key.get_unchecked(0) ^ 1);
     let verifier = env.register(StubVerifier, (key, true));
 
-    env.register(Registry, (verifier,));
+    env.register(Registry, (verifier, deploy_email_verifier(&env, true)));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #41)")]
+fn the_deployment_refuses_an_email_verifier_with_another_key() {
+    let env = test_env();
+    let verifier = env.register(StubVerifier, (Bytes::from_slice(&env, RELEASE_KEY), true));
+    let wrong_email = env.register(StubVerifier, (Bytes::from_slice(&env, RELEASE_KEY), true));
+    env.register(Registry, (verifier, wrong_email));
 }
 
 #[test]

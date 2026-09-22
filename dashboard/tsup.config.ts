@@ -1,9 +1,8 @@
 import { defineConfig } from "tsup";
 
-// One entry, because the dashboard is one local process. It renders every page
-// on the server, so the build produces no browser bundle.
+// Both commands run locally. The dashboard renders each page on the server.
 export default defineConfig({
-  entry: ["src/main.ts"],
+  entry: ["src/main.ts", "src/answer-main.ts"],
   format: ["esm"],
   clean: true,
   sourcemap: true,

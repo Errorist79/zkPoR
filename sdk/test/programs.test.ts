@@ -255,6 +255,9 @@ describe("the programs a run starts", () => {
         contextFile: join(fixture.repository, "context.toml"),
         customersFile: join(fixture.repository, "customers.csv"),
         masterSecret: 1n,
+        network: "testnet",
+        registry: "CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG",
+        prior: undefined,
       });
       // The run reached its last step and read what the last tool wrote.
       // Without this, a run that stopped at its first tool would satisfy a

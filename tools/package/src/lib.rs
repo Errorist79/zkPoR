@@ -11,6 +11,7 @@
 pub mod deployments;
 pub mod fr;
 pub mod identity;
+pub mod retained;
 pub mod schema;
 pub mod tree;
 

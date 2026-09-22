@@ -37,6 +37,7 @@ Nonresponse is a protocol outcome, not a cryptographic proof of omission.
 
 The issuer retains redacted manifests for disputes and customer continuity.
 A closed customer account remains in the next attestation with a zero balance.
+The [local dispute page and answer command](dashboard/README.md#disputes-and-issuer-answers) use those manifests to answer a fixed target.
 
 ## Run the dispute demonstration
 
@@ -128,7 +129,8 @@ on a drift, so the tool is checked wherever it is actually used.
 
 | Component | Version | Notes |
 |---|---|---|
-| Nargo (Noir) | `1.0.0-beta.9` | proof and VK generation |
+| Nargo (Noir), core circuits | `1.0.0-beta.9` | proof and VK generation |
+| Nargo (Noir), email circuit | `1.0.0-beta.5` | separate compiler, paired with `bb 0.87.0` |
 | Barretenberg (`bb`) | `0.87.0` | `--scheme ultra_honk --oracle_hash keccak` |
 | `bb_proof_verification` | `v0.87.0` | in-circuit recursive verify; 456-field proof, 112-field vk |
 | noir-lang/poseidon | `v0.2.0` | in-circuit Poseidon2 |
@@ -138,6 +140,10 @@ on a drift, so the tool is checked wherever it is actually used.
 | Stellar CLI | `27.0.0` | command-line client |
 | Quickstart image | `nightly` | localnet protocol selected with `--protocol-version 27` |
 | Verifier crate | vendored in `contracts/vendor/ultrahonk-soroban-verifier` | completed-pairing patch; provenance in VENDOR.md |
+
+The email circuit uses its separate compiler through `ZKPOR_EMAIL_NARGO`.
+Its prover uses `bb 0.87.0`, `ultra_honk`, and `keccak`.
+See the [email circuit instructions](circuits/email/README.md).
 
 ## Build and run
 
@@ -179,10 +185,13 @@ export ZKPOR_NETWORK=testnet
 # 1. The verifier, with the release key that the manifest records.
 bash scripts/deploy.sh
 
-# 2. The registry, against that verifier.
+# 2. The email verifier, with its separate committed key.
+bash scripts/deploy_email_verifier.sh
+
+# 3. The registry, against both verifiers.
 bash scripts/deploy_registry.sh
 
-# 3. Later, from any clone: does the network still run what this tree builds?
+# 4. Later, compare the registry and core verifier with this tree.
 bash scripts/check_deployment.sh
 ```
 
@@ -191,7 +200,7 @@ wasm it just built, so the command states the result rather than assuming it. It
 writes the contract id and that hash side by side, and it prints the record to
 add to [`scripts/deployments.json`](scripts/deployments.json).
 
-Step 3 needs no argument beyond the network. It reads the current generation
+Step 4 needs no argument beyond the network. It reads the current generation
 from the deployments file, rebuilds both contracts, and reads back what the
 network runs. A mismatch there says that nobody can rebuild what the network
 runs. It does not say that what the network runs is wrong.

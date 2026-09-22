@@ -21,12 +21,14 @@ import {
   AUTHORITY_SECRET_ENV,
   ConfigurationError,
   DEPLOYMENTS_ENV,
+  DISPUTER_SECRET_ENV,
   RESERVE_SECRET_ENV,
   NETWORK_ENV,
   PASSPHRASE_ENV,
   READ_SOURCE_ENV,
   RPC_URL_ENV,
   readDeployments,
+  packagesDirectory,
   resolveNetworkConfig,
   resolveReadOptions,
 } from "./config.js";
@@ -59,6 +61,7 @@ import {
 import { prepareRegistration, readPreparedCall, submitPreparedCall } from "./registration.js";
 import { isAcceptedAddress } from "./address.js";
 import { bytesFromHex } from "./fr.js";
+import { preparePriorGeneration } from "./prior-generation.js";
 import { ProvingError, prove, readContext, windowAllowsProving } from "./proving.js";
 import {
   carriesAuthoritySecret,
@@ -67,8 +70,10 @@ import {
   readAuthoritySecret,
   readMasterSecret,
   readReserveKeypair,
+  readDisputerKeypair,
 } from "./secret.js";
 import { attestWithAuthority } from "./attest.js";
+import { runWatchdog } from "./watchdog.js";
 import { attestAndReport, completeCommand, failureNote, runReport } from "./report.js";
 import type { CommandResult } from "./report.js";
 
@@ -77,6 +82,11 @@ const USAGE = `zkpor <command> [arguments]
 Commands:
   verify-inclusion <package.zkpor.json> [deployments.json] [--identity-file <private.json>]
       Check one package against the registry and, if supplied, your own email and code.
+
+  watchdog <old-package.zkpor.json> <private-identity.json> <delivered-packages-dir> <state-dir> [deployments.json] [--grace-ledgers <count>]
+      Check fixed new attestations. Deliver each package as <attestation-id>.zkpor.json.
+      After the grace, open at most one dispute in a run. The disputer key is
+      in ${DISPUTER_SECRET_ENV}. The signer pays a 10 XLM deposit and transaction fees.
 
   entry <asset>
       Print the registry record of one asset.
@@ -227,6 +237,91 @@ async function commandVerifyInclusion(args: readonly string[]): Promise<CommandR
     ...(identityText === undefined ? {} : { identityText }),
   });
   return { lines: verdictLines(verdict), code: exitCode(verdict) };
+}
+
+async function commandWatchdog(args: readonly string[]): Promise<CommandResult> {
+  const [oldPath, identityPath, packagesPath, statePath, ...rest] = args;
+  if (oldPath === undefined || identityPath === undefined || packagesPath === undefined || statePath === undefined) {
+    fail(USAGE, EXIT_USAGE);
+  }
+  let deploymentsPath: string | undefined;
+  let grace: number | undefined;
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index];
+    if (value === "--grace-ledgers") {
+      const count = rest[index + 1];
+      if (grace !== undefined || count === undefined || !/^[1-9][0-9]*$/.test(count)) {
+        fail(USAGE, EXIT_USAGE);
+      }
+      grace = Number(count);
+      index += 1;
+    } else if (value !== undefined && !value.startsWith("--") && deploymentsPath === undefined) {
+      deploymentsPath = value;
+    } else {
+      fail(USAGE, EXIT_USAGE);
+    }
+  }
+  let oldPackageText: string;
+  let identityText: string;
+  try {
+    oldPackageText = await readFile(oldPath, "utf8");
+  } catch {
+    fail("the old package cannot be read", EXIT_NO_VERDICT);
+  }
+  try {
+    identityText = await readFile(identityPath, "utf8");
+  } catch {
+    fail("the private identity file cannot be read", EXIT_NO_VERDICT);
+  }
+  const config = networkConfig();
+  const outcome = await runWatchdog({
+    server: openServer(config),
+    network: config,
+    readOptions: readOptions(),
+    deploymentsText: await deploymentsText(deploymentsPath),
+    oldPackageText,
+    identityText,
+    packagesDirectory: packagesPath,
+    stateDirectory: statePath,
+    disputerSigner: readDisputerKeypair(),
+    ...(grace === undefined ? {} : { deliveryGraceLedgers: grace }),
+  });
+  const report = (result: CommandResult): CommandResult => ({
+    ...result,
+    lines: [
+      ...(outcome.skippedExpiredTargetId === undefined ? [] : [
+        `Attestation ${outcome.skippedExpiredTargetId} is outside the dispute eligibility window.`,
+      ]),
+      ...result.lines,
+    ],
+  });
+  switch (outcome.kind) {
+    case "no-new-attestation":
+      return report({ lines: ["The registry holds no new attestation for this watchdog."] });
+    case "waiting":
+      return report({ lines: [
+        `Attestation ${outcome.targetId} waits for a package until ledger ${outcome.deliveryDeadline}.`,
+        `The network is at ledger ${outcome.currentLedger}.`,
+      ] });
+    case "delivered":
+      return report({ lines: [`The package for attestation ${outcome.targetId} passed inclusion and identity checks.`] });
+    case "opened":
+      return report({ lines: [
+        `The watchdog opened a dispute against attestation ${outcome.targetId}.`,
+        `The transaction is ${outcome.transactionHash}.`,
+      ] });
+    case "existing":
+      return report({ lines: [`A dispute already exists against attestation ${outcome.targetId}. No deposit was sent.`] });
+    case "pending":
+      return report({ code: EXIT_NO_VERDICT, lines: [
+        `The transaction ${outcome.transactionHash} for attestation ${outcome.targetId} needs review.`,
+        `The transaction status is ${outcome.transactionStatus}. The watchdog sent no new deposit.`,
+      ] });
+    case "expired":
+      return report({ code: EXIT_NO_VERDICT, lines: [
+        `Attestation ${outcome.targetId} is outside the dispute eligibility window at ledger ${outcome.currentLedger}.`,
+      ] });
+  }
 }
 
 /**
@@ -607,32 +702,6 @@ async function runProof(args: readonly string[]) {
   // The window check reads the ledger from the network, because a typed value
   // could hide a snapshot that can no longer land.
   windowAllowsProving(context.snapshotLedger, await latestLedger(server));
-  const proof = await prove({
-    repository: repository ?? process.cwd(),
-    contextFile,
-    customersFile,
-    masterSecret: await readMasterSecret(),
-    report: (step) => process.stderr.write(`[prove] ${step}\n`),
-  });
-  return { config, server, context, proof };
-}
-
-async function commandProve(args: readonly string[]): Promise<CommandResult> {
-  const { server, proof, context } = await runProof(args);
-  return { lines: runReport({ context, proof, currentLedger: await latestLedger(server) }) };
-}
-
-async function commandAttest(args: readonly string[]): Promise<CommandResult> {
-  const { config, server, context, proof } = await runProof(args);
-  // The presence of the key is checked here and its value is not read here. A
-  // key that the environment does not carry is a wrong command line, and the
-  // read below happens inside the call that signs with it.
-  if (!carriesAuthoritySecret(process.env)) {
-    fail(`set ${AUTHORITY_SECRET_ENV} to the secret key of the authority`, EXIT_USAGE);
-  }
-  // The attestation goes where the asset is registered. An asset that lives on
-  // an earlier generation can be attested nowhere else, and the newest
-  // generation holds no record of it.
   const located = await locateAsset({
     server,
     config,
@@ -644,6 +713,40 @@ async function commandAttest(args: readonly string[]): Promise<CommandResult> {
     fail(noHolder(context.asset, located.asked), EXIT_NO_VERDICT);
   }
   const registry = located.holder.generation.registry;
+  const prior = await preparePriorGeneration({
+    server,
+    network: config,
+    readOptions: readOptions(),
+    registry,
+    asset: context.asset,
+    outputDirectory: packagesDirectory(process.env, customersFile),
+  });
+  const proof = await prove({
+    repository: repository ?? process.cwd(),
+    contextFile,
+    customersFile,
+    masterSecret: await readMasterSecret(),
+    network: config.network,
+    registry,
+    prior,
+    report: (step) => process.stderr.write(`[prove] ${step}\n`),
+  });
+  return { config, server, context, proof, registry };
+}
+
+async function commandProve(args: readonly string[]): Promise<CommandResult> {
+  const { server, proof, context } = await runProof(args);
+  return { lines: runReport({ context, proof, currentLedger: await latestLedger(server) }) };
+}
+
+async function commandAttest(args: readonly string[]): Promise<CommandResult> {
+  const { config, server, context, proof, registry } = await runProof(args);
+  // The presence of the key is checked here and its value is not read here. A
+  // key that the environment does not carry is a wrong command line, and the
+  // read below happens inside the call that signs with it.
+  if (!carriesAuthoritySecret(process.env)) {
+    fail(`set ${AUTHORITY_SECRET_ENV} to the secret key of the authority`, EXIT_USAGE);
+  }
   const outcome = await attestAndReport({
     context,
     proof,
@@ -675,6 +778,8 @@ async function run(command: string, args: readonly string[]): Promise<CommandRes
   switch (command) {
     case "verify-inclusion":
       return await commandVerifyInclusion(args);
+    case "watchdog":
+      return await commandWatchdog(args);
     case "entry":
       return await commandEntry(args);
     case "observe-reserves":

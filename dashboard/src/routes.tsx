@@ -14,12 +14,13 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { InfrastructureError, isAcceptedAddress, verifyInclusion } from "@zkpor/sdk";
+import { InfrastructureError, generationsNewestFirst, isAcceptedAddress, verifyInclusion } from "@zkpor/sdk";
 import type { Environment } from "@zkpor/sdk";
 import {
   ASSET_PARAMETER,
   CACHE_CONTROL,
   CONTENT_SECURITY_POLICY,
+  DISPUTE_FIELDS,
   JOINED_PARAMETER,
   JOINED_VALUE,
   LOOPBACK_AUTHORITIES,
@@ -42,6 +43,9 @@ import { AssetPage, Home, UnregisteredAssetPage } from "./views/asset.js";
 import { InclusionForm, InclusionVerdictPage } from "./views/inclusion.js";
 import { Failure } from "./views/layout.js";
 import { AttestationForm, ForgottenRunPage, RunPage, runPath } from "./views/run.js";
+import { DisputeForm, DisputePage } from "./views/dispute.js";
+import { disputePath, disputeSelection, readDisputeView } from "./dispute.js";
+import { answerFromRetainedTree } from "./answer.js";
 
 /** Everything one dashboard process holds. */
 export interface Dashboard {
@@ -259,6 +263,9 @@ async function answerOf(
     if (path === ROUTES.inclusion) {
       return html(200, renderPage(<InclusionForm />, frameOf(dashboard, ROUTES.inclusion)));
     }
+    if (path === ROUTES.dispute) {
+      return await disputePage(query, dashboard);
+    }
     if (path === ROUTES.attestation) {
       return html(
         200,
@@ -310,6 +317,9 @@ async function answerOf(
     if (path === ROUTES.run) {
       return await startRun(fields, dashboard);
     }
+    if (path === ROUTES.answer) {
+      return await answerDisputeForm(fields, dashboard);
+    }
   }
 
   // A page, and not bare text. An unknown run already answers with one, and a
@@ -325,6 +335,49 @@ async function answerOf(
       frameOf(dashboard, ROUTES.home),
     ),
   );
+}
+
+async function disputePage(query: URLSearchParams, dashboard: Dashboard): Promise<DashboardResponse> {
+  const frame = frameOf(dashboard, ROUTES.dispute);
+  if (query.size === 0) {
+    return html(200, renderPage(<DisputeForm generations={generationsNewestFirst(
+      dashboard.reader.deploymentsText, dashboard.reader.config.network,
+    )} />, frame));
+  }
+  let selection;
+  try {
+    selection = disputeSelection(query);
+  } catch (cause) {
+    return html(400, renderPage(<DisputeForm generations={generationsNewestFirst(
+      dashboard.reader.deploymentsText, dashboard.reader.config.network,
+    )} reason={cause instanceof Error ? cause.message : "The dispute selection is invalid."} />, frame));
+  }
+  try {
+    return html(200, renderPage(<DisputePage view={await readDisputeView(dashboard.reader, selection)} />, frame));
+  } catch (cause) {
+    return failure("The dashboard cannot read the dispute", cause, frame);
+  }
+}
+
+async function answerDisputeForm(fields: URLSearchParams, dashboard: Dashboard): Promise<DashboardResponse> {
+  const frame = frameOf(dashboard, ROUTES.dispute);
+  try {
+    if (dashboard.store.open() !== undefined) {
+      throw new Error("Wait for the current attestation run before an answer transaction.");
+    }
+    const selection = disputeSelection(fields);
+    const manifestPath = fields.get(DISPUTE_FIELDS.manifestPath)?.trim();
+    if (manifestPath === undefined || manifestPath.length === 0) {
+      throw new Error("Give the path of the retained generation.json file.");
+    }
+    await answerFromRetainedTree({
+      reader: dashboard.reader, selection, manifestPath,
+      repository: dashboard.repository, environment: dashboard.environment,
+    });
+    return seeOther(disputePath(selection));
+  } catch (cause) {
+    return failure("The dashboard cannot submit the answer", cause, frame);
+  }
 }
 
 async function assetPage(asset: string | null, dashboard: Dashboard): Promise<DashboardResponse> {

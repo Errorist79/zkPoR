@@ -2,7 +2,7 @@
 
 The client library and the `zkpor` command line for the zkPoR registry.
 
-The package covers six capabilities.
+The package covers seven capabilities.
 
 - Registration with account reserves, and a change of a reserve set. Every
   reserve address must authorize the call. A reserve address sits inside a list
@@ -15,6 +15,7 @@ The package covers six capabilities.
 - Attestation and reserve observation submission.
 - Registry queries, including persistent attestation and observation history, plus legacy event history.
 - The customer inclusion check.
+- Fixed disputes, issuer answers, resolution, and an operator watchdog.
 
 The package does not hold the cryptographic definitions. The shared Rust crate
 `contracts/context` is the definition, and the code here is a mirror that the
@@ -50,6 +51,25 @@ Each page fixes `totalCount` before it reads records and returns `nextId` when m
 Its result states the ledger window that it covers.
 Persistent reads do not depend on that window.
 Persistent entries remain subject to the network's storage lifetime and restoration rules.
+
+The issuer reads the prior fixed attestation before proving a new one.
+It retains that attestation's redacted `generation.json` file.
+The witness and package generator check this file for every old identifier.
+The successful attestation call returns its fixed identifier.
+The issuer then reads that fixed attestation for the package root and context.
+
+```typescript
+const prior = await preparePriorGeneration({
+  server, network, readOptions: {}, registry, asset, outputDirectory,
+});
+const proof = await prove({
+  repository, contextFile, customersFile, masterSecret,
+  network: network.network, registry, prior,
+});
+```
+
+The package writer needs the accepted `attestationId`, the fixed root, and the fixed context hash.
+It passes the same prior manifest to the generator.
 
 ## Recorded reserve observations
 
@@ -94,6 +114,63 @@ The caller pays the transaction fee and needs no issuer authorization.
 The result contains the settled transaction hash and ledger.
 It does not return the simulated observation identifier.
 The function refuses a legacy registry that cannot store observations.
+
+## Disputes and the watchdog
+
+The dispute reader selects one target attestation and one customer identifier.
+It returns `undefined` only when the registry confirms `DisputeNotFound`.
+An RPC failure or an archived entry gives no absence result.
+
+```typescript
+const dispute = await readStoredDispute(network, registry, asset, targetId, identifier);
+const evidence = parseInclusionEvidence(answerText);
+const answer = await answerDispute(server, network, {
+  sourceAccount, sourceSigner: authoritySigner,
+  registry, asset, targetId, evidence,
+});
+```
+
+`openDispute` accepts an inclusion opening or an email-proof opening through the same registry entry point.
+The inclusion opening names a fixed older attestation and carries only an identifier, commitment, position, and path.
+An email opening carries a proof, an identifier, and a registered key identifier.
+The email, code, and individual balance stay local.
+`answerDispute` checks the fixed target and needs the asset authority's signature.
+`resolveDispute` needs no issuer signature and runs only after the contract answer deadline.
+The transaction source signs and pays its transaction fee for each write.
+The disputer also pays a 10 XLM deposit when `openDispute` succeeds.
+
+The `watchdog` command checks one customer's new fixed attestations in order.
+It requires an older version 3 package that passes inclusion and the local identity check.
+Copy each newly delivered package into the chosen directory as `<attestation-id>.zkpor.json`.
+The command checks the package against that fixed attestation and the same private identity.
+It waits for the package delivery grace before it opens a dispute for a missing or invalid package.
+It records an expired target and checks the next target in the same run.
+The command reports the first expired target with its next result.
+
+The default grace is 51,840 ledgers after the target attestation.
+An operator can set a different grace with `--grace-ledgers`.
+The value must be positive and shorter than the 518,400-ledger dispute eligibility window.
+This setting changes only when the watchdog opens a dispute.
+The contract gives the issuer a separate 51,840-ledger answer window after the dispute opens.
+One command run sends at most one deposit transaction.
+
+The command writes private state for each target before it sends a deposit transaction.
+The state holds the exact transaction hash and expiry.
+After a restart, the command reads the fixed dispute and that transaction before it retries.
+It retries only after a confirmed failed transaction or an expired transaction with no fixed dispute.
+An unavailable RPC result stops the command without another deposit.
+Keep the state directory and the private packages through the dispute eligibility window.
+
+```text
+zkpor watchdog \
+  <old-package.zkpor.json> <private-identity.json> \
+  <delivered-packages-dir> <state-dir> [deployments.json] \
+  [--grace-ledgers <count>]
+```
+
+The key stays in the environment, not in an argument.
+The command never sends an email.
+It prints no email address, code, balance, or salt.
 
 ## Run the customer check
 
@@ -274,6 +351,7 @@ package puts the same command on the path of the machine, and it then runs as
 
 ```
 zkpor verify-inclusion <package.zkpor.json> [deployments.json] [--identity-file <private.json>]
+zkpor watchdog <old-package.zkpor.json> <private-identity.json> <delivered-packages-dir> <state-dir> [deployments.json] [--grace-ledgers <count>]
 zkpor entry <asset>
 zkpor observe-reserves <asset>
 zkpor history <asset> [from-ledger]
@@ -342,6 +420,7 @@ every asset older than it.
 | `ZKPOR_DEPLOYMENTS` | the path of the deployments file |
 | `ZKPOR_RESERVE_SECRET` | the secret key of a reserve holder, for one signing step |
 | `ZKPOR_AUTHORITY_SECRET` | the secret key of the transaction source |
+| `ZKPOR_DISPUTER_SECRET` | the account key that pays a dispute deposit and its transaction fee |
 | `ZKPOR_MASTER_SECRET` | the master secret that derives the salts |
 | `ZKPOR_MASTER_SECRET_FILE` | the path of a mode 0600 file that holds it |
 

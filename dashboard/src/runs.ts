@@ -43,6 +43,7 @@ export interface ProofSummary {
 
 /** The record that the network accepted one attestation. */
 export interface Submission {
+  readonly attestationId: bigint;
   readonly ledger: number;
   readonly transactionHash: string;
   /**

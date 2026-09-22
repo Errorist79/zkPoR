@@ -45,6 +45,7 @@ STANDALONE_CRATES=(
 # The Noir packages. A package without a test still compiles here, which
 # catches a source that no longer builds at the pinned compiler.
 NOIR_PACKAGES=(
+  circuits/email
   circuits/recursion/common
   circuits/recursion/inner
   circuits/recursion/agg
