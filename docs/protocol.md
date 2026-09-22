@@ -3,8 +3,7 @@
 This document specifies the data formats that the circuits, the registry
 contract, and the witness generator share. Three implementations follow it:
 Rust, Noir, and TypeScript. Each rule in this document is normative. The words
-"must" and "must not" state requirements. This is a specification of the target
-protocol; parts of it are not implemented yet.
+"must" and "must not" state requirements.
 
 ## 1. Notation and primitives
 
@@ -606,8 +605,7 @@ It does not replace the historical record or renew the older snapshot's claim.
 The registry produces two different reserve numbers, and they must never
 share a name, a field, or a headline. Both numbers are sums of the
 balances that the reserve addresses hold in the registered asset itself.
-Each number claims custody of that asset. It does not claim collateral in
-any other asset.
+Each number states the balance in those addresses. It does not establish exclusive ownership or collateral in another asset.
 
 The two numbers are:
 
@@ -662,12 +660,16 @@ This false value does not state that reserves cover liabilities.
 `observation_status(asset)` returns `observation_count` and the optional `first_low_observation` identifier.
 The first low observation sets that marker.
 Later observations, attestations, and reserve changes do not clear it.
+The registry reads the reserve balances itself. A caller supplies no balance or comparison result.
+It takes no custody of those reserves and does not restrict their transfer.
 An unknown observation returns `ObservationNotFound`.
 Identifier exhaustion returns `ObservationIdOverflow` and stores no observation.
 
 Stored observations remain subject to storage lifetime and restoration rules.
 A reader must report a failed restoration as a failure, not as an empty history.
 A bounded history query fixes the observation count before it reads a range of identifiers.
+Each observation is a sample from one transaction.
+A decrease between samples can remain undetected if the reserves recover before the next observation.
 
 ### 6.5 What an accepted attestation proves
 
@@ -677,12 +679,20 @@ pinned verification keys. The proof binds the liabilities root, the total
 ledger `s`. At the ledger `e` where the attestation executed, with
 `s <= e <= s + 720`, the registered addresses held the recorded
 `reserve_sum`, read in the same transaction.
+The registry stores both the reserves and liabilities even when reserves are lower.
+The dashboard compares these stored amounts; acceptance alone does not establish reserve coverage.
 
 An accepted attestation does not prove the following:
 
 - It does not prove that the liability set is complete.
   An earlier inclusion permits a dispute against a later attestation.
+  A qualifying email proof permits a dispute without earlier inclusion.
+  A customer who was never included and never received a qualifying signed identifier email has neither evidence path.
   An unanswered dispute records a protocol outcome, not a cryptographic proof of absence.
+- It does not prove that an included balance equals the issuer's real debt to that customer.
+  The customer must compare the private package with their own account records.
+  A customer can collude with the issuer and accept an understated balance or decline to challenge an omission.
+  The circuit cannot detect that agreement.
 - It does not prove that the authority held the reserves at any ledger other
   than `e`. The balances are read inside the attestation transaction. A
   Soroban transaction is one atomic invocation tree, so funds can enter a
@@ -900,6 +910,9 @@ The struct includes `context_hash`, `final_root`, `total_liabilities`, `snapshot
 An unknown identifier returns `AttestationNotFound`.
 Persistent storage remains subject to the network's storage lifetime and restoration rules.
 Event retention does not define the lifetime of these records.
+Expired persistent records enter the archive and require restoration before contract access.
+Restoration can require a transaction and fees. A failed restoration is an unavailable read, not an empty history.
+See Stellar's [state archival rules](https://developers.stellar.org/docs/learn/fundamentals/contract-development/storage/state-archival).
 
 The event carries exactly two topics, in this order: the symbol
 `attestation_accepted`, then the asset address. The event data is a map
@@ -932,7 +945,8 @@ A client must not report an unsupported historical API as an absent attestation.
 
 The registry exposes the historical functions above and the existing read functions.
 `entry` returns the record of a
-registered asset. `observe_reserves` returns the reading of section 6.3.
+registered asset. `observe_reserves` returns the observation of section 6.4.
+Only a successful transaction persists that observation; a simulation does not.
 These functions encode their results as contract values of soroban-sdk 26.0.1.
 
 `entry` returns a map with five keys: `authority`, `tier`, `reserves`,
@@ -1214,8 +1228,11 @@ An omitted target argument selects the latest identifier when the dispute opens.
 The contract fixes that identifier in the dispute record.
 
 The target must be no more than 518,400 ledgers old when the dispute opens.
+Age uses `attested_ledger`, the target's execution ledger, not its `snapshot_ledger`.
+An explicit target can select any eligible stored attestation. A future execution ledger is invalid.
 The disputer authorizes a deposit of 10 XLM, which equals 100,000,000 stroops.
 The contract permits one dispute for each asset, target identifier, and customer identifier.
+This limit applies across both evidence paths and all key registrations, including after settlement.
 The issuer has 51,840 ledgers after the dispute opens to answer.
 An answer at the deadline is valid.
 Resolution requires a ledger after the deadline.
@@ -1225,20 +1242,25 @@ The answer may use a different commitment because the balance and salt can chang
 The issuer authorizes the answer and receives the deposit.
 No answer can retarget the dispute to a later attestation.
 
-After the deadline, a successful resolution transaction sets an unanswered dispute to `OmissionProven`.
+After the deadline, anyone can submit a resolution transaction for an open dispute.
+A successful resolution sets it to `OmissionProven`.
 That name denotes a protocol outcome: the issuer did not supply a valid answer in time.
 It is not a cryptographic proof that the customer was absent.
 The disputer receives the deposit back.
 The protocol pays no bounty.
+`Answered` and `OmissionProven` are permanent outcomes. Neither can reopen or settle again.
 
 An issuer can deposit an optional bond in XLM.
 The contract provides no bond withdrawal function, including before a dispute opens.
 An unanswered dispute moves the entire available bond into the burned allocation.
+The allocation belongs to the asset. A later unresolved dispute cannot burn funds that an earlier resolution already burned.
 The contract retains that allocation permanently and provides no transfer path for it.
 This burn is an irrevocable allocation in the contract, not a reduction of the native asset supply.
 
 The inclusion path requires earlier inclusion evidence.
 The email path permits a claim for an identifier that never appeared in an attestation.
+It requires an email under an issuer-authorized signer registration.
+Neither path adjudicates an incorrect balance. An answer can prove the same identifier with a different balance commitment.
 It does not prove mailbox control or a person's identity.
 An optional local check binds a version 3 identifier only to the email and code supplied by that customer.
 
@@ -1299,11 +1321,19 @@ The nine public fields are:
 8. The first block of the Subject, with at most 31 bytes.
 9. The remaining block of the Subject.
 
+Hash halves use big endian unsigned field values.
+The Subject blocks contain 31 and 12 bytes respectively, packed in big endian order.
+The second block has 19 zero bytes on the right.
+
 The authenticated header, RSA key, signature, and field positions remain private circuit inputs.
 The circuit authenticates exactly one signed From field and one signed Subject field.
 It supports RSA-2048 with exponent 65537, `rsa-sha256`, and `relaxed/relaxed` canonicalization.
+The RSA modulus must have exactly 2048 bits and must be odd.
 The signed header must contain fewer than 1,024 bytes.
 The complete From field permits at most 320 bytes. The domain permits at most 253 bytes, with labels of at most 63 bytes.
+The signed `h=` list must cover From and Subject.
+It can repeat those names to select absent extra fields, as described in [RFC 6376, section 5.4.2](https://www.rfc-editor.org/rfc/rfc6376.html#section-5.4.2).
+The canonical signed header still permits only one actual From field and one actual Subject field.
 
 The email itself does not name an asset.
 It can qualify for another asset only if that asset's authority registers the same signer binding.

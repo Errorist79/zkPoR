@@ -1,7 +1,8 @@
 # Security
 
-zkPoR proves that the reserves of an issuer cover its customer liabilities. It
-does not reveal the individual balances. It uses a recursive UltraHonk proof. A
+zkPoR proves the sum of an issuer's committed customer balances.
+The registry reads and records the reserves for comparison. It does not reject an attestation solely because reserves fall below that sum.
+The proof does not reveal the individual balances. It uses a recursive UltraHonk proof. A
 Soroban contract verifies the proof on-chain with the CAP-0080 BN254 host
 functions. This document states the security model, the trust assumptions, and the known limits.
 No independent party audited the verifier.
@@ -44,6 +45,13 @@ The system does not guarantee the following:
   Nonresponse records a protocol outcome. It is not a cryptographic proof of absence.
   An email proof under an issuer-authorized DKIM registration permits a dispute for a never-included identifier.
   Neither evidence path proves the amount that the issuer owes.
+- Customers without evidence. A customer who was never included and never received a qualifying signed identifier email cannot use either dispute path.
+  An email requires an issuer-authorized signer registration. An unregistered signer does not establish eligibility.
+- Correct balances. The proof checks the sum of the submitted balances, not the issuer's real debts.
+  An issuer can include an identifier with an incorrect balance and still answer its omission dispute.
+  The customer must compare the private package with their own account records.
+- Honest customer participation. A customer can collude with the issuer, accept an understated balance, or decline to challenge an omission.
+  Other customers cannot use their private package checks to establish that customer's real balance.
 - That the balances belong to the ledger the attestation names. The context hash
   covers the authority, the asset, the reserve set and the snapshot ledger. It
   does not cover the customer balances, which reach the chain as the root and
@@ -93,7 +101,9 @@ Package checks select that record, so a later attestation does not change the ex
 Persistent records still require storage lifetime management and restoration when the network requires it.
 The event window is not the history boundary.
 
-The target window is 518,400 ledgers. The answer window is 51,840 ledgers.
+The target window is 518,400 ledgers, measured from the target's execution ledger.
+The answer window is 51,840 ledgers after the dispute opens.
+An answer is valid at the deadline. Anyone can resolve an open dispute strictly after it.
 The issuer retains redacted manifests through those windows and any open dispute deadline.
 The next attestation also requires the latest manifest and every previous customer identifier.
 Closed accounts remain as zero-balance rows.
@@ -104,6 +114,9 @@ An unanswered dispute returns that deposit to the disputer and permanently locks
 The bond has no withdrawal path, even before a dispute.
 The protocol pays no bounty and does not reduce the native asset supply.
 Service failure can cause the same nonresponse outcome as an omitted customer.
+The registry fixes the target at opening and permits one dispute per asset, target, and identifier across both evidence paths.
+Settlement cannot run twice, and a closed dispute cannot reopen.
+The registry holds dispute deposits and bonds. It does not hold or restrict the registered reserves.
 
 ## Email evidence limits
 
@@ -112,6 +125,8 @@ The registry does not resolve DNS or prove domain ownership.
 The email proof authenticates the signed header and the customer's identifier in its Subject.
 Its public inputs contain registered commitments and hashes, plus the Subject token.
 The header, RSA key, and signature remain private circuit inputs.
+The proof reveals the identifier and permits claims with the same identifier to be linked.
+The registered domain and From hashes are commitments, not encryption. A reader can test a candidate domain or From field against them.
 
 The proof does not verify body content or its hash.
 It proves no balance, private code, email date, receipt time, or ordering relative to the target attestation.
@@ -131,6 +146,8 @@ The first-low marker remains after reserves recover, another attestation succeed
 That marker is a historical decrease, not a current insolvency verdict.
 An observation without a baseline makes no comparison.
 The absence of a low marker does not establish continuous coverage between observations.
+Each transaction samples the reserves once. A reserve can decrease and recover between these samples without a low observation.
+The caller supplies no reserve amount; the registry reads each registered balance itself.
 
 The dashboard's live simulation stores no observation.
 Stored status reads remain subject to storage lifetime and restoration requirements.
@@ -153,7 +170,8 @@ A failed read must not appear as an empty history or a clean status.
   `[x]_2` point). The main Shplonk/KZG pairing and the completed pairing both use
   them. A wrong constant breaks soundness silently. The standard KZG assumption
   applies: one contributor of N to the universal ceremony must be honest.
-- Pinned toolchain. nargo 1.0.0-beta.9, bb 0.87.0, `oracle_hash keccak`. The
+- Pinned toolchain. The core uses nargo 1.0.0-beta.9. The email circuit uses a separate nargo 1.0.0-beta.5 compiler.
+  Both use bb 0.87.0 and `oracle_hash keccak`. The
   proof format and the VK format depend on these versions. Any change reopens the
   formats and needs a new validation through the gate.
 - Host pairing and MSM. The BN254 pairing and the MSM are the CAP-0080 Soroban

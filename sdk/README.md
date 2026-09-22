@@ -2,6 +2,15 @@
 
 The client library and the `zkpor` command line for the zkPoR registry.
 
+Install the public package with Node.js 22:
+
+```bash
+npm install @zkpor/sdk
+```
+
+The npm package contains the library, replay endpoint, command line, and license.
+The source checkout contains the Rust generator, circuit tools, and synthetic examples.
+
 The package covers seven capabilities.
 
 - Registration with account reserves, and a change of a reserve set. Every
@@ -174,10 +183,12 @@ It prints no email address, code, balance, or salt.
 
 ## Run the customer check
 
-The examples use `fixtures/synthetic_package_v2.zkpor.json` and a synthetic RPC response.
+The source checkout examples use `fixtures/synthetic_package_v2.zkpor.json` and a synthetic RPC response.
 The fixture describes no real customer, liability, or accepted network attestation.
 
 ### Check the synthetic package
+
+Run these commands in the source checkout:
 
 ```bash
 npm install
@@ -189,6 +200,8 @@ It prints the verdict and exit code.
 It needs no key, funds, proving toolchain, or network access.
 
 ### Check your package against a network
+
+Install `@zkpor/sdk` before you run this command in your own project.
 
 ```bash
 ZKPOR_NETWORK=testnet ZKPOR_RPC_URL=https://soroban-testnet.stellar.org \
@@ -203,6 +216,8 @@ A later attestation does not change the fixed record that either package version
 
 ### Check a package with an incorrect path
 
+Run these commands in the source checkout:
+
 ```bash
 npm install
 npm run build
@@ -214,6 +229,8 @@ The example reports a root mismatch, with exit code 7.
 The example accepts a package path and uses the valid synthetic package when no path is supplied.
 
 ## Call the check from your own program
+
+Run this synthetic example in the source checkout:
 
 ```
 npm install && npm run example:library
@@ -235,20 +252,23 @@ It uses the same synthetic endpoint as the command example.
 For a network check, configure a trusted endpoint and use your own accepted package.
 
 The example leaves out proving, attestation, registration, and the signing of a
-reserve consent. Those belong to the issuer, who runs them from the command line
-of this package, and no integrating team performs them.
+reserve consent. The issuer runs those commands with the required tools and keys.
+The Rust prover tools require the source checkout.
 
 ## Customer identifiers
 
 Version 3 packages carry `identifier_rule: "zkpor-email-code/1"`.
 The identifier derives from a canonical email address and a persistent random code.
 The package carries neither input.
-The [protocol specification](../docs/protocol.md#45-email-and-code-identifiers) defines the exact bytes and hash.
+The [protocol specification](https://github.com/Errorist79/zkPoR/blob/sdk-v0.1.0/docs/protocol.md#45-email-and-code-identifiers) defines the exact bytes and hash.
 
 The supported address has an ASCII dot-atom local part and a DNS domain.
 The rule preserves the local part's case and lowercases the domain.
 It rejects quoted local parts, non-ASCII addresses, domain literals, and surrounding whitespace.
 It does not remove dots or `+` suffixes.
+
+The following Rust generator commands require the source checkout and pinned Rust toolchain.
+The npm package does not contain that generator.
 
 Prepare one private draft for a customer:
 

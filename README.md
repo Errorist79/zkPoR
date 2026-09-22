@@ -1,9 +1,9 @@
 # zkPoR
 
-ZK Proof of Reserves on Stellar (Soroban). An issuer proves that its reserves
-cover the customer liabilities. The proof does not reveal the individual
-balances. The proof is an UltraHonk zero-knowledge proof. A Soroban contract
-verifies the proof on-chain with the CAP-0080 BN254 host functions.
+ZK Proof of Reserves on Stellar (Soroban). An issuer proves the sum of its committed customer balances without revealing individual balances.
+A Soroban registry records that total and reads the reserves for comparison.
+It verifies the UltraHonk proof on-chain with the CAP-0080 BN254 host functions.
+Acceptance does not imply reserve coverage; the dashboard compares the two recorded amounts.
 
 See [the protocol specification](docs/protocol.md) for the authoritative definitions.
 See [the architecture](docs/architecture.md) for the design.
@@ -26,18 +26,33 @@ The dashboard separates these stored observations from live simulations.
 A lower reserve sum does not establish insolvency.
 
 An inclusion dispute uses redacted evidence without a customer balance or salt.
+An email proof can open the same dispute without earlier inclusion.
+The issuer must authorize the DKIM key, domain, and exact signed From field for the asset.
+The proof exposes the identifier but keeps the signed header, recipient, code, and balance private.
 The target window is 518,400 ledgers.
 The answer window is 51,840 ledgers.
 Each dispute requires a 10 XLM deposit.
 An issuer can supply an optional, nonwithdrawable bond.
 
 An unanswered dispute refunds the deposit and permanently locks the available bond.
+A valid answer proves the same identifier under the fixed target root and pays the deposit to the issuer.
+Anyone can resolve an unanswered dispute after its deadline.
 It pays no bounty.
 Nonresponse is a protocol outcome, not a cryptographic proof of omission.
 
 The issuer retains redacted manifests for disputes and customer continuity.
 A closed customer account remains in the next attestation with a zero balance.
 The [local dispute page and answer command](dashboard/README.md#disputes-and-issuer-answers) use those manifests to answer a fixed target.
+
+The protocol does not establish every real liability:
+
+- A customer who was never included and never received a qualifying signed identifier email cannot use either dispute path.
+- An included balance can be wrong. The customer must compare their private package with their account records.
+- A customer can collude with the issuer and accept an understated balance or decline to challenge an omission.
+- Reserve observations are samples. A decrease between observations can remain undetected.
+
+History uses persistent records, with storage lifetime and restoration requirements.
+Event retention does not limit that history.
 
 ## Run the dispute demonstration
 
