@@ -63,9 +63,8 @@ console.log(packageValue.asset);
 console.log(packageValue.attestationId.toString());
 console.log(packageValue.id.toString());
 console.log(JSON.stringify(evidence));
-console.log(JSON.stringify({ Inclusion: {
-  attestation_id: packageValue.attestationId.toString(), inclusion: evidence,
-} }));
+// The CLI needs a JSON number for u64. Keep the full value without a number conversion.
+console.log(`{"Inclusion":{"attestation_id":${packageValue.attestationId},"inclusion":${JSON.stringify(evidence)}}}`);
 JAVASCRIPT
 
 {
