@@ -100,6 +100,8 @@ export const ROUTES = {
   home: "/",
   asset: "/asset",
   inclusion: "/inclusion",
+  dispute: "/dispute",
+  answer: "/dispute/answer",
   attestation: "/attestation",
   run: "/run",
   style: "/style.css",
@@ -122,6 +124,19 @@ export const JOINED_VALUE = "1";
 
 /** The form field that names the path of an inclusion package. */
 export const PACKAGE_PATH_FIELD = "package-path";
+
+export const DISPUTE_FIELDS = {
+  registry: "registry",
+  asset: "asset",
+  targetId: "target-id",
+  identifier: "identifier",
+  manifestPath: "manifest-path",
+} as const;
+
+export const ANSWER_GENERATOR_DIRECTORY = "tools/recursion-gen";
+export const DISPUTE_ADDRESS_PREVIEW_LENGTH = 6;
+export const DISPUTE_DEPOSIT_LABEL = "10 XLM";
+export const ANSWER_TEMP_PREFIX = "zkpor-answer-";
 
 /** The form fields of an attestation run. */
 export const RUN_FIELDS = {
@@ -190,8 +205,10 @@ export const SECTION_IDS = {
   headline: "solvency-headline",
   attestedReserves: "attested-reserves",
   observedReserves: "observed-reserves",
+  recordedObservations: "recorded-observations",
   registration: "registration",
   history: "attestation-history",
   verdict: "inclusion-verdict",
+  dispute: "dispute-status",
   run: "attestation-run",
 } as const;

@@ -157,7 +157,7 @@ function runs(): readonly Run[] {
       action: "attest",
       stage: "finished",
       proof,
-      submission: { ledger: 5_150, transactionHash: "b".repeat(64), registry: REGISTRY },
+      submission: { ledger: 5_150, attestationId: 2n, transactionHash: "b".repeat(64), registry: REGISTRY },
     },
     { ...base, action: "attest", stage: "failed", failure: "the prover does not match the pins" },
   ];

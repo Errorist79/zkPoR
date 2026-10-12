@@ -8,7 +8,7 @@ hosted service. No party operates a place that it could send anything to.
 
 ## What it does
 
-The dashboard covers four things.
+The dashboard provides these views and actions.
 
 - The solvency result of one asset, at a point in time, in a form a reader can
   see.
@@ -16,6 +16,7 @@ The dashboard covers four things.
   process.
 - The customer inclusion check.
 - The record of the earlier attestations, with the bound of the query.
+- A fixed dispute, its deadline, and an issuer answer from its retained tree.
 
 ## Start it
 
@@ -114,6 +115,7 @@ or a headline.
   and the liabilities beside it.
 - **Reserves observed now.** A separate read at the ledger it names. No
   attestation covers it, and it enters no comparison on the page.
+  This live simulation creates no stored observation.
 
 The two live in two sibling sections, each with its own name and its own ledger.
 The headline states the result and carries neither number. A test renders the
@@ -125,6 +127,21 @@ The observation fails as a whole when one balance read fails, and it names no
 address. The dashboard then reads each reserve balance on its own, which is the
 one read that can name the address that the registry cannot read.
 
+## Recorded reserve observations
+
+The asset page shows stored observations separately from the live simulation.
+It displays the latest stored observation and the permanent first-low observation.
+Each observation names its ledger, reserve set, and optional baseline attestation.
+
+The first-low marker means that recorded reserves fell below the referenced attested reserve sum.
+It does not establish insolvency.
+Later observations, attestations, and reserve changes do not clear the marker.
+An absent baseline means that no comparison occurred.
+
+The page marks legacy observation history as unavailable.
+It reports RPC or restoration failures without presenting an empty history or a clean status.
+If record details fail after the status read, the page still shows the known first-low identifier.
+
 ## A stale attestation
 
 Inclusion and the currency of the solvency claim are different claims. A stale
@@ -133,11 +150,9 @@ has lapsed, and it says that the attestation still stands for the ledger it
 names. The window comes from the client library, so one constant governs the
 registry, the command line, and this page.
 
-## A run takes about a minute
+## A proof runs asynchronously
 
-Four measured runs took 47, 50, 62 and 66 seconds. The build host has an
-AMD Ryzen 9 5950X with 16 cores and 125 GB of memory. A slower machine takes
-longer. Three things follow from a run of this length.
+Proof runtime depends on the circuit, the host, and the pinned toolchain.
 
 A run is a resource with an identity. A submission starts the run and redirects
 to that resource, so the page that shows progress is a plain read. A reload of it
@@ -212,6 +227,46 @@ rather than allowing a second one, which is the safe direction.
 The library refuses a toolchain that differs from the pins, and it refuses a run
 whose salts anybody can recompute. The dashboard shows those refusals and never
 bypasses one.
+
+## Disputes and issuer answers
+
+Open **Disputes** and select the trusted registry.
+Use **Compare full registry addresses** to match the selected address.
+For package evidence, copy the package's registry, asset, and hexadecimal identifier.
+Use the target attestation ID from the watchdog output or opening request.
+The older evidence package can name a different attestation.
+For email evidence, use the values supplied when the dispute opened.
+
+The page explains the outcome, deposit settlement, and next steps.
+**Technical details and full identifiers** contains addresses, the contract status, and ledger numbers.
+It distinguishes an absent dispute from a failed read.
+An open dispute remains open after its deadline until a resolution transaction settles.
+`OmissionProven` records nonresponse under the protocol. It is not a cryptographic proof of omission.
+
+For an open dispute within its answer window, enter the retained `generation.json` path.
+Select **Build and submit answer**.
+The process checks that its issuer key matches the asset authority.
+It checks the complete retained tree against the fixed target before it signs the answer.
+The answer contains the identifier, commitment, position, and sibling hashes.
+It contains no balance, salt, or master secret.
+
+The same local operation is available from the repository root:
+
+```sh
+ZKPOR_NETWORK=testnet node dashboard/dist/answer-main.js \
+  "$REGISTRY" "$ASSET" "$TARGET_ID" "$IDENTIFIER_HEX" \
+  /private/packages/testnet/registry/asset/target-id/generation.json
+```
+
+Set `ZKPOR_AUTHORITY_SECRET` through the existing private environment before this command.
+The command uses the configured RPC endpoint and trusted deployments file.
+It prints the transaction hash before it sends the transaction.
+It reports settlement and then reads the stored status again.
+If that read fails, retain the hash and read the same dispute again.
+
+Retain each complete tree for at least 518,400 ledgers after its attestation.
+Keep a tree through every open dispute deadline that needs it.
+The tool provides no automatic purge or hosted service.
 
 ## An inclusion package reveals a balance
 

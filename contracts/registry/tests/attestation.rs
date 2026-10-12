@@ -450,8 +450,12 @@ fn an_observation_carries_the_sum_and_its_ledger() {
     assert_eq!(
         registry.observe_reserves(&fixture.asset),
         ReserveObservation {
+            observation_id: 1,
             observed_sum: RESERVE_BALANCE * 2,
             observed_ledger: env.ledger().sequence(),
+            reserve_set_hash: registry.entry(&fixture.asset).reserve_set_hash,
+            attestation_id: None,
+            below_attested: false,
         }
     );
 
@@ -462,8 +466,12 @@ fn an_observation_carries_the_sum_and_its_ledger() {
     assert_eq!(
         registry.observe_reserves(&fixture.asset),
         ReserveObservation {
+            observation_id: 2,
             observed_sum: RESERVE_BALANCE * 4,
             observed_ledger: env.ledger().sequence(),
+            reserve_set_hash: registry.entry(&fixture.asset).reserve_set_hash,
+            attestation_id: None,
+            below_attested: false,
         }
     );
 }

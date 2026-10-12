@@ -1,0 +1,115 @@
+{
+  "rule": "zkpor-email-code/1",
+  "domain_hex": "7a6b706f722d656d61696c2d636f64652d69642d763100",
+  "fr_modulus": "21888242871839275222246405745257275088548364400416034343698204186575808495617",
+  "cases": [
+    {
+      "name": "domain-uppercase",
+      "email": "Alice.Tag@EXAMPLE.COM",
+      "canonical_email": "Alice.Tag@example.com",
+      "code": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "preimage_hex": "7a6b706f722d656d61696c2d636f64652d69642d7631000015416c6963652e546167406578616d706c652e636f6d000000000000000000000000000000000000000000000000000000000000000000000000",
+      "digest_hex": "2afde043a96be11f66e17254e8f3505b910fdfa4eed264f0d4ec87f3ce4900b4",
+      "counter": 0,
+      "id_decimal": "19445699763226383629512685724850262395085886246522681901966526165559060005044",
+      "id_hex": "0x2afde043a96be11f66e17254e8f3505b910fdfa4eed264f0d4ec87f3ce4900b4",
+      "subject": "Kv3gQ6lr4R9m4XJU6PNQW5EP36Tu0mTw1OyH885JALQ"
+    },
+    {
+      "name": "domain-lowercase",
+      "email": "Alice.Tag@example.com",
+      "canonical_email": "Alice.Tag@example.com",
+      "code": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "preimage_hex": "7a6b706f722d656d61696c2d636f64652d69642d7631000015416c6963652e546167406578616d706c652e636f6d000000000000000000000000000000000000000000000000000000000000000000000000",
+      "digest_hex": "2afde043a96be11f66e17254e8f3505b910fdfa4eed264f0d4ec87f3ce4900b4",
+      "counter": 0,
+      "id_decimal": "19445699763226383629512685724850262395085886246522681901966526165559060005044",
+      "id_hex": "0x2afde043a96be11f66e17254e8f3505b910fdfa4eed264f0d4ec87f3ce4900b4",
+      "subject": "Kv3gQ6lr4R9m4XJU6PNQW5EP36Tu0mTw1OyH885JALQ"
+    },
+    {
+      "name": "local-case-change",
+      "email": "alice.Tag@example.com",
+      "canonical_email": "alice.Tag@example.com",
+      "code": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "preimage_hex": "7a6b706f722d656d61696c2d636f64652d69642d7631000015616c6963652e546167406578616d706c652e636f6d000000000000000000000000000000000000000000000000000000000000000000000000",
+      "digest_hex": "ace195139420637e3ad61ff234b0f84d46b83fa047e11eb2f3d80e9e1ace07fd",
+      "counter": 0,
+      "id_decimal": "12531650818423331160124162652536278465239142533240835967223706201022687741946",
+      "id_hex": "0x1bb4a9baf08b830111e54eceb02cef35ce1c86c6dab4ccff28322de24ace07fa",
+      "subject": "G7SpuvCLgwER5U7OsCzvNc4chsbatMz_KDIt4krOB_o"
+    },
+    {
+      "name": "code-change",
+      "email": "Alice.Tag@example.com",
+      "canonical_email": "Alice.Tag@example.com",
+      "code": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "preimage_hex": "7a6b706f722d656d61696c2d636f64652d69642d7631000015416c6963652e546167406578616d706c652e636f6d000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f00000000",
+      "digest_hex": "f72ea01d2b3a7ca3f2528f0904a2ae8956250cc77707d6e833c155947961bce7",
+      "counter": 0,
+      "id_decimal": "2362439271656655980970331920161855575220583973653493345139109695138895609058",
+      "id_hex": "0x053917dec5425bd358c132787d1bf4b78d21835d1668a411e05789b0c961bce2",
+      "subject": "BTkX3sVCW9NYwTJ4fRv0t40hg10WaKQR4FeJsMlhvOI"
+    },
+    {
+      "name": "dot-atom-punctuation",
+      "email": "A!#$%&'*+-/=?^_`{|}~.Z@EXAMPLE.COM",
+      "canonical_email": "A!#$%&'*+-/=?^_`{|}~.Z@example.com",
+      "code": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "preimage_hex": "7a6b706f722d656d61696c2d636f64652d69642d7631000022412123242526272a2b2d2f3d3f5e5f607b7c7d7e2e5a406578616d706c652e636f6d000000000000000000000000000000000000000000000000000000000000000000000000",
+      "digest_hex": "2ac4eb390232ecb94f070e1169ed99101cdb278553fc1b94e80c17c13457b261",
+      "counter": 0,
+      "id_decimal": "19345065112533781241238102212870460368336779171527062151976050362337163981409",
+      "id_hex": "0x2ac4eb390232ecb94f070e1169ed99101cdb278553fc1b94e80c17c13457b261",
+      "subject": "KsTrOQIy7LlPBw4Rae2ZEBzbJ4VT_BuU6AwXwTRXsmE"
+    },
+    {
+      "name": "local-length-limit",
+      "email": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.com",
+      "canonical_email": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.com",
+      "code": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "preimage_hex": "7a6b706f722d656d61696c2d636f64652d69642d763100004c61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161406578616d706c652e636f6d000000000000000000000000000000000000000000000000000000000000000000000000",
+      "digest_hex": "84ff7e0bfed53aad8cd0c48ce64e9bfbc9e3038323a2a4782210defbb46c7e13",
+      "counter": 0,
+      "id_decimal": "16380226214267249267812805916005146574812060149303072458267120090965659647505",
+      "id_hex": "0x2436e1263c71fa5a1c30391fe34beb41797b32f2302fc3559a4cf3d3d46c7e11",
+      "subject": "JDbhJjxx-locMDkf40vrQXl7MvIwL8NVmkzz09RsfhE"
+    },
+    {
+      "name": "mailbox-length-limit",
+      "email": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "canonical_email": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "code": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "preimage_hex": "7a6b706f722d656d61696c2d636f64652d69642d76310000fe61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161406262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262622e6363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363632e64646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464000000000000000000000000000000000000000000000000000000000000000000000000",
+      "digest_hex": "a4dfbb15614a0eccd32b7555d9b9343850577f1de6d13558c8b4141076a067e6",
+      "counter": 0,
+      "id_decimal": "8909876650554929486574436859759727742808596762100307245837224888366419437539",
+      "id_hex": "0x13b2cfbcbdb52e4faa3aa43255352b20d7bbc64479a4e3a4fd0e3354a6a067e3",
+      "subject": "E7LPvL21Lk-qOqQyVTUrINe7xkR5pOOk_Q4zVKagZ-M"
+    },
+    {
+      "name": "domain-label-limit",
+      "email": "a@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.example",
+      "canonical_email": "a@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.example",
+      "code": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "preimage_hex": "7a6b706f722d656d61696c2d636f64652d69642d763100004961406262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262622e6578616d706c65000000000000000000000000000000000000000000000000000000000000000000000000",
+      "digest_hex": "2dde7254b7311527f867fb52c463997c33487cdbbefc90ac0ad9a4224e0b3d38",
+      "counter": 0,
+      "id_decimal": "20747107317639183765662538403946346793217224649550960930811964776965347163448",
+      "id_hex": "0x2dde7254b7311527f867fb52c463997c33487cdbbefc90ac0ad9a4224e0b3d38",
+      "subject": "Ld5yVLcxFSf4Z_tSxGOZfDNIfNu-_JCsCtmkIk4LPTg"
+    },
+    {
+      "name": "high-code-bytes",
+      "email": "Alice.Tag@example.com",
+      "canonical_email": "Alice.Tag@example.com",
+      "code": "__________________________________________8",
+      "preimage_hex": "7a6b706f722d656d61696c2d636f64652d69642d7631000015416c6963652e546167406578616d706c652e636f6dffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff00000000",
+      "digest_hex": "a296fb6feaa3562c967a6b99d2e0ee01ea2aaca3d6f8ca7c0be323dff8a760bb",
+      "counter": 0,
+      "id_decimal": "7876715270285480422115672970462059186875750109715279491337489520525926949048",
+      "id_hex": "0x116a1017470e75af6d899a764e5ce4ea718ef3ca69cc78c8403d432428a760b8",
+      "subject": "EWoQF0cOda9tiZp2Tlzk6nGO88ppzHjIQD1DJCinYLg"
+    }
+  ]
+}

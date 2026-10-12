@@ -11,10 +11,9 @@
 //      throws, and a caller that turned that into "not included" would tell a
 //      customer their balance is missing because a request timed out.
 //
-// A recording is not the chain. Every answer here is one this repository wrote
-// down, so a check that passes against it proves that the client reads and
-// refuses correctly. It proves nothing about what any network holds now. To
-// read a network, give `rpcUrl` the address of one.
+// A synthetic endpoint is not the chain. Its answer comes from test vectors.
+// This example checks the client behavior. It does not report network state.
+// To read a network, use your own accepted package, deployments file, and RPC.
 //
 // Not shown, because an integrating team does not do these: proving,
 // attestation, registration, and the signing of a reserve consent. Those belong
@@ -25,25 +24,18 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { InfrastructureError, exitCode, openServer, verdictLines, verifyInclusion } from "../dist/index.js";
-import { assetRecordXdr, fakeEndpoint } from "../dist/replay.js";
+import { fakeEndpoint, storedAttestationXdr } from "../dist/replay.js";
+import {
+  SYNTHETIC_ASSET,
+  SYNTHETIC_ATTESTATION,
+  SYNTHETIC_ATTESTATION_ID,
+  SYNTHETIC_REGISTRY,
+} from "./synthetic-attestation.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repository = join(here, "..", "..");
-const packageText = readFileSync(join(repository, "fixtures", "example_package.zkpor.json"), "utf8");
-const deploymentsText = readFileSync(join(repository, "scripts", "deployments.json"), "utf8");
-
-const RECORDED = {
-  authority: "GBTWIUFV6TF7GDS22K6YUMS65G4TA5UOZNYB4HNBNESWOY6VIWORR6NU",
-  reserves: ["GDL3HMPUWH2P3KVQPTSVKSZ5PPUSG5MU53UG3R3GPJ4F6G7Y4OFC36JW"],
-  attestation: {
-    finalRoot:
-      20554074537088043555280822736271664885243051878812220006918736495728922963448n,
-    totalLiabilities: 18446744074315096615n,
-    snapshotLedger: 4274940,
-    reserveSum: 20000000000000000000n,
-    attestedLedger: 4274948,
-  },
-};
+const packageText = readFileSync(join(repository, "fixtures", "synthetic_package_v2.zkpor.json"), "utf8");
+const deploymentsText = readFileSync(join(repository, "fixtures", "synthetic_deployments.json"), "utf8");
 
 /** What your program calls. The configuration is yours, not an environment. */
 async function check(text, rpcUrl) {
@@ -65,9 +57,15 @@ async function check(text, rpcUrl) {
 }
 
 const endpoint = await fakeEndpoint({
-  holds: { [JSON.parse(packageText).registry]: assetRecordXdr(RECORDED) },
+  attestations: {
+    [SYNTHETIC_REGISTRY]: {
+      asset: SYNTHETIC_ASSET,
+      id: SYNTHETIC_ATTESTATION_ID,
+      xdr: storedAttestationXdr(SYNTHETIC_ATTESTATION),
+    },
+  },
   fallback: 7,
-  latestLedger: RECORDED.attestation.attestedLedger + 200,
+  latestLedger: SYNTHETIC_ATTESTATION.attestedLedger + 200,
 });
 
 try {
@@ -79,10 +77,12 @@ try {
     console.log(`  the claim ${good.solvencyLapsed ? "has lapsed" : "is current"}`);
   }
 
-  // 2. A package somebody changed. The balance no longer hashes to the leaf, so
-  //    the recomputed root differs. This is a verdict, and your program shows it
-  //    rather than reporting an error.
-  const tampered = JSON.stringify({ ...JSON.parse(packageText), balance: "999999" });
+  // 2. A package somebody changed. One sibling leads to a different root.
+  //    This is a verdict, and your program shows it rather than an error.
+  const tampered = readFileSync(
+    join(repository, "fixtures", "synthetic_package_v2_wrong_path.zkpor.json"),
+    "utf8",
+  );
   const bad = await check(tampered, endpoint.url);
   console.log(`\n${bad.kind}: the check refused it`);
   for (const line of verdictLines(bad)) {

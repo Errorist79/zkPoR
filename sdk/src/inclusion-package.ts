@@ -13,6 +13,9 @@
  */
 
 import {
+  IDENTIFIER_RULE,
+  IDENTITY_PACKAGE_FIELDS,
+  IDENTITY_PACKAGE_FORMAT,
   JSON_INDENT,
   PACKAGE_EXTENSION,
   PACKAGE_FIELDS,
@@ -22,16 +25,21 @@ import {
 } from "./constants.js";
 import { parseHex, parseU32, parseU64Decimal, toHex } from "./fr.js";
 import { isRecord, messageOf } from "./guards.js";
+import { balanceCommitment } from "./hashes.js";
 
 /** The parsed content of one inclusion package. */
 export interface InclusionPackage {
   readonly format: string;
+  readonly identifierRule?: typeof IDENTIFIER_RULE;
   readonly network: string;
   readonly registry: string;
   readonly asset: string;
   readonly snapshotLedger: number;
+  readonly contextHash: bigint;
+  readonly attestationId: bigint;
   readonly leafIndex: number;
   readonly id: bigint;
+  readonly commitment: bigint;
   readonly balance: bigint;
   readonly salt: bigint;
   readonly siblings: readonly bigint[];
@@ -41,7 +49,7 @@ export interface InclusionPackage {
 export class UnsupportedFormatError extends Error {
   constructor(readonly found: string) {
     super(
-      `this reader supports the format ${PACKAGE_FORMAT} only, and the package names ${found}`,
+      `this reader supports ${PACKAGE_FORMAT} and ${IDENTITY_PACKAGE_FORMAT}, and the package names ${found}`,
     );
     this.name = "UnsupportedFormatError";
   }
@@ -112,19 +120,23 @@ export function parsePackage(text: string): InclusionPackage {
   if (typeof format !== "string") {
     malformed("the field format must be a string");
   }
-  if (format !== PACKAGE_FORMAT) {
+  if (format !== PACKAGE_FORMAT && format !== IDENTITY_PACKAGE_FORMAT) {
     throw new UnsupportedFormatError(format);
   }
+  const fields = format === PACKAGE_FORMAT ? PACKAGE_FIELDS : IDENTITY_PACKAGE_FIELDS;
 
   for (const key of Object.keys(source)) {
-    if (!PACKAGE_FIELDS.some((field) => field === key)) {
-      malformed(`the format ${PACKAGE_FORMAT} does not name the field ${key}`);
+    if (!fields.some((field) => field === key)) {
+      malformed(`the format ${format} does not name the field ${key}`);
     }
   }
-  for (const key of PACKAGE_FIELDS) {
+  for (const key of fields) {
     if (source[key] === undefined) {
       malformed(`the package carries no field ${key}`);
     }
+  }
+  if (format === IDENTITY_PACKAGE_FORMAT && stringField(source, "identifier_rule") !== IDENTIFIER_RULE) {
+    malformed("the identifier rule is not supported");
   }
 
   const siblingsValue = source["siblings"];
@@ -145,16 +157,31 @@ export function parsePackage(text: string): InclusionPackage {
     malformed("the identifier zero names a padding leaf, and no customer package names it");
   }
 
+  const attestationId = checked(() => parseU64Decimal(stringField(source, "attestation_id"), "the attestation ID"));
+  if (attestationId === 0n) {
+    malformed("the attestation ID must be positive");
+  }
+
+  const commitment = checked(() => parseHex(stringField(source, "commitment"), "the commitment"));
+  const balance = checked(() => parseU64Decimal(stringField(source, "balance"), "the balance"));
+  const salt = checked(() => parseHex(stringField(source, "salt"), "the salt"));
+  if (balanceCommitment({ balance, salt }) !== commitment) {
+    malformed("the commitment does not match the balance and salt");
+  }
   return {
     format,
+    ...(format === IDENTITY_PACKAGE_FORMAT ? { identifierRule: IDENTIFIER_RULE } : {}),
     network: stringField(source, "network"),
     registry: stringField(source, "registry"),
     asset: stringField(source, "asset"),
     snapshotLedger: checked(() => parseU32(source["snapshot_ledger"], "the snapshot ledger")),
+    contextHash: checked(() => parseHex(stringField(source, "context_hash"), "the context hash")),
+    attestationId,
     leafIndex: checked(() => parseU32(source["leaf_index"], "the leaf index")),
     id,
-    balance: checked(() => parseU64Decimal(stringField(source, "balance"), "the balance")),
-    salt: checked(() => parseHex(stringField(source, "salt"), "the salt")),
+    commitment,
+    balance,
+    salt,
     siblings,
   };
 }
@@ -187,14 +214,27 @@ export function checkDepth(entry: InclusionPackage, treeDepth: number): void {
  * spaces, one element per line, and one line feed at the end.
  */
 export function serializePackage(entry: InclusionPackage): string {
+  if (entry.format !== PACKAGE_FORMAT && entry.format !== IDENTITY_PACKAGE_FORMAT) {
+    throw new UnsupportedFormatError(entry.format);
+  }
+  if (
+    (entry.format === PACKAGE_FORMAT && entry.identifierRule !== undefined) ||
+    (entry.format === IDENTITY_PACKAGE_FORMAT && entry.identifierRule !== IDENTIFIER_RULE)
+  ) {
+    malformed("the identifier rule does not match the package format");
+  }
   const ordered = {
-    format: PACKAGE_FORMAT,
+    format: entry.format,
     network: entry.network,
     registry: entry.registry,
     asset: entry.asset,
     snapshot_ledger: entry.snapshotLedger,
+    context_hash: toHex(entry.contextHash),
+    attestation_id: entry.attestationId.toString(10),
+    ...(entry.format === IDENTITY_PACKAGE_FORMAT ? { identifier_rule: IDENTIFIER_RULE } : {}),
     leaf_index: entry.leafIndex,
     id: toHex(entry.id),
+    commitment: toHex(entry.commitment),
     balance: entry.balance.toString(10),
     salt: toHex(entry.salt),
     siblings: entry.siblings.map((sibling) => toHex(sibling)),

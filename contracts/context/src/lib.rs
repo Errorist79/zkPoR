@@ -44,6 +44,10 @@ pub const CTX_DOMAIN_TAG_ASCII: &[u8; 16] = b"zkpor-context-v1";
 /// the salt derivation from the reserve set hash of two addresses, because
 /// both hash four inputs, so the salt derivation carries this tag.
 pub const SALT_DOMAIN_TAG_ASCII: &[u8; 13] = b"zkpor-salt-v1";
+/// The domain tag of the balance commitment.
+pub const BALANCE_DOMAIN_TAG_ASCII: &[u8; 16] = b"zkpor-balance-v1";
+/// The domain tag of the customer leaf.
+pub const LEAF_DOMAIN_TAG_ASCII: &[u8; 13] = b"zkpor-leaf-v2";
 /// State width of the Poseidon2 sponge. The rate is the width minus one.
 pub const POSEIDON2_STATE_WIDTH: u32 = 4;
 /// Identifier of a padding leaf.
@@ -88,6 +92,16 @@ pub fn ctx_domain_tag(env: &Env) -> U256 {
 /// The domain tag of the salt derivation.
 pub fn salt_domain_tag(env: &Env) -> U256 {
     domain_tag(env, SALT_DOMAIN_TAG_ASCII)
+}
+
+/// The domain tag of the balance commitment.
+pub fn balance_domain_tag(env: &Env) -> U256 {
+    domain_tag(env, BALANCE_DOMAIN_TAG_ASCII)
+}
+
+/// The domain tag of the customer leaf.
+pub fn leaf_domain_tag(env: &Env) -> U256 {
+    domain_tag(env, LEAF_DOMAIN_TAG_ASCII)
 }
 
 /// The modulus of the scalar field.
@@ -218,16 +232,21 @@ pub fn node_hash(env: &Env, left: &U256, right: &U256) -> U256 {
     hash(env, &inputs)
 }
 
-/// Hashes one leaf of the liabilities tree.
-///
-/// The salt blinds the leaf. A customer who checks an inclusion package reads
-/// the sibling hashes, and a balance has low entropy, so an unsalted leaf
-/// falls to a search over plausible identifier and balance pairs.
-pub fn leaf_hash(env: &Env, id: &U256, balance: u64, salt: &U256) -> U256 {
+/// Commits to one balance without revealing it from the customer leaf.
+pub fn balance_commitment(env: &Env, balance: u64, salt: &U256) -> U256 {
     let mut inputs = Vec::new(env);
-    inputs.push_back(id.clone());
+    inputs.push_back(balance_domain_tag(env));
     inputs.push_back(U256::from_u128(env, balance as u128));
     inputs.push_back(salt.clone());
+    hash(env, &inputs)
+}
+
+/// Hashes one identifier and its balance commitment into a customer leaf.
+pub fn leaf_hash(env: &Env, id: &U256, commitment: &U256) -> U256 {
+    let mut inputs = Vec::new(env);
+    inputs.push_back(leaf_domain_tag(env));
+    inputs.push_back(id.clone());
+    inputs.push_back(commitment.clone());
     hash(env, &inputs)
 }
 

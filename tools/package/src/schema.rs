@@ -4,14 +4,18 @@
 //! under an attested root. The authority writes it and the customer reads it,
 //! so the writer and the reader stand next to each other here.
 
-use crate::fr::{fr_hex, parse_package_fr};
+use crate::fr::{fr_hex, parse_package_fr, to_big, to_fr};
+use crate::identity::{IdentifierRule, IDENTIFIER_RULE};
 use num_bigint::BigUint;
 use serde_json::Value;
 use soroban_sdk::Env;
+use zkpor_context::balance_commitment;
 
 /// The version gate of the schema. A reader that does not know this exact
 /// string refuses to read any other field.
-pub const PACKAGE_FORMAT: &str = "zkpor-inclusion/1";
+pub const PACKAGE_FORMAT: &str = "zkpor-inclusion/2";
+/// The format of a package with an email-derived identifier.
+pub const IDENTITY_PACKAGE_FORMAT: &str = "zkpor-inclusion/3";
 /// Extension of a package file.
 pub const PACKAGE_EXTENSION: &str = "zkpor.json";
 /// Digits of the zero-padded leaf index in a package filename.
@@ -19,14 +23,33 @@ pub const PACKAGE_INDEX_DIGITS: usize = 6;
 /// Indentation of the package layout, in spaces.
 pub const JSON_INDENT: usize = 2;
 /// The keys of the schema, in the order that the format fixes.
-const FIELDS: [&str; 10] = [
+const FIELDS_V2: [&str; 13] = [
     "format",
     "network",
     "registry",
     "asset",
     "snapshot_ledger",
+    "context_hash",
+    "attestation_id",
     "leaf_index",
     "id",
+    "commitment",
+    "balance",
+    "salt",
+    "siblings",
+];
+const FIELDS_V3: [&str; 14] = [
+    "format",
+    "network",
+    "registry",
+    "asset",
+    "snapshot_ledger",
+    "context_hash",
+    "attestation_id",
+    "identifier_rule",
+    "leaf_index",
+    "id",
+    "commitment",
     "balance",
     "salt",
     "siblings",
@@ -55,7 +78,7 @@ impl std::fmt::Display for PackageError {
             Self::UnsupportedFormat(found) => {
                 write!(
                     out,
-                    "this reader knows the format {PACKAGE_FORMAT}, and the file states {found}"
+                    "this reader knows {PACKAGE_FORMAT} and {IDENTITY_PACKAGE_FORMAT}, and the file states {found}"
                 )
             }
             Self::Malformed(reason) => write!(out, "{reason}"),
@@ -70,12 +93,16 @@ fn malformed<T>(reason: impl Into<String>) -> Result<T, PackageError> {
 /// The fields of one package, in the order that the schema fixes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Package {
+    pub identifier_rule: IdentifierRule,
     pub network: String,
     pub registry: String,
     pub asset: String,
     pub snapshot_ledger: u32,
+    pub context_hash: BigUint,
+    pub attestation_id: u64,
     pub leaf_index: u32,
     pub id: BigUint,
+    pub commitment: BigUint,
     pub balance: u64,
     pub salt: BigUint,
     pub siblings: Vec<BigUint>,
@@ -94,20 +121,44 @@ impl Package {
     /// and one LF at the end of the file.
     pub fn to_json(&self) -> String {
         let pad = " ".repeat(JSON_INDENT);
+        let format = match self.identifier_rule {
+            IdentifierRule::Legacy => PACKAGE_FORMAT,
+            IdentifierRule::EmailCodeV1 => IDENTITY_PACKAGE_FORMAT,
+        };
         let mut lines = vec![
-            format!("{pad}\"format\": {}", json_string(PACKAGE_FORMAT)),
+            format!("{pad}\"format\": {}", json_string(format)),
             format!("{pad}\"network\": {}", json_string(&self.network)),
             format!("{pad}\"registry\": {}", json_string(&self.registry)),
             format!("{pad}\"asset\": {}", json_string(&self.asset)),
             format!("{pad}\"snapshot_ledger\": {}", self.snapshot_ledger),
+            format!(
+                "{pad}\"context_hash\": {}",
+                json_string(&fr_hex(&self.context_hash))
+            ),
+            format!(
+                "{pad}\"attestation_id\": {}",
+                json_string(&self.attestation_id.to_string())
+            ),
+        ];
+        if self.identifier_rule == IdentifierRule::EmailCodeV1 {
+            lines.push(format!(
+                "{pad}\"identifier_rule\": {}",
+                json_string(IDENTIFIER_RULE)
+            ));
+        }
+        lines.extend([
             format!("{pad}\"leaf_index\": {}", self.leaf_index),
             format!("{pad}\"id\": {}", json_string(&fr_hex(&self.id))),
+            format!(
+                "{pad}\"commitment\": {}",
+                json_string(&fr_hex(&self.commitment))
+            ),
             format!(
                 "{pad}\"balance\": {}",
                 json_string(&self.balance.to_string())
             ),
             format!("{pad}\"salt\": {}", json_string(&fr_hex(&self.salt))),
-        ];
+        ]);
         let siblings: Vec<String> = self
             .siblings
             .iter()
@@ -167,16 +218,21 @@ pub fn parse(env: &Env, text: &str) -> Result<Package, PackageError> {
         Some(object) => object,
         None => return malformed("the file is not a JSON object"),
     };
-    match object.get("format").and_then(Value::as_str) {
-        Some(PACKAGE_FORMAT) => (),
+    let identifier_rule = match object.get("format").and_then(Value::as_str) {
+        Some(PACKAGE_FORMAT) => IdentifierRule::Legacy,
+        Some(IDENTITY_PACKAGE_FORMAT) => IdentifierRule::EmailCodeV1,
         Some(other) => return Err(PackageError::UnsupportedFormat(other.to_string())),
         None => return malformed("the file states no format"),
-    }
+    };
     // The format string is the version gate, and every change of the schema
     // changes it. A file of this format therefore holds these keys and no
     // other one. The rule also refuses a file that carries a root, a direction
     // bit, or another customer's data, which no package may hold.
-    if let Some(extra) = object.keys().find(|key| !FIELDS.contains(&key.as_str())) {
+    let fields: &[&str] = match identifier_rule {
+        IdentifierRule::Legacy => &FIELDS_V2,
+        IdentifierRule::EmailCodeV1 => &FIELDS_V3,
+    };
+    if let Some(extra) = object.keys().find(|key| !fields.contains(&key.as_str())) {
         return malformed(format!(
             "the package holds the field {extra}, which the format does not name"
         ));
@@ -188,6 +244,11 @@ pub fn parse(env: &Env, text: &str) -> Result<Package, PackageError> {
             .map(str::to_string)
             .ok_or_else(|| PackageError::Malformed(format!("{name} is not a string")))
     };
+    if identifier_rule == IdentifierRule::EmailCodeV1
+        && text_field("identifier_rule")? != IDENTIFIER_RULE
+    {
+        return malformed("the identifier rule is not supported");
+    }
     let contract_field = |name: &str| -> Result<String, PackageError> {
         let value = text_field(name)?;
         let body = value.strip_prefix(STRKEY_CONTRACT_PREFIX);
@@ -223,25 +284,51 @@ pub fn parse(env: &Env, text: &str) -> Result<Package, PackageError> {
         return malformed("the identifier is zero, which is the padding identifier");
     }
     let balance = text_field("balance")?;
-    if balance.is_empty() || !balance.chars().all(|c| c.is_ascii_digit()) {
+    if balance.is_empty()
+        || (balance.len() > 1 && balance.starts_with('0'))
+        || !balance.chars().all(|c| c.is_ascii_digit())
+    {
         return malformed("the balance is not a decimal string");
+    }
+    let attestation_id = text_field("attestation_id")?;
+    if attestation_id.is_empty()
+        || (attestation_id.len() > 1 && attestation_id.starts_with('0'))
+        || !attestation_id.chars().all(|c| c.is_ascii_digit())
+    {
+        return malformed("the attestation ID is not a decimal string");
+    }
+    let attestation_id = attestation_id.parse::<u64>().map_err(|_| {
+        PackageError::Malformed("the attestation ID is above the u64 maximum".into())
+    })?;
+    if attestation_id == 0 {
+        return malformed("the attestation ID must be positive");
     }
     let siblings = match json["siblings"].as_array() {
         Some(values) => values,
         None => return malformed("siblings is not an array"),
     };
 
+    let commitment = fr_field("commitment")?;
+    let balance = balance
+        .parse()
+        .map_err(|_| PackageError::Malformed("the balance is above the u64 maximum".into()))?;
+    let salt = fr_field("salt")?;
+    if to_big(&balance_commitment(env, balance, &to_fr(env, &salt))) != commitment {
+        return malformed("the commitment does not match the balance and salt");
+    }
     Ok(Package {
+        identifier_rule,
         network: text_field("network")?,
         registry: contract_field("registry")?,
         asset: contract_field("asset")?,
         snapshot_ledger: u32_field("snapshot_ledger")?,
+        context_hash: fr_field("context_hash")?,
+        attestation_id,
         leaf_index: u32_field("leaf_index")?,
         id,
-        balance: balance
-            .parse()
-            .map_err(|_| PackageError::Malformed("the balance is above the u64 maximum".into()))?,
-        salt: fr_field("salt")?,
+        commitment,
+        balance,
+        salt,
         siblings: siblings
             .iter()
             .enumerate()
@@ -268,15 +355,21 @@ mod tests {
     }
 
     fn package() -> Package {
+        let env = env();
+        let salt = BigUint::from(9u32);
         Package {
+            identifier_rule: IdentifierRule::Legacy,
             network: "local".into(),
             registry: REGISTRY.into(),
             asset: ASSET.into(),
             snapshot_ledger: 1234,
+            context_hash: BigUint::from(5u32),
+            attestation_id: 1,
             leaf_index: 5,
             id: BigUint::from(7u32),
+            commitment: to_big(&balance_commitment(&env, u64::MAX, &to_fr(&env, &salt))),
             balance: u64::MAX,
-            salt: BigUint::from(9u32),
+            salt,
             siblings: (0u32..4).map(BigUint::from).collect(),
         }
     }
@@ -306,9 +399,9 @@ mod tests {
             .to_json()
             .lines()
             .filter_map(|line| line.trim().split('"').nth(1).map(str::to_string))
-            .take(FIELDS.len())
+            .take(FIELDS_V2.len())
             .collect();
-        assert_eq!(written, FIELDS);
+        assert_eq!(written, FIELDS_V2);
     }
 
     /// A file that carries a root, a direction bit, or any other field is not
@@ -329,14 +422,41 @@ mod tests {
         assert_eq!(parse(&env(), &package().to_json()).unwrap(), package());
     }
 
+    #[test]
+    fn an_email_identifier_package_requires_its_rule() {
+        let mut entry = package();
+        entry.identifier_rule = IdentifierRule::EmailCodeV1;
+        let text = entry.to_json();
+        assert!(text.contains("\"format\": \"zkpor-inclusion/3\""));
+        assert!(text.contains("\"identifier_rule\": \"zkpor-email-code/1\""));
+        assert_eq!(parse(&env(), &text).unwrap(), entry);
+        assert!(matches!(
+            parse(&env(), &text.replace("zkpor-email-code/1", "zkpor-other/1")),
+            Err(PackageError::Malformed(_))
+        ));
+        assert!(matches!(
+            parse(
+                &env(),
+                &text.replace("  \"identifier_rule\": \"zkpor-email-code/1\",\n", "")
+            ),
+            Err(PackageError::Malformed(_))
+        ));
+    }
+
     /// The layout is part of the format, so this pins the key order, the
     /// indentation, and the line ends.
     #[test]
     fn the_layout_is_fixed() {
+        let env = env();
         let written = Package {
             siblings: vec![BigUint::from(2u32), BigUint::from(3u32)],
             id: BigUint::from(7u32),
             salt: BigUint::from(1u32),
+            commitment: to_big(&balance_commitment(
+                &env,
+                u64::MAX,
+                &to_fr(&env, &BigUint::from(1u32)),
+            )),
             leaf_index: 42,
             snapshot_ledger: 1000,
             ..package()
@@ -345,13 +465,15 @@ mod tests {
         // test does not restate the padding rule of fr_hex.
         let id = format!("{:0>64}", "07");
         let salt = format!("{:0>64}", "01");
+        let commitment = fr_hex(&written.commitment);
+        let context_hash = fr_hex(&written.context_hash);
         let first = format!("{:0>64}", "02");
         let second = format!("{:0>64}", "03");
         let expected = format!(
-            "{{\n  \"format\": \"zkpor-inclusion/1\",\n  \"network\": \"local\",\n  \
+            "{{\n  \"format\": \"zkpor-inclusion/2\",\n  \"network\": \"local\",\n  \
              \"registry\": \"{REGISTRY}\",\n  \"asset\": \"{ASSET}\",\n  \
-             \"snapshot_ledger\": 1000,\n  \
-             \"leaf_index\": 42,\n  \"id\": \"0x{id}\",\n  \
+             \"snapshot_ledger\": 1000,\n  \"context_hash\": \"{context_hash}\",\n  \"attestation_id\": \"1\",\n  \
+             \"leaf_index\": 42,\n  \"id\": \"0x{id}\",\n  \"commitment\": \"{commitment}\",\n  \
              \"balance\": \"18446744073709551615\",\n  \"salt\": \"0x{salt}\",\n  \
              \"siblings\": [\n    \"0x{first}\",\n    \"0x{second}\"\n  ]\n}}\n"
         );
@@ -377,10 +499,10 @@ mod tests {
 
     #[test]
     fn another_format_is_not_a_malformed_package() {
-        let text = with("format", "\"zkpor-inclusion/2\"");
+        let text = with("format", "\"zkpor-inclusion/1\"");
         assert_eq!(
             parse(&env(), &text),
-            Err(PackageError::UnsupportedFormat("zkpor-inclusion/2".into()))
+            Err(PackageError::UnsupportedFormat("zkpor-inclusion/1".into()))
         );
     }
 
@@ -429,7 +551,7 @@ mod tests {
 
     #[test]
     fn a_balance_that_is_not_a_decimal_string_is_malformed() {
-        for value in ["18446744073709551616", "-1", "0x10", ""] {
+        for value in ["18446744073709551616", "-1", "0x10", "01", ""] {
             assert!(
                 matches!(
                     parse(&env(), &with("balance", &format!("\"{value}\""))),
@@ -440,6 +562,30 @@ mod tests {
         }
         assert!(matches!(
             parse(&env(), &with("balance", "12")),
+            Err(PackageError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn a_commitment_that_does_not_match_the_balance_is_malformed() {
+        let changed = with("commitment", &json_string(&fr_hex(&BigUint::from(1u32))));
+        assert!(matches!(
+            parse(&env(), &changed),
+            Err(PackageError::Malformed(_))
+        ));
+        assert!(parse(&env(), &package().to_json()).is_ok());
+    }
+
+    #[test]
+    fn the_attestation_id_is_a_positive_decimal_u64_string() {
+        for value in ["0", "01", "18446744073709551616", "-1", "1.5", ""] {
+            assert!(matches!(
+                parse(&env(), &with("attestation_id", &json_string(value))),
+                Err(PackageError::Malformed(_))
+            ));
+        }
+        assert!(matches!(
+            parse(&env(), &with("attestation_id", "1")),
             Err(PackageError::Malformed(_))
         ));
     }

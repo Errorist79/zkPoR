@@ -54,6 +54,9 @@ pub fn hex_bytes(text: &str) -> Result<[u8; FR_BYTES], String> {
             text.len()
         ));
     }
+    if !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("the value contains a non-hexadecimal byte".into());
+    }
     let mut out = [0u8; FR_BYTES];
     for (index, byte) in out.iter_mut().enumerate() {
         *byte = u8::from_str_radix(&text[2 * index..2 * index + 2], 16)
@@ -143,6 +146,13 @@ mod tests {
         let text = format!("0x{:064x}", modulus());
         assert!(parse_package_fr(&env, &text).is_err());
         assert!(parse_fr(&env, &text).is_err());
+    }
+
+    #[test]
+    fn a_non_ascii_value_is_refused_before_byte_slicing() {
+        let text = format!("€{}", "0".repeat(FR_HEX_DIGITS - "€".len()));
+        assert!(hex_bytes(&text).is_err());
+        assert!(parse_package_fr(&env(), &format!("0x{text}")).is_err());
     }
 
     #[test]

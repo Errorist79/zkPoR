@@ -83,6 +83,7 @@ export function diagnosis(): ReserveDiagnosis {
 
 /** The parts of an asset view that a test chooses. */
 export interface ViewChoices {
+  readonly recordedObservations?: AssetView["recordedObservations"];
   readonly record?: AssetRecord;
   readonly currentLedger?: number;
   readonly observedSum?: bigint;
@@ -113,8 +114,10 @@ export function assetView(choices: ViewChoices = {}): AssetView {
         : observedReserves({
             observedSum: choices.observedSum,
             observedLedger: choices.observedLedger ?? 5_200,
+            supportsRecordedObservations: false,
           }),
     observationFailure: choices.observationFailure,
+    recordedObservations: choices.recordedObservations ?? { kind: "unsupported" },
     diagnosis: choices.diagnosis,
     currentLedger,
   };

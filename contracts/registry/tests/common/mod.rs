@@ -18,6 +18,7 @@ use zkpor_registry::{
 /// hash of these bytes, so a verifier that holds them satisfies its
 /// constructor.
 pub const RELEASE_KEY: &[u8] = include_bytes!("../../../../circuits/recursion/agg/vk");
+pub const EMAIL_KEY: &[u8] = include_bytes!("../../../../circuits/email/vk");
 /// The ed25519 key of the issuer account in the test fixtures.
 pub const ISSUER_KEY: [u8; 32] = [7u8; 32];
 /// The ed25519 key of an account that is not the issuer.
@@ -78,6 +79,10 @@ impl StubVerifier {
 
     pub fn last_public_inputs(env: Env) -> Bytes {
         env.storage().instance().get(&INPUTS).unwrap()
+    }
+
+    pub fn set_accepts(env: Env, accepts: bool) {
+        env.storage().instance().set(&ACCEPTS, &accepts);
     }
 }
 
@@ -179,7 +184,15 @@ pub fn deploy_registry(env: &Env) -> Address {
 /// A registry and the verifier behind it, which accepts or refuses on command.
 pub fn deploy_registry_with_verifier(env: &Env, accepts: bool) -> (Address, Address) {
     let verifier = env.register(StubVerifier, (Bytes::from_slice(env, RELEASE_KEY), accepts));
-    (env.register(Registry, (verifier.clone(),)), verifier)
+    let email_verifier = deploy_email_verifier(env, accepts);
+    (
+        env.register(Registry, (verifier.clone(), email_verifier)),
+        verifier,
+    )
+}
+
+pub fn deploy_email_verifier(env: &Env, accepts: bool) -> Address {
+    env.register(StubVerifier, (Bytes::from_slice(env, EMAIL_KEY), accepts))
 }
 
 pub fn addresses(env: &Env, count: u32) -> Vec<Address> {

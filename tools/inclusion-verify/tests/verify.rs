@@ -4,13 +4,14 @@
 use num_bigint::BigUint;
 use soroban_sdk::{Env, U256};
 use std::cell::RefCell;
-use zkpor_context::{leaf_hash, ATTESTATION_MAX_AGE_LEDGERS};
+use zkpor_context::{balance_commitment, leaf_hash, ATTESTATION_MAX_AGE_LEDGERS};
 use zkpor_inclusion_verify::{
     chain::{Attestation, Chain, Entry, NoVerdict},
-    exit_code, verify, Verdict,
+    exit_code, verify, verify_with_identity, Verdict,
 };
 use zkpor_package::{
     fr::{to_big, to_fr},
+    identity::{derive_identifier, encode_code, IdentifierRule, IDENTIFIER_BYTES},
     new_env,
     schema::{Package, PACKAGE_FORMAT},
     tree::{path_in_levels, subtree_root, tree_levels},
@@ -64,7 +65,8 @@ fn row(index: usize) -> (BigUint, u64, BigUint) {
 
 fn leaf(env: &Env, index: usize) -> U256 {
     let (id, balance, salt) = row(index);
-    leaf_hash(env, &to_fr(env, &id), balance, &to_fr(env, &salt))
+    let commitment = balance_commitment(env, balance, &to_fr(env, &salt));
+    leaf_hash(env, &to_fr(env, &id), &commitment)
 }
 
 /// The package of leaf `LEAF` and the attestation that the chain holds.
@@ -73,17 +75,22 @@ fn fixture(env: &Env) -> (Package, Attestation) {
     let siblings = path_in_levels(&tree_levels(env, &leaves), LEAF as usize);
     let (id, balance, salt) = row(LEAF as usize);
     let package = Package {
+        identifier_rule: IdentifierRule::Legacy,
         network: NETWORK.to_string(),
         registry: RETIRED.to_string(),
         asset: ASSET.to_string(),
         snapshot_ledger: SNAPSHOT,
+        context_hash: BigUint::from(5u32),
+        attestation_id: 1,
         leaf_index: LEAF,
         id,
+        commitment: to_big(&balance_commitment(env, balance, &to_fr(env, &salt))),
         balance,
         salt,
         siblings: siblings.iter().map(to_big).collect(),
     };
     let attestation = Attestation {
+        context_hash: BigUint::from(5u32),
         final_root: to_big(&subtree_root(env, &leaves)),
         total_liabilities: TOTAL,
         snapshot_ledger: SNAPSHOT,
@@ -98,6 +105,7 @@ struct FakeChain {
     entry: Result<Entry, NoVerdict>,
     latest_ledger: u32,
     asked: RefCell<Vec<String>>,
+    asked_ids: RefCell<Vec<u64>>,
 }
 
 impl FakeChain {
@@ -106,6 +114,7 @@ impl FakeChain {
             entry: Ok(Entry::Attested(attestation)),
             latest_ledger: ATTESTED + 1,
             asked: RefCell::new(Vec::new()),
+            asked_ids: RefCell::new(Vec::new()),
         }
     }
 
@@ -114,13 +123,15 @@ impl FakeChain {
             entry: Ok(entry),
             latest_ledger: ATTESTED + 1,
             asked: RefCell::new(Vec::new()),
+            asked_ids: RefCell::new(Vec::new()),
         }
     }
 }
 
 impl Chain for FakeChain {
-    fn attestation(&self, registry: &str, _asset: &str) -> Result<Entry, NoVerdict> {
+    fn attestation(&self, registry: &str, _asset: &str, id: u64) -> Result<Entry, NoVerdict> {
         self.asked.borrow_mut().push(registry.to_string());
+        self.asked_ids.borrow_mut().push(id);
         self.entry.clone()
     }
 
@@ -149,6 +160,112 @@ fn a_package_of_a_retired_generation_verifies_against_the_attested_root() {
     assert!(!verdict.solvency_lapsed());
     // The verifier asked the registry of its own deployment record.
     assert_eq!(chain.asked.borrow().as_slice(), [RETIRED.to_string()]);
+    assert_eq!(
+        chain.asked_ids.borrow().as_slice(),
+        [package.attestation_id]
+    );
+}
+
+fn own_identity_fixture(env: &Env) -> (Package, Attestation, String) {
+    let code = encode_code(&[0u8; IDENTIFIER_BYTES]);
+    let id = derive_identifier(env, "Alice@EXAMPLE.COM", &code).unwrap();
+    let identity = serde_json::json!({"email": "Alice@example.com", "code": code}).to_string();
+    let (mut package, mut attestation) = fixture(env);
+    package.id = id;
+    package.identifier_rule = IdentifierRule::EmailCodeV1;
+    let mut leaves: Vec<U256> = (0..CAPACITY).map(|index| leaf(env, index)).collect();
+    leaves[LEAF as usize] = leaf_hash(
+        env,
+        &to_fr(env, &package.id),
+        &to_fr(env, &package.commitment),
+    );
+    package.siblings = path_in_levels(&tree_levels(env, &leaves), LEAF as usize)
+        .iter()
+        .map(to_big)
+        .collect();
+    attestation.final_root = to_big(&subtree_root(env, &leaves));
+    (package, attestation, identity)
+}
+
+#[test]
+fn own_identity_requires_both_the_id_match_and_the_attested_root() {
+    let env = new_env();
+    let (package, attestation, identity) = own_identity_fixture(&env);
+    let chain = FakeChain::holding(attestation.clone());
+    let own = verify_with_identity(
+        &env,
+        &package.to_json(),
+        &deployments(),
+        &chain,
+        Some(&identity),
+    )
+    .unwrap();
+    assert!(matches!(
+        own,
+        Verdict::Included {
+            identity_confirmed: true,
+            ..
+        }
+    ));
+    assert_eq!(exit_code(&own), 0);
+
+    let foreign = identity.replace("Alice", "alice");
+    let chain = FakeChain::holding(attestation.clone());
+    let verdict = verify_with_identity(
+        &env,
+        &package.to_json(),
+        &deployments(),
+        &chain,
+        Some(&foreign),
+    )
+    .unwrap();
+    assert_eq!(verdict, Verdict::ForeignIdentifier);
+    assert!(chain.asked.borrow().is_empty());
+
+    let mut wrong = attestation;
+    wrong.final_root += BigUint::from(1u8);
+    let chain = FakeChain::holding(wrong);
+    let verdict = verify_with_identity(
+        &env,
+        &package.to_json(),
+        &deployments(),
+        &chain,
+        Some(&identity),
+    )
+    .unwrap();
+    assert!(matches!(verdict, Verdict::RootMismatch { .. }));
+}
+
+#[test]
+fn a_legacy_package_cannot_claim_an_email_identity() {
+    let env = new_env();
+    let (package, attestation) = fixture(&env);
+    let chain = FakeChain::holding(attestation);
+    let identity =
+        r#"{"email":"Alice@example.com","code":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#;
+    let verdict = verify_with_identity(
+        &env,
+        &package.to_json(),
+        &deployments(),
+        &chain,
+        Some(identity),
+    )
+    .unwrap();
+    assert_eq!(verdict, Verdict::UnsupportedIdentifierRule);
+    assert!(chain.asked.borrow().is_empty());
+}
+
+#[test]
+fn the_package_selects_one_historical_attestation_id() {
+    let env = new_env();
+    let (mut package, attestation) = fixture(&env);
+    package.attestation_id = 2;
+    let chain = FakeChain::holding(attestation);
+    assert!(matches!(
+        check(&env, &package, &chain),
+        Verdict::Included { .. }
+    ));
+    assert_eq!(chain.asked_ids.borrow().as_slice(), [2]);
 }
 
 #[test]
@@ -162,6 +279,7 @@ fn every_customer_leaf_of_the_tree_verifies() {
         let one = Package {
             leaf_index: index as u32,
             id,
+            commitment: to_big(&balance_commitment(&env, balance, &to_fr(&env, &salt))),
             balance,
             salt,
             siblings: path_in_levels(&levels, index).iter().map(to_big).collect(),
@@ -184,11 +302,12 @@ fn a_stale_attestation_holds_the_inclusion_and_reports_the_solvency_as_lapsed() 
     let (package, attestation) = fixture(&env);
 
     let mut fresh = FakeChain::holding(attestation.clone());
-    fresh.latest_ledger = ATTESTED + ATTESTATION_MAX_AGE_LEDGERS;
+    fresh.latest_ledger = SNAPSHOT + ATTESTATION_MAX_AGE_LEDGERS;
     let current = check(&env, &package, &fresh);
 
     let mut old = FakeChain::holding(attestation);
-    old.latest_ledger = ATTESTED + ATTESTATION_MAX_AGE_LEDGERS + 1;
+    old.latest_ledger = SNAPSHOT + ATTESTATION_MAX_AGE_LEDGERS + 1;
+    assert!(old.latest_ledger <= ATTESTED + ATTESTATION_MAX_AGE_LEDGERS);
     let lapsed = check(&env, &package, &old);
 
     // One ledger of difference, and nothing else. The inclusion holds in both
@@ -201,6 +320,7 @@ fn a_stale_attestation_holds_the_inclusion_and_reports_the_solvency_as_lapsed() 
     assert_eq!(current.lines()[0], lapsed.lines()[0]);
     assert!(current.lines()[2].starts_with("SOLVENCY CURRENT"));
     assert!(lapsed.lines()[2].starts_with("SOLVENCY LAPSED"));
+    assert!(lapsed.lines()[2].contains(&format!("snapshot is ledger {SNAPSHOT}")));
 }
 
 #[test]
@@ -209,7 +329,7 @@ fn a_format_that_the_reader_does_not_know_stops_the_read() {
     let (package, attestation) = fixture(&env);
     let text = package
         .to_json()
-        .replace(PACKAGE_FORMAT, "zkpor-inclusion/2");
+        .replace(PACKAGE_FORMAT, "zkpor-inclusion/1");
     let chain = FakeChain::holding(attestation);
     let verdict = verify(&env, &text, &deployments(), &chain).expect("a verdict");
     assert!(matches!(verdict, Verdict::UnsupportedFormat(_)));
@@ -417,14 +537,29 @@ fn a_snapshot_that_the_attestation_does_not_name_matches_no_attestation() {
     ));
 }
 
-/// A wrong balance, a wrong salt, and a changed path all reach another root.
-/// The verifier cannot tell them apart, and it says so.
 #[test]
-fn a_changed_leaf_value_or_a_changed_path_reaches_another_root() {
+fn a_context_that_the_historical_attestation_does_not_name_matches_no_attestation() {
     let env = new_env();
     let (package, attestation) = fixture(&env);
-    let mut tampered = package.siblings.clone();
-    tampered[0] += 1u32;
+    let other = Attestation {
+        context_hash: &attestation.context_hash + 1u32,
+        ..attestation.clone()
+    };
+    assert!(matches!(
+        check(&env, &package, &FakeChain::holding(other)),
+        Verdict::NoMatchingAttestation(_)
+    ));
+    assert!(matches!(
+        check(&env, &package, &FakeChain::holding(attestation)),
+        Verdict::Included { .. }
+    ));
+}
+
+/// The reader rejects a commitment that does not match the private values.
+#[test]
+fn a_changed_private_value_is_malformed() {
+    let env = new_env();
+    let (package, attestation) = fixture(&env);
     let cases = [
         Package {
             balance: package.balance + 1,
@@ -434,6 +569,25 @@ fn a_changed_leaf_value_or_a_changed_path_reaches_another_root() {
             salt: &package.salt + 1u32,
             ..package.clone()
         },
+        Package {
+            commitment: &package.commitment + 1u32,
+            ..package.clone()
+        },
+    ];
+    for case in cases {
+        let verdict = check(&env, &case, &FakeChain::holding(attestation.clone()));
+        assert!(matches!(verdict, Verdict::Malformed(_)), "{verdict:?}");
+        assert_eq!(exit_code(&verdict), 4);
+    }
+}
+
+#[test]
+fn a_changed_public_leaf_value_or_path_reaches_another_root() {
+    let env = new_env();
+    let (package, attestation) = fixture(&env);
+    let mut tampered = package.siblings.clone();
+    tampered[0] += 1u32;
+    let cases = [
         Package {
             id: &package.id + 1u32,
             ..package.clone()
@@ -450,7 +604,6 @@ fn a_changed_leaf_value_or_a_changed_path_reaches_another_root() {
             "{verdict:?}"
         );
         assert_eq!(exit_code(&verdict), 7);
-        assert!(verdict.lines()[1].contains("look the same from here"));
     }
     assert!(matches!(
         check(&env, &package, &FakeChain::holding(attestation)),
@@ -481,6 +634,7 @@ fn a_read_that_fails_is_not_a_verdict() {
         entry: Err(NoVerdict("the node did not answer".to_string())),
         latest_ledger: ATTESTED,
         asked: RefCell::new(Vec::new()),
+        asked_ids: RefCell::new(Vec::new()),
     };
     assert!(verify(&env, &package.to_json(), &deployments(), &chain).is_err());
 }

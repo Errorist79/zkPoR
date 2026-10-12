@@ -77,6 +77,7 @@ export function withoutComments(source: string): string {
  */
 export const BUILT_INS: readonly string[] = [
   "node:child_process",
+  "node:crypto",
   "node:fs",
   "node:fs/promises",
   "node:os",

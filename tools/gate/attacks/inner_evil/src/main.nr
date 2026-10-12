@@ -16,7 +16,8 @@
 //! the hardened aggregator's vk-hash binding must reject every proof made here.
 
 use dep::recursion_common::params::BATCH_B;
-use dep::recursion_common::{leaf_hash, subtree_root};
+use dep::poseidon::poseidon2::Poseidon2;
+use dep::recursion_common::{leaf_hash, subtree_root, BALANCE_DOMAIN_TAG, LEAF_HASH_ARITY};
 
 fn main(
     batch_slot: pub Field,
@@ -28,7 +29,8 @@ fn main(
     let mut leaves = [0; BATCH_B];
     let mut sum: Field = 0;
     for j in 0..BATCH_B {
-        leaves[j] = leaf_hash(ids[j], balances[j], salts[j]); // no range check: bare Field
+        let commitment = Poseidon2::hash([BALANCE_DOMAIN_TAG, balances[j], salts[j]], LEAF_HASH_ARITY);
+        leaves[j] = leaf_hash(ids[j], commitment); // no range check: bare Field
         sum += balances[j];
     }
     (subtree_root(leaves), sum)

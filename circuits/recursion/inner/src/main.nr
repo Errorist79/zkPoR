@@ -10,7 +10,8 @@
 //! Private inputs: per customer { id, balance: u64, salt }
 //!
 //! Leaf definition matches the off-circuit generator:
-//!   leaf = Poseidon2([id, balance, salt], 3)
+//!   commitment = Poseidon2([balance tag, balance, salt], 3)
+//!   leaf = Poseidon2([leaf tag, id, commitment], 3)
 //!
 //! The salt is an unconstrained Field on purpose. It is a commitment input and
 //! not an amount, so a range constraint would only shrink the entropy that the
@@ -27,7 +28,7 @@
 //! proof so the aggregator can pin each proof to one slot and reject replays.
 
 use dep::recursion_common::params::BATCH_B;
-use dep::recursion_common::{leaf_hash, subtree_root};
+use dep::recursion_common::{balance_commitment, leaf_hash, subtree_root, PADDING_LEAF_BALANCE, PADDING_LEAF_ID};
 
 fn main(
     batch_slot: pub Field,
@@ -42,7 +43,8 @@ fn main(
     let mut sum: u128 = 0;
     for j in 0..BATCH_B {
         let balance = balances[j]; // u64: non-negative, < 2^64
-        leaves[j] = leaf_hash(ids[j], balance as Field, salts[j]);
+        assert((ids[j] != PADDING_LEAF_ID) | (balance == PADDING_LEAF_BALANCE), "a padding identifier has a zero balance");
+        leaves[j] = leaf_hash(ids[j], balance_commitment(balance, salts[j]));
         sum += balance as u128; // u128 accumulator, no overflow
     }
     assert(subtree_root(leaves) == subroot, "the leaves do not hash to the subroot");
@@ -63,7 +65,7 @@ fn sample_batch() -> ([Field; BATCH_B], [u64; BATCH_B], [Field; BATCH_B], [Field
         ids[j] = (j as Field) + 1;
         balances[j] = (j as u64) + 1;
         salts[j] = (j as Field) + 1000;
-        leaves[j] = leaf_hash(ids[j], balances[j] as Field, salts[j]);
+        leaves[j] = leaf_hash(ids[j], balance_commitment(balances[j], salts[j]));
         sum += balances[j] as u128;
     }
     (ids, balances, salts, leaves, sum)
@@ -97,5 +99,12 @@ fn rejects_wrong_salt() {
     // The committed subroot holds the leaves of the derived salts, so one
     // changed salt must break the subroot equality.
     salts[0] += 1;
+    main(0, subtree_root(leaves), sum as Field, ids, balances, salts);
+}
+
+#[test(should_fail_with = "a padding identifier has a zero balance")]
+fn rejects_a_padding_identifier_with_a_balance() {
+    let (mut ids, balances, salts, leaves, sum) = sample_batch();
+    ids[0] = 0;
     main(0, subtree_root(leaves), sum as Field, ids, balances, salts);
 }

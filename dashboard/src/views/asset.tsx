@@ -17,7 +17,7 @@ import type {
   SolvencyResult,
 } from "../model.js";
 import { Layout } from "./layout.js";
-import { AttestedReservesSection, ObservedReservesSection } from "./reserves.js";
+import { AttestedReservesSection, ObservedReservesSection, RecordedObservationsSection } from "./reserves.js";
 
 /**
  * The form that asks for an asset address.
@@ -347,6 +347,7 @@ export function AssetPage(input: { view: AssetView; history: HistoryView | undef
         failure={view.observationFailure}
         diagnosis={view.diagnosis}
       />
+      <RecordedObservationsSection observations={view.recordedObservations} />
       <Registration view={view} />
     </Layout>
   );

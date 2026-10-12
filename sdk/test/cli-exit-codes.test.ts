@@ -31,7 +31,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { EXIT_CODES, EXIT_NO_VERDICT, EXIT_USAGE } from "../src/inclusion.js";
-import { parsePackage } from "../src/inclusion-package.js";
+import { parsePackage, serializePackage } from "../src/inclusion-package.js";
+import { deriveCustomerIdentifier } from "../src/identity.js";
 import { RegistryRefusedError } from "../src/registry.js";
 import { InfrastructureError } from "../src/network.js";
 import { attestAndReport, completeCommand, failureNote, runReport } from "../src/report.js";
@@ -173,10 +174,24 @@ async function runCliServed(
 }
 
 describe("which generation a read answers about", () => {
-  /** The three registries of the committed file, oldest first. */
+  /** The four registries of this test file, oldest first. */
   const OLDEST = "CC4MA6FWDBG3Y4YXYGDHYEZ36O3YSP7DREGOLBWKP6ZTQQ6IYFFX3KQK";
   const MIDDLE = "CCHUTDKUPWXVUIX6D26SE5NZ5STP74VV4DY2CNVCMNJYOU5PTROLA7MY";
-  const NEWEST = "CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG";
+  const PREVIOUS = "CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG";
+  const NEWEST = "CAKCWWWKJYPWSFZHECKKL5PMPPQFOGX5UR5XNB3OYYB746ALBP6YNPUF";
+  const testDirectory = mkdtempSync(join(tmpdir(), "zkpor-generation-order-"));
+  const testDeployments = join(testDirectory, "deployments.json");
+  writeFileSync(testDeployments, JSON.stringify(
+    [OLDEST, MIDDLE, PREVIOUS, NEWEST].map((registry) => ({
+      network: "testnet",
+      registry,
+      verifier: registry,
+      aggregator_key_sha256: "aa",
+      registry_wasm_sha256: "bb",
+      verifier_wasm_sha256: "cc",
+      tree_depth: 12,
+    })),
+  ));
 
   /** An asset address. The value is test data. */
   const ASSET = "CBSQOEUZDBCKO4NYNRJJSPOLEIXVWZZ66CZXWRSVUNZTNZK7IKHNNRY3";
@@ -185,7 +200,7 @@ describe("which generation a read answers about", () => {
   const RECORD = assetRecordXdr({ authority: ACCOUNT, reserves: [ACCOUNT] });
 
   const environment = (url: string): Record<string, string> => ({
-    ZKPOR_DEPLOYMENTS: DEPLOYMENTS,
+    ZKPOR_DEPLOYMENTS: testDeployments,
     ZKPOR_RPC_URL: url,
   });
 
@@ -219,7 +234,7 @@ describe("which generation a read answers about", () => {
     try {
       const answer = await runCliServed(["entry", ASSET], environment(endpoint.url));
       expect(answer.stdout).toContain(MIDDLE);
-      expect(endpoint.asked).toEqual([NEWEST, MIDDLE]);
+      expect(endpoint.asked).toEqual([NEWEST, PREVIOUS, MIDDLE]);
     } finally {
       await endpoint.close();
     }
@@ -271,9 +286,10 @@ describe("which generation a read answers about", () => {
     try {
       const answer = await runCliServed(["entry", ASSET], environment(endpoint.url));
       expect(answer.code).toBe(0);
-      for (const registry of [NEWEST, MIDDLE, OLDEST]) {
+      for (const registry of [NEWEST, PREVIOUS, MIDDLE, OLDEST]) {
         expect(answer.stdout).toContain(registry);
       }
+      expect(endpoint.asked).toEqual([NEWEST, PREVIOUS, MIDDLE, OLDEST]);
     } finally {
       await endpoint.close();
     }
@@ -284,7 +300,7 @@ describe("which generation a read answers about", () => {
     try {
       await runCliServed(["entry", ASSET], environment(endpoint.url));
       for (const contract of endpoint.asked) {
-        expect([OLDEST, MIDDLE, NEWEST], `the client asked ${contract}`).toContain(contract);
+        expect([OLDEST, MIDDLE, PREVIOUS, NEWEST], `the client asked ${contract}`).toContain(contract);
       }
       expect(endpoint.asked.length).toBeGreaterThan(0);
     } finally {
@@ -425,7 +441,7 @@ describe("what the command line writes to its output", () => {
     // path that exercises it.
     const directory = mkdtempSync(join(tmpdir(), "zkpor-cli-"));
     const path = join(directory, "customer.zkpor.json");
-    writeFileSync(path, '{"format":"zkpor-inclusion/1"}\n');
+    writeFileSync(path, '{"format":"zkpor-inclusion/2"}\n');
     const answer = runCli(["verify-inclusion", path], { ZKPOR_DEPLOYMENTS: DEPLOYMENTS });
     expect(answer.code).toBe(4);
     expect(answer.stdout).toContain("The package is malformed.");
@@ -437,6 +453,44 @@ describe("what the command line writes to its output", () => {
     const answer = runCli(["entry", "not-an-address"]);
     expect(answer.stderr).toContain("not a Stellar account address");
     expect(answer.stdout).toBe("");
+  });
+});
+
+describe("the private identity option", () => {
+  it("refuses a legacy package and a foreign identifier before a chain read", () => {
+    const directory = mkdtempSync(join(tmpdir(), "zkpor-identity-cli-"));
+    const identityPath = join(directory, "identity.json");
+    const oldPath = join(directory, "legacy.zkpor.json");
+    const foreignPath = join(directory, "foreign.zkpor.json");
+    const code = "A".repeat(43);
+    const email = "Alice@example.com";
+    writeFileSync(identityPath, JSON.stringify({ email, code }));
+    const old = parsePackage(readFileSync(join(HERE, "..", "..", "fixtures", "synthetic_package_v2.zkpor.json"), "utf8"));
+    writeFileSync(oldPath, serializePackage(old));
+    const legacy = runCli(["verify-inclusion", oldPath, DEPLOYMENTS, "--identity-file", identityPath]);
+    expect(legacy.code, legacy.stderr).toBe(EXIT_CODES["unsupported-identifier-rule"]);
+    const ownId = deriveCustomerIdentifier(email, code);
+    writeFileSync(foreignPath, serializePackage({
+      ...old,
+      format: "zkpor-inclusion/3",
+      identifierRule: "zkpor-email-code/1",
+      id: ownId === 1n ? 2n : 1n,
+    }));
+    const foreign = runCli(["verify-inclusion", foreignPath, DEPLOYMENTS, "--identity-file", identityPath]);
+    expect(foreign.code).toBe(EXIT_CODES["foreign-identifier"]);
+    for (const answer of [legacy, foreign]) {
+      expect(answer.stdout).not.toContain(email);
+      expect(answer.stdout).not.toContain(code);
+      expect(answer.stderr).not.toContain(email);
+      expect(answer.stderr).not.toContain(code);
+    }
+  });
+
+  it("reports an absent private file without echoing its path", () => {
+    const path = join(tmpdir(), "zkpor-private-identity-that-is-absent.json");
+    const answer = runCli(["verify-inclusion", path, "--identity-file", path]);
+    expect(answer.code).toBe(EXIT_NO_VERDICT);
+    expect(answer.stderr).not.toContain(path);
   });
 });
 
@@ -811,15 +865,15 @@ describe("the sentence that follows a failure", () => {
  *
  * An example that nothing runs stops working quietly, and this one is the
  * deliverable a stranger meets first. The case runs the file itself rather than
- * reading it, so a change to the command line, to the recording, or to the
+ * reading it, so a change to the command line, to the synthetic endpoint, or to the
  * committed package fails here.
  */
 describe("the example of the customer check", () => {
-  /** The committed package that the recording attests. */
-  const INCLUDED = join(HERE, "..", "..", "fixtures", "example_package.zkpor.json");
+  /** The synthetic package that the endpoint accepts. */
+  const INCLUDED = join(HERE, "..", "..", "fixtures", "synthetic_package_v2.zkpor.json");
 
-  /** The committed package that the check refuses. */
-  const REFUSED = join(HERE, "..", "..", "fixtures", "example_package_wrong_balance.zkpor.json");
+  /** The synthetic package that the check refuses. */
+  const REFUSED = join(HERE, "..", "..", "fixtures", "synthetic_package_v2_wrong_path.zkpor.json");
 
   /** Runs one example file and reports what it printed and what code it gave. */
   async function ran(file: string, args: readonly string[] = []) {
@@ -843,7 +897,7 @@ describe("the example of the customer check", () => {
     expect(answer.code).toBe(0);
   }, 120_000);
 
-  it("answers the verdict of a wrong balance, and the code seven", async () => {
+  it("answers the verdict of a wrong path, and the code seven", async () => {
     // A check that only accepts proves half of the claim. So the package that
     // the check refuses is committed beside the one it accepts, and this case
     // runs the same example against it.
@@ -853,14 +907,15 @@ describe("the example of the customer check", () => {
     expect(answer.code).toBe(EXIT_CODES["root-mismatch"]);
   }, 120_000);
 
-  it("keeps the refused package one field away from the included one", () => {
+  it("keeps the refused package one sibling away from the included one", () => {
     // A refusal proves the check works only while the refused file stays a
     // well formed package of the same customer. A file that drifted into
     // another shape would refuse for a reason nobody demonstrates.
     const included = parsePackage(readFileSync(INCLUDED, "utf8"));
     const refused = parsePackage(readFileSync(REFUSED, "utf8"));
-    expect(refused.balance).not.toBe(included.balance);
-    expect({ ...refused, balance: included.balance }).toEqual(included);
+    expect(refused.siblings).not.toEqual(included.siblings);
+    expect(refused.siblings.filter((sibling, level) => sibling !== included.siblings[level])).toHaveLength(1);
+    expect({ ...refused, siblings: included.siblings }).toEqual(included);
   });
 
   it("shows a caller the three answers the library can give", async () => {
@@ -868,19 +923,16 @@ describe("the example of the customer check", () => {
     // refusal is an answer, and that a failure is not a verdict. A case that
     // read only the first would pass while the other two stopped working.
     const answer = await ran("verify-in-your-program.mjs");
-    expect(answer.out).toContain("included: leaf 0 holds 1000");
+    expect(answer.out).toContain("included: leaf 0 holds 0");
     expect(answer.out).toContain("root-mismatch");
     expect(answer.out).toContain("which is not a verdict");
     expect(answer.code).toBe(0);
   }, 120_000);
 
-  it("says that the answers came from a recording", async () => {
-    // A reader who takes the recording for the chain has learned something
-    // false. The file says so, and this reads the file rather than trusting it
-    // to stay said.
+  it("says that the answers came from a synthetic endpoint", async () => {
     for (const name of ["check-a-package.mjs", "verify-in-your-program.mjs"]) {
       const text = readFileSync(join(import.meta.dirname, "..", "examples", name), "utf8");
-      expect(text, name).toContain("A recording is not the chain.");
+      expect(text, name).toContain("A synthetic endpoint is not the chain.");
     }
   });
 });

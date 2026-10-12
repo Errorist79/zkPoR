@@ -2,7 +2,16 @@
 
 The client library and the `zkpor` command line for the zkPoR registry.
 
-The package covers six capabilities.
+Install the public package with Node.js 22:
+
+```bash
+npm install @zkpor/sdk
+```
+
+The npm package contains the library, replay endpoint, command line, and license.
+The source checkout contains the Rust generator, circuit tools, and synthetic examples.
+
+The package covers seven capabilities.
 
 - Registration with account reserves, and a change of a reserve set. Every
   reserve address must authorize the call. A reserve address sits inside a list
@@ -12,10 +21,10 @@ The package covers six capabilities.
   and no address, so only a client that reads each reserve balance on its own
   can name the address that failed.
 - The proving driver, which runs the pinned native binaries.
-- Attestation submission.
-- Registry queries, including the attestation history. A history result states
-  the oldest ledger that the query covered.
+- Attestation and reserve observation submission.
+- Registry queries, including persistent attestation and observation history, plus legacy event history.
 - The customer inclusion check.
+- Fixed disputes, issuer answers, resolution, and an operator watchdog.
 
 The package does not hold the cryptographic definitions. The shared Rust crate
 `contracts/context` is the definition, and the code here is a mirror that the
@@ -23,79 +32,205 @@ tests compare against the committed vectors. The package also writes no
 customer file: the generation gate lives in the generator, and a second writer
 of per-customer files would double the surface that touches sensitive data.
 
+## Fixed attestation records
+
+Version 2 and 3 customer packages carry a positive decimal `attestation_id` and a balance commitment.
+The verifier reads `get_attestation(asset, id)` and checks that fixed root.
+A later attestation does not change the record that the package selects.
+The verifier also recomputes the commitment from the private balance and salt.
+It refuses version 1 packages because their leaf rule differs.
+
+```typescript
+const attestation = await readStoredAttestation(network, registry, asset, 1n);
+const history = await readStoredAttestationHistory(network, registry, asset, {
+  startId: 1n,
+  count: 20,
+});
+```
+
+These functions require a registry that supports persistent history.
+The `network` argument is a `NetworkConfig` from the caller's trusted configuration.
+The optional `server` field lets a caller reuse its configured RPC client.
+The single-record reader returns `undefined` only for a missing asset or attestation.
+An unsupported contract API or failed network request remains an error.
+The page count must be between one and `HISTORY_PAGE_LIMIT` (200).
+Each page fixes `totalCount` before it reads records and returns `nextId` when more records remain.
+
+`readAttestationHistory` remains the event reader for legacy deployments.
+Its result states the ledger window that it covers.
+Persistent reads do not depend on that window.
+Persistent entries remain subject to the network's storage lifetime and restoration rules.
+
+The issuer reads the prior fixed attestation before proving a new one.
+It retains that attestation's redacted `generation.json` file.
+The witness and package generator check this file for every old identifier.
+The successful attestation call returns its fixed identifier.
+The issuer then reads that fixed attestation for the package root and context.
+
+```typescript
+const prior = await preparePriorGeneration({
+  server, network, readOptions: {}, registry, asset, outputDirectory,
+});
+const proof = await prove({
+  repository, contextFile, customersFile, masterSecret,
+  network: network.network, registry, prior,
+});
+```
+
+The package writer needs the accepted `attestationId`, the fixed root, and the fixed context hash.
+It passes the same prior manifest to the generator.
+
+## Recorded reserve observations
+
+`observeReserves` simulates a live reserve read.
+It creates no stored observation and returns no observation identifier.
+Its `supportsRecordedObservations` flag distinguishes the complete current ABI from the legacy response.
+
+The stored APIs require a registry that supports recorded observations:
+
+```typescript
+const status = await readObservationStatus(network, registry, asset);
+const observation = await readStoredObservation(network, registry, asset, 1n);
+const page = await readStoredObservationHistory(network, registry, asset, {
+  startId: 1n,
+  count: 20,
+});
+```
+
+Each page fixes the observation count before it reads the requested identifiers.
+The page limit is `HISTORY_PAGE_LIMIT` (200).
+A missing method, failed restoration, or failed RPC request remains an error.
+Only explicit contract not-found errors mean that an asset or observation is absent.
+
+Each observation names its reserve set and optional baseline attestation.
+`belowAttested` compares the observed sum with that attestation's reserve sum, not its liabilities.
+An absent baseline means that no comparison occurred.
+The first-low marker survives later observations, attestations, and reserve changes.
+A lower reserve sum does not establish insolvency.
+
+Submit a transaction to record an observation:
+
+```typescript
+const result = await submitReserveObservation(server, network, {
+  sourceAccount,
+  sourceSigner,
+  registry,
+  asset,
+});
+```
+
+The caller pays the transaction fee and needs no issuer authorization.
+The result contains the settled transaction hash and ledger.
+It does not return the simulated observation identifier.
+The function refuses a legacy registry that cannot store observations.
+
+## Disputes and the watchdog
+
+The dispute reader selects one target attestation and one customer identifier.
+It returns `undefined` only when the registry confirms `DisputeNotFound`.
+An RPC failure or an archived entry gives no absence result.
+
+```typescript
+const dispute = await readStoredDispute(network, registry, asset, targetId, identifier);
+const evidence = parseInclusionEvidence(answerText);
+const answer = await answerDispute(server, network, {
+  sourceAccount, sourceSigner: authoritySigner,
+  registry, asset, targetId, evidence,
+});
+```
+
+`openDispute` accepts an inclusion opening or an email-proof opening through the same registry entry point.
+The inclusion opening names a fixed older attestation and carries only an identifier, commitment, position, and path.
+An email opening carries a proof, an identifier, and a registered key identifier.
+The email, code, and individual balance stay local.
+`answerDispute` checks the fixed target and needs the asset authority's signature.
+`resolveDispute` needs no issuer signature and runs only after the contract answer deadline.
+The transaction source signs and pays its transaction fee for each write.
+The disputer also pays a 10 XLM deposit when `openDispute` succeeds.
+
+The `watchdog` command checks one customer's new fixed attestations in order.
+It requires an older version 3 package that passes inclusion and the local identity check.
+Copy each newly delivered package into the chosen directory as `<attestation-id>.zkpor.json`.
+The command checks the package against that fixed attestation and the same private identity.
+It waits for the package delivery grace before it opens a dispute for a missing or invalid package.
+It records an expired target and checks the next target in the same run.
+The command reports the first expired target with its next result.
+
+The default grace is 51,840 ledgers after the target attestation.
+An operator can set a different grace with `--grace-ledgers`.
+The value must be positive and shorter than the 518,400-ledger dispute eligibility window.
+This setting changes only when the watchdog opens a dispute.
+The contract gives the issuer a separate 51,840-ledger answer window after the dispute opens.
+One command run sends at most one deposit transaction.
+
+The command writes private state for each target before it sends a deposit transaction.
+The state holds the exact transaction hash and expiry.
+After a restart, the command reads the fixed dispute and that transaction before it retries.
+It retries only after a confirmed failed transaction or an expired transaction with no fixed dispute.
+An unavailable RPC result stops the command without another deposit.
+Keep the state directory and the private packages through the dispute eligibility window.
+
+```text
+zkpor watchdog \
+  <old-package.zkpor.json> <private-identity.json> \
+  <delivered-packages-dir> <state-dir> [deployments.json] \
+  [--grace-ledgers <count>]
+```
+
+The key stays in the environment, not in an argument.
+The command never sends an email.
+It prints no email address, code, balance, or salt.
+
 ## Run the customer check
 
-The check tells one customer whether their balance sits under the root that the
-registry accepted. Two commands run it, and they differ only in where the
-answers come from. A third command runs it against a package that the check
-refuses.
+The source checkout examples use `fixtures/synthetic_package_v2.zkpor.json` and a synthetic RPC response.
+The fixture describes no real customer, liability, or accepted network attestation.
 
-### Against a recording, which always works
+### Check the synthetic package
 
+Run these commands in the source checkout:
+
+```bash
+npm install
+npm run example
 ```
-npm install && npm run example
-```
 
-The example runs `zkpor verify-inclusion` against a recorded answer of the
-registry, and prints the verdict and the exit code. It needs no key, no funding,
-no proving toolchain, and no network.
+The example runs `zkpor verify-inclusion` against a local synthetic endpoint.
+It prints the verdict and exit code.
+It needs no key, funds, proving toolchain, or network access.
 
-**A recording is not the chain.** Every answer is one this repository wrote
-down, so a check that passes against it proves that the client reads and refuses
-correctly. It proves nothing about what any network holds now.
+### Check your package against a network
 
-### Against the test network, while the record stands
+Install `@zkpor/sdk` before you run this command in your own project.
 
-```
+```bash
 ZKPOR_NETWORK=testnet ZKPOR_RPC_URL=https://soroban-testnet.stellar.org \
-  npx zkpor verify-inclusion ../fixtures/example_package.zkpor.json \
-  ../scripts/deployments.json
+  npx zkpor verify-inclusion /absolute/path/to/customer.zkpor.json \
+  /absolute/path/to/deployments.json
 ```
 
-This reads the chain. It answers a verdict while the registry still holds the
-attestation that the committed package rests on.
+Use your own version 2 or 3 package and trusted deployment configuration.
+The registry must support persistent history and retain the selected attestation.
+A testnet reset can remove its contracts and records.
+A later attestation does not change the fixed record that either package version selects.
 
-**It will stop working, and here is how to read it when it does.** The test
-network is cleared two to four times a year, and a clearing removes every
-contract. After one, the command answers that the registry holds no record of
-the asset. If somebody attests this asset again, the command answers that the
-package names one snapshot ledger and the registry attests another. Neither is a
-defect in the client. Both mean the record moved, and the recording above still
-runs.
+### Check a package with an incorrect path
 
-The package that both commands read is committed, and the run that produced it
-is not reproducible from this repository: it read a master secret that this
-repository does not hold. The balance in it is fictional and already committed,
-in the list of test customers.
+Run these commands in the source checkout:
 
-### The package the check refuses
-
-```
-npm install && npm run build
-node examples/check-a-package.mjs ../fixtures/example_package_wrong_balance.zkpor.json
+```bash
+npm install
+npm run build
+node examples/check-a-package.mjs ../fixtures/synthetic_package_v2_wrong_path.zkpor.json
 ```
 
-A check that only accepts proves half of the claim. So the repository commits a
-second package, and the command above runs the same example against it. The
-answer is that the recomputed root does not equal the attested root, and the
-exit code 7. The example takes any package path, and it reads the included
-package when it gets none.
-
-The two files differ in the balance and in nothing else. The refused one reads
-1001 where the attested balance reads 1000, so the check refuses a package that
-is well formed and plausible, and not a file that is broken.
-
-**The one unit is the point.** It is the smallest change a person can make to
-that field, and no reader of the two files finds it by eye. The root binds the
-exact balance, so the check has no tolerance, and a larger edit would teach the
-weaker lesson that the check catches only a crude one.
-
-Both files describe the same customer of the committed list of test customers,
-`fixtures/test_only_customers.csv`, which describes no real person and no real
-liability. The balance 1001 belongs to no row of that list. Neither file states
-this inside itself, because the format permits no field that it does not name.
+The second synthetic package has a changed sibling hash.
+The example reports a root mismatch, with exit code 7.
+The example accepts a package path and uses the valid synthetic package when no path is supplied.
 
 ## Call the check from your own program
+
+Run this synthetic example in the source checkout:
 
 ```
 npm install && npm run example:library
@@ -105,8 +240,7 @@ The example above runs the command line. This one calls the library, which is
 what a team integrating the flow does. It shows the three things a caller has to
 get right and nothing else.
 
-- **A verdict is not a boolean.** The check answers one of seven kinds, and six
-  of them are refusals that each mean something different.
+- **A verdict is not a boolean.** Each refusal has a distinct reason.
 - **A refusal is an answer.** A package that is not under the attested root is
   the check working. The verdict carries the recomputed root and the attested
   one, so a caller shows a customer what happened.
@@ -114,21 +248,114 @@ get right and nothing else.
   raises `InfrastructureError`. A caller that turned that into "not included"
   would tell a customer their balance is missing because a request timed out.
 
-It runs against a recording, and the same sentence applies: a recording is not
-the chain. Give the configuration the address of a network endpoint to read one.
+It uses the same synthetic endpoint as the command example.
+For a network check, configure a trusted endpoint and use your own accepted package.
 
 The example leaves out proving, attestation, registration, and the signing of a
-reserve consent. Those belong to the issuer, who runs them from the command line
-of this package, and no integrating team performs them.
+reserve consent. The issuer runs those commands with the required tools and keys.
+The Rust prover tools require the source checkout.
+
+## Customer identifiers
+
+Version 3 packages carry `identifier_rule: "zkpor-email-code/1"`.
+The identifier derives from a canonical email address and a persistent random code.
+The package carries neither input.
+The [protocol specification](https://github.com/Errorist79/zkPoR/blob/sdk-v0.1.0/docs/protocol.md#45-email-and-code-identifiers) defines the exact bytes and hash.
+
+The supported address has an ASCII dot-atom local part and a DNS domain.
+The rule preserves the local part's case and lowercases the domain.
+It rejects quoted local parts, non-ASCII addresses, domain literals, and surrounding whitespace.
+It does not remove dots or `+` suffixes.
+
+The following Rust generator commands require the source checkout and pinned Rust toolchain.
+The npm package does not contain that generator.
+
+Prepare one private draft for a customer:
+
+1. Create a private directory outside the repository.
+2. Restrict the directory to mode `0700`.
+3. Create a mode `0600` JSON file with the customer's `email` field.
+4. Run the generator with file paths only.
+
+```bash
+umask 077
+cargo run --release --manifest-path tools/recursion-gen/Cargo.toml -- \
+  prepare-identifier-email /absolute/private/zkpor/email-input.json \
+  /absolute/private/zkpor/identifier-draft.json
+```
+
+The generator refuses to overwrite an existing output file.
+It creates the draft with mode `0600`.
+The draft contains the canonical email, code, decimal identifier, subject, and body.
+Its format is `zkpor-identifier-email/1` and its identifier rule is `zkpor-email-code/1`.
+The subject contains exactly 43 canonical base64url characters, without padding.
+The command creates a local draft; it sends no email and creates no email signature.
+
+Keep the code stable for the customer's lifetime in the liability set.
+A new code produces a different identifier.
+Do not prepare another draft for each snapshot.
+Retain the private identity file for later package checks and closed-account continuity.
+The tools do not expire or delete that file.
+The code is separate from the issuer's master secret and each package salt.
+
+The generator accepts a mixed customer CSV with this header:
+
+```csv
+id,balance,identifier_rule,email,code
+```
+
+Use `zkpor-email-code/1` for an email-derived row.
+Supply its email and persistent code.
+Leave `id` empty or supply the matching decimal identifier.
+Use `zkpor-legacy-id/1` for a legacy row, with its identifier and empty email and code fields.
+The earlier `id,balance` CSV remains supported.
+The generator writes version 3 packages for derived identifiers and version 2 packages for legacy identifiers.
+Keep these CSV files private because they contain balances and codes.
+
+Check your own identifier and inclusion with your private file:
+
+```bash
+npx zkpor verify-inclusion /absolute/private/zkpor/customer.zkpor.json \
+  /absolute/path/to/deployments.json \
+  --identity-file /absolute/private/zkpor/identifier-draft.json
+```
+
+The Rust command accepts the same arguments:
+
+```bash
+cargo run --release --manifest-path tools/inclusion-verify/Cargo.toml -- \
+  /absolute/private/zkpor/customer.zkpor.json /absolute/path/to/deployments.json \
+  --identity-file /absolute/private/zkpor/identifier-draft.json
+```
+
+With `--identity-file`, exit zero requires both the local identifier match and the on-chain inclusion check.
+Use your own email and code, not an identity file supplied with an unfamiliar package.
+The match does not prove mailbox control, email delivery, or the correctness of the balance.
+Without the option, both package versions support inclusion checks without an identity claim.
+Version 2 with `--identity-file` is refused because it states no email and code rule.
+
+The library exports these functions:
+
+| Function | Result |
+|---|---|
+| `deriveCustomerIdentifier(email, code)` | The nonzero field identifier |
+| `encodeIdentifierSubject(id)` | The canonical 43-character subject |
+| `parseIdentifierSubject(subject)` | The identifier from that exact subject |
+| `prepareIdentifierEmail(email)` | A local draft object with a new random code |
+| `checkOwnPackage(packageText, identityText)` | Only the local identifier comparison |
+
+`checkOwnPackage` returns `own`, `foreign`, or `unsupported-identifier-rule`.
+An `own` result does not establish inclusion.
+Pass `identityText` to `verifyInclusion` to require both checks.
+The draft object includes `identifierRule`, and its body states that rule.
 
 ## The Poseidon2 dependency
 
 The protocol names the Poseidon2 instance of `noir-lang/poseidon` v0.2.0, file
 `src/poseidon2.nr`, over the BN254 scalar field, with state width 4, rate 3, and
 a sponge capacity that starts at the input count times 2^64. This package uses
-`@zkpassport/poseidon2`, pinned to one exact version. The mirror test reproduces
-every committed vector with it, which is the acceptance check that the
-specification names.
+`@zkpassport/poseidon2`, pinned to one exact version.
+The mirror test compares its output with every committed vector.
 
 The library also offers a variable-length mode, which absorbs one extra element
 and computes another function. This package calls the fixed-length hash only,
@@ -143,7 +370,8 @@ package puts the same command on the path of the machine, and it then runs as
 `zkpor ...`.
 
 ```
-zkpor verify-inclusion <package.zkpor.json> [deployments.json]
+zkpor verify-inclusion <package.zkpor.json> [deployments.json] [--identity-file <private.json>]
+zkpor watchdog <old-package.zkpor.json> <private-identity.json> <delivered-packages-dir> <state-dir> [deployments.json] [--grace-ledgers <count>]
 zkpor entry <asset>
 zkpor observe-reserves <asset>
 zkpor history <asset> [from-ledger]
@@ -171,6 +399,9 @@ the codes of the Rust reference of the same checks.
 | 7 | the recomputed root does not equal the attested root |
 | 8 | no verdict of this check |
 | 9 | the deployments file of this verifier contradicts itself |
+| 10 | the package identifier differs from the private email and code |
+| 11 | the package does not state the supported identifier rule |
+| 12 | the private identity file is invalid |
 
 The code 8 covers two answers, and neither is a verdict of this check. One is a
 failure of the client or of the network. The other is an answer of a registry
@@ -209,6 +440,7 @@ every asset older than it.
 | `ZKPOR_DEPLOYMENTS` | the path of the deployments file |
 | `ZKPOR_RESERVE_SECRET` | the secret key of a reserve holder, for one signing step |
 | `ZKPOR_AUTHORITY_SECRET` | the secret key of the transaction source |
+| `ZKPOR_DISPUTER_SECRET` | the account key that pays a dispute deposit and its transaction fee |
 | `ZKPOR_MASTER_SECRET` | the master secret that derives the salts |
 | `ZKPOR_MASTER_SECRET_FILE` | the path of a mode 0600 file that holds it |
 
@@ -226,40 +458,6 @@ the flow is four separable steps.
 3. The holder runs `sign-entry` against its own key, on its own machine.
 4. `submit-registration` reassembles the call, refuses an incomplete or expired
    collection, signs the envelope, and submits.
-
-## What a live network has exercised
-
-The tests of this package run without a network. A test cannot reach the two
-calls that send a transaction and wait for its outcome, so those ran against the
-Stellar test network on August 17, 2026.
-
-**This run is not evidence for the validated artifact.** It provisioned its own
-issuer, its own asset, and its own reserve accounts, and the asset code says
-`THROWAWAY`. The record it left on the registry
-`CCHUTDKUPWXVUIX6D26SE5NZ5STP74VV4DY2CNVCMNJYOU5PTROLA7MY` is a record of a
-disposable asset, `CC3APVB2TJEKJYMS2NBFYLPT23JPCFXGNIRTWCNQKK7TCONBBHXS456D`.
-The soundness evidence of this project stands in `SECURITY.md`, and it names two
-other assets. Do not read this run as part of it.
-
-The run covered every path of this package that needs a network:
-
-- the registration, with the consent of two reserve addresses that each signed
-  its own authorization entry, accepted at ledger 4187501;
-- the record of the asset, the reserve observation, and the diagnosis of each
-  reserve balance on its own;
-- the proving driver, which produced a proof of 14,592 bytes with the pinned
-  prover;
-- the attestation, accepted at ledger 4187508, whose attested root equals the
-  root that the proof carries;
-- the attestation history from the event stream, which found the attestation
-  inside the retained window;
-- the customer check, which accepted three packages that the generator wrote and
-  which reported a root mismatch for a package with a changed balance.
-
-The run found one defect that no test without a network could find. The assembly
-of a simulated call already carries its time bounds, and a second call that set a
-timeout threw. That stopped the registration and the attestation before either
-one reached the network. Every test passed before that run.
 
 ## An inclusion package reveals a balance
 

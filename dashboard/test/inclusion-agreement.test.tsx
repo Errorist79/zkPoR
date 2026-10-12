@@ -5,14 +5,8 @@
  * the page states no verdict of its own, it prints the lines that the kit
  * writes and the exit code that the kit assigns.
  *
- * The tests come in two parts, and the split has a reason. Four outcomes need
- * no network, because the kit reads the package, checks the deployment claim,
- * and checks the depth before it reads the chain. Those four run end to end
- * here, through the real route, against a client whose endpoint nothing
- * listens on, so a test that reached the network would fail rather than pass on
- * a value from elsewhere. The other three outcomes need an attestation from the
- * chain, so the agreement for them is checked on the verdict itself, over every
- * kind that the kit defines.
+ * Local package refusals run through the route without a network endpoint.
+ * Separate cases check the fixed attestation read and render every SDK verdict.
  */
 
 import { mkdtempSync, writeFileSync } from "node:fs";
@@ -20,7 +14,8 @@ import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { EXIT_CODES, exitCode, verdictLines } from "@zkpor/sdk";
+import { EXIT_CODES, balanceCommitment, exitCode, leafHash, parsePackage, rootFromPath, toHex, verdictLines } from "@zkpor/sdk";
+import { SorobanDataBuilder, nativeToScVal, rpc, scValToNative } from "@stellar/stellar-sdk";
 import type { Verdict } from "@zkpor/sdk";
 import { PACKAGE_PATH_FIELD, ROUTES, SECTION_IDS } from "../src/constants.js";
 import { route } from "../src/routes.js";
@@ -45,17 +40,21 @@ beforeAll(async () => {
 
 /** A registry address that the committed deployments file does not record. */
 const UNTRUSTED_REGISTRY = "CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+const HISTORY_ASSET = "CBSQOEUZDBCKO4NYNRJJSPOLEIXVWZZ66CZXWRSVUNZTNZK7IKHNNRY3";
 
 /** A package that follows the schema of the specification. The values are test data. */
 function packageFields(): Record<string, unknown> {
   return {
-    format: "zkpor-inclusion/1",
+    format: "zkpor-inclusion/2",
     network: "testnet",
     registry: REGISTRY,
     asset: ASSET,
     snapshot_ledger: 5_000,
+    context_hash: toHex(7n),
+    attestation_id: "1",
     leaf_index: 5,
     id: `0x${"0".repeat(63)}7`,
+    commitment: toHex(balanceCommitment({ balance: 100n, salt: 2n })),
     balance: "100",
     salt: `0x${"0".repeat(63)}2`,
     siblings: Array.from(
@@ -92,10 +91,12 @@ async function check(path: string, deployments = deploymentsText) {
  */
 const WITHOUT_A_NETWORK: readonly { changes: Record<string, unknown>; expected: Verdict }[] = [
   {
-    changes: { format: "zkpor-inclusion/2" },
+    changes: { format: "zkpor-inclusion/1" },
     expected: { kind: "unsupported-format", reason: "" },
   },
   { changes: { salt: "not a field element" }, expected: { kind: "malformed", reason: "" } },
+  { changes: { attestation_id: "0" }, expected: { kind: "malformed", reason: "" } },
+  { changes: { balance: "101" }, expected: { kind: "malformed", reason: "" } },
   {
     changes: { registry: UNTRUSTED_REGISTRY },
     expected: {
@@ -114,6 +115,69 @@ const WITHOUT_A_NETWORK: readonly { changes: Record<string, unknown>; expected: 
 ];
 
 describe("the page and the command line, on one package", () => {
+  it("accepts the version 2 fixture before any deployment or network check", () => {
+    const parsed = parsePackage(JSON.stringify(packageFields()));
+    expect(parsed.attestationId).toBe(1n);
+    expect(parsed.commitment).toBe(balanceCommitment({ balance: 100n, salt: 2n }));
+  });
+
+  it.each([false, true])("checks the fixed historical root through the page; changed root: %s", async (changed) => {
+    const packaged = parsePackage(JSON.stringify({ ...packageFields(), asset: HISTORY_ASSET }));
+    const root = rootFromPath({
+      leaf: leafHash({ id: packaged.id, commitment: packaged.commitment }),
+      leafIndex: packaged.leafIndex,
+      siblings: packaged.siblings,
+      depth: 12,
+    });
+    const client = dashboard({ deploymentsText });
+    const calls: { method: string; args: unknown[] }[] = [];
+    client.reader.server.simulateTransaction = async (transaction): Promise<rpc.Api.SimulateTransactionResponse> => {
+      const operation = transaction.toEnvelope().v1().tx().operations()[0];
+      if (operation === undefined) {
+        throw new Error("the registry read has no operation");
+      }
+      const call = operation.body().invokeHostFunctionOp().hostFunction().invokeContract();
+      calls.push({
+        method: call.functionName().toString(),
+        args: call.args().map((value): unknown => scValToNative(value)),
+      });
+      return {
+        id: "1", latestLedger: 5_100, events: [], _parsed: true,
+        transactionData: new SorobanDataBuilder(), minResourceFee: "0",
+        result: {
+          auth: [],
+          retval: nativeToScVal({
+            context_hash: 7n,
+            final_root: changed ? root + 1n : root,
+            total_liabilities: 1_000n,
+            snapshot_ledger: 5_000,
+            reserve_sum: 1_500n,
+            attested_ledger: 5_100,
+          }, { type: {
+            context_hash: ["symbol", "u256"],
+            final_root: ["symbol", "u256"],
+            total_liabilities: ["symbol", "u128"],
+            snapshot_ledger: ["symbol", "u32"],
+            reserve_sum: ["symbol", "u128"],
+            attested_ledger: ["symbol", "u32"],
+          } }),
+        },
+      };
+    };
+    client.reader.server.getHealth = async () => ({
+      status: "healthy", latestLedger: 5_200, oldestLedger: 1,
+      ledgerRetentionWindow: 5_200,
+    });
+    const answered = await route(request({
+      method: "POST", target: ROUTES.inclusion,
+      body: new URLSearchParams({ [PACKAGE_PATH_FIELD]: writePackage({ asset: HISTORY_ASSET }) }).toString(),
+    }), client);
+    expect(answered.status, textOf(answered.body)).toBe(200);
+    const shown = textOf(sectionOf(answered.body, SECTION_IDS.verdict));
+    expect(shown).toContain(`the exit code ${changed ? EXIT_CODES["root-mismatch"] : EXIT_CODES.included}`);
+    expect(calls).toEqual([{ method: "get_attestation", args: [HISTORY_ASSET, 1n] }]);
+  });
+
   it.each(WITHOUT_A_NETWORK)("agree on the outcome $expected.kind", async ({ changes, expected }) => {
     const answered = await check(writePackage(changes));
     expect(answered.status).toBe(200);
@@ -164,42 +228,39 @@ describe("the page and the command line, on one package", () => {
   });
 });
 
-/** One verdict of each kind, so the agreement covers every outcome the kit defines. */
+const INCLUDED_VERDICT: Extract<Verdict, { kind: "included" }> = {
+  kind: "included",
+  id: 0x2an,
+  asset: ASSET,
+  registry: REGISTRY,
+  leafIndex: 5,
+  balance: 100n,
+  snapshotLedger: 5_000,
+  attestedLedger: 5_100,
+  totalLiabilities: 1_000n,
+  reserveSum: 1_500n,
+  currentLedger: 5_200,
+  solvencyLapsed: false,
+};
+
+/** One verdict of each kind, including both optional statements of an included result. */
 const EVERY_VERDICT: readonly Verdict[] = [
+  INCLUDED_VERDICT,
   {
-    kind: "included",
-    id: 0x2an,
-    asset: ASSET,
-    registry: REGISTRY,
-    leafIndex: 5,
-    balance: 100n,
-    snapshotLedger: 5_000,
-    attestedLedger: 5_100,
-    totalLiabilities: 1_000n,
-    reserveSum: 1_500n,
-    currentLedger: 5_200,
-    solvencyLapsed: false,
-  },
-  {
-    kind: "included",
-    id: 0x2an,
-    asset: ASSET,
-    registry: REGISTRY,
-    leafIndex: 5,
-    balance: 100n,
-    snapshotLedger: 5_000,
-    attestedLedger: 5_100,
-    totalLiabilities: 1_000n,
-    reserveSum: 1_500n,
+    ...INCLUDED_VERDICT,
     currentLedger: 9_000,
     solvencyLapsed: true,
   },
+  { ...INCLUDED_VERDICT, identityConfirmed: true },
   { kind: "unsupported-format", reason: "another format" },
   { kind: "malformed", reason: "no salt" },
   { kind: "untrusted-deployment", reason: "no such registry", network: "testnet", registry: REGISTRY },
   { kind: "invalid-deployments", reason: "one pair twice" },
   { kind: "no-matching-attestation", reason: "another snapshot" },
   { kind: "root-mismatch", recomputed: 0x11n, attested: 0x22n },
+  { kind: "foreign-identifier" },
+  { kind: "unsupported-identifier-rule" },
+  { kind: "invalid-identity", reason: "the identity file needs an email and a code" },
 ];
 
 describe("the verdict page", () => {

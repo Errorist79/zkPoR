@@ -36,6 +36,7 @@ import { readPins, requirePinnedTools } from "./versions.js";
 import { forgetChild, watchChild } from "./children.js";
 import { withRunLifecycle } from "./runlifecycle.js";
 import type { Pins } from "./versions.js";
+import { toHex } from "./fr.js";
 
 /** The paths of the repository that the driver reads and writes. */
 const PATHS = {
@@ -89,6 +90,26 @@ export type ProgressReporter = (step: string) => void;
 export interface RunContext {
   readonly asset: string;
   readonly snapshotLedger: number;
+}
+
+/** The fixed prior attestation and its retained tree. */
+export interface PriorGeneration {
+  readonly attestationId: bigint;
+  readonly root: bigint;
+  readonly contextHash: bigint;
+  readonly manifestFile: string;
+}
+
+function priorArguments(prior: PriorGeneration | undefined): string[] {
+  if (prior === undefined) {
+    return [];
+  }
+  return [
+    "--prior-manifest", prior.manifestFile,
+    "--prior-attestation-id", prior.attestationId.toString(),
+    "--prior-root", toHex(prior.root),
+    "--prior-context", toHex(prior.contextHash),
+  ];
 }
 
 /**
@@ -319,6 +340,9 @@ export async function prove(input: {
   contextFile: string;
   customersFile: string;
   masterSecret: bigint;
+  network: string;
+  registry: string;
+  prior: PriorGeneration | undefined;
   report?: ProgressReporter;
 }): Promise<Proof> {
   const report = input.report ?? (() => {});
@@ -355,7 +379,11 @@ export async function prove(input: {
     report("writing the witness of each batch");
     await runTool(
       "cargo",
-      ["run", "--release", "--quiet", "--", "witness", input.contextFile, input.customersFile],
+      [
+        "run", "--release", "--quiet", "--", "witness", input.contextFile, input.customersFile,
+        "--network", input.network, "--registry", input.registry,
+        ...priorArguments(input.prior),
+      ],
       { cwd: generator, env: secretEnvironment },
     );
 
@@ -491,7 +519,10 @@ export async function writeCustomerPackages(input: {
   network: string;
   registry: string;
   attestedRoot: bigint;
+  attestedContext: bigint;
   attestedSnapshot: number;
+  attestationId: bigint;
+  prior: PriorGeneration | undefined;
   transactionHash: string;
   deploymentsFile: string;
 }): Promise<string> {
@@ -518,10 +549,15 @@ export async function writeCustomerPackages(input: {
       input.network,
       "--registry",
       input.registry,
+      "--attestation-id",
+      input.attestationId.toString(),
+      ...priorArguments(input.prior),
       "--attested-root",
-      input.attestedRoot.toString(16).padStart(64, "0"),
+      toHex(input.attestedRoot),
       "--attested-snapshot",
       String(input.attestedSnapshot),
+      "--attested-context",
+      toHex(input.attestedContext),
       "--transaction",
       input.transactionHash,
       "--deployments",

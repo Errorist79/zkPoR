@@ -1,18 +1,18 @@
 /**
- * The two reserve numbers, in two sections that never merge.
+ * Attested reserves, live simulations, and recorded observations remain separate.
  *
  * The registry produces a sum that an attestation covers and a sum that nothing
  * covers. There is deliberately no component here that takes "a reserve sum".
- * Each component takes one of the two types, and each writes its own name, its
- * own ledger, and its own statement about what covers the number. A future
+ * Each component takes a specific type and writes its own name,
+ * ledger, and statement about what covers the number. A future
  * edit that wants to show one number therefore has to choose which one it
  * means.
  */
 
-import { groupedDigits } from "@zkpor/sdk";
-import type { ReserveDiagnosis } from "@zkpor/sdk";
+import { groupedDigits, toHex } from "@zkpor/sdk";
+import type { ReserveDiagnosis, StoredReserveObservation } from "@zkpor/sdk";
 import { SECTION_IDS } from "../constants.js";
-import type { ObservedReserves, SolvencyResult } from "../model.js";
+import type { ObservedReserves, RecordedObservationView, SolvencyResult } from "../model.js";
 
 /** The attested pair: the liabilities the proof commits to, and the reserves the registry read. */
 export function AttestedReservesSection(input: { solvency: SolvencyResult }) {
@@ -56,8 +56,8 @@ export function ObservedReservesSection(input: {
     <section id={SECTION_IDS.observedReserves}>
       <h2>Reserves observed now</h2>
       <p>
-        No attestation covers this reading. It is a reading at the ledger it names, and it is not
-        part of any solvency claim on this page.
+        This live simulation creates no stored observation. No attestation covers this reading.
+        It is not part of any solvency claim on this page.
       </p>
       {input.observed === undefined ? (
         <ObservationFailure failure={input.failure} diagnosis={input.diagnosis} />
@@ -70,6 +70,74 @@ export function ObservedReservesSection(input: {
         </dl>
       )}
     </section>
+  );
+}
+
+/** Recorded transactions and the permanent first-low marker, separate from live reserves. */
+export function RecordedObservationsSection(input: { observations: RecordedObservationView }) {
+  const { observations } = input;
+  return (
+    <section id={SECTION_IDS.recordedObservations}>
+      <h2>Recorded reserve observations</h2>
+      <p>These observations come from accepted transactions. The live simulation above does not add to them.</p>
+      {observations.kind === "unsupported" ? (
+        <p className="limit">This registry does not support recorded observations. Its history and first-low status are unavailable.</p>
+      ) : observations.kind === "failed" ? (
+        <div className="failure">
+          {observations.firstLowId === undefined ? null : (
+            <p>Permanent first-low marker: observation {observations.firstLowId.toString()}. Its record details are unavailable.</p>
+          )}
+          <p>The recorded status could not be read completely. {observations.reason}</p>
+        </div>
+      ) : (
+        <>
+          <p>Stored observations: {observations.status.observationCount.toString()}.</p>
+          {observations.firstLow === undefined ? (
+            <p>No stored observation has set the first-low marker. This does not establish continuous reserve coverage.</p>
+          ) : (
+            <div className="failure">
+              <h3>Permanent first-low observation</h3>
+              <p>This observation fell below the referenced attested reserve sum. Later observations, attestations, or reserve changes do not clear this marker.</p>
+              <p>A lower reserve sum does not establish insolvency.</p>
+              <StoredObservationDetails observation={observations.firstLow} />
+            </div>
+          )}
+          {observations.latest === undefined ? (
+            <p>No observation transaction is recorded.</p>
+          ) : (
+            <>
+              <h3>Latest recorded observation</h3>
+              <StoredObservationDetails observation={observations.latest} />
+            </>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+function StoredObservationDetails(input: { observation: StoredReserveObservation }) {
+  const { observation } = input;
+  return (
+    <>
+      <dl>
+        <dt>Observation identifier</dt>
+        <dd>{observation.observationId.toString()}</dd>
+        <dt>Ledger of the recorded observation</dt>
+        <dd>{observation.observedLedger}</dd>
+        <dt>Recorded reserves</dt>
+        <dd className="figure">{groupedDigits(observation.observedSum)}</dd>
+        <dt>Reserve set hash</dt>
+        <dd className="address">{toHex(observation.reserveSetHash)}</dd>
+        <dt>Baseline attestation identifier</dt>
+        <dd>{observation.attestationId?.toString() ?? "None"}</dd>
+      </dl>
+      <p>{observation.attestationId === undefined
+        ? "This observation had no baseline attestation. No comparison with attested reserves was made."
+        : observation.belowAttested
+          ? "The recorded reserves fell below the referenced attested reserve sum."
+          : "The recorded reserves did not fall below the referenced attested reserve sum."}</p>
+    </>
   );
 }
 

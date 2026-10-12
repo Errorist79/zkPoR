@@ -329,6 +329,9 @@ describe("the driver, which is the only caller that matters", () => {
       contextFile: join(root, "context.toml"),
       customersFile: join(root, "customers.csv"),
       masterSecret: 0x1234n,
+      network: "testnet",
+      registry: "CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG",
+      prior: undefined,
       report: () => {},
     }).catch((cause: unknown) => cause);
   }
@@ -378,6 +381,9 @@ describe("the driver, which is the only caller that matters", () => {
       contextFile: join(root, "context.toml"),
       customersFile: join(root, "customers.csv"),
       masterSecret: FIXTURE_MASTER_SECRET,
+      network: "testnet",
+      registry: "CB6CFLPDNUP5DOLM23BMN3WTCYFNBDD33H2DR5H56RPC56ZP6H43TIAG",
+      prior: undefined,
       report: () => {},
     }).catch((cause: unknown) => cause);
     expect(String(refused)).toContain("anybody could recompute");

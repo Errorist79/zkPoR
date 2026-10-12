@@ -133,13 +133,16 @@ SERIALIZED=$(python3 "$REPO_ROOT/scripts/classic_asset.py" "$ASSET_CODE" "$ISSUE
 bash "$REPO_ROOT/scripts/deploy.sh" >/dev/null || die "verifier deploy"
 VERIFIER=$(cat "$REPO_ROOT/.contract_id.recursion") || die "verifier id"
 note "verifier=$VERIFIER"
+ZKPOR_NETWORK="$NET" STELLAR_SOURCE_ACCOUNT=registry-gate-issuer \
+  bash "$REPO_ROOT/scripts/deploy_email_verifier.sh" >/dev/null || die "email verifier deploy"
+EMAIL_VERIFIER=$(cat "$REPO_ROOT/.contract_id.email") || die "email verifier id"
 
 cargo build --release --target wasm32v1-none --manifest-path "$REGISTRY_CRATE/Cargo.toml" \
   >/dev/null 2>&1 || die "registry wasm build"
 REGISTRY_WASM="$REPO_ROOT/target/wasm32v1-none/release/zkpor_registry.wasm"
 [ -f "$REGISTRY_WASM" ] || die "no registry wasm at $REGISTRY_WASM"
 REGISTRY=$(stellar contract deploy --wasm "$REGISTRY_WASM" --source registry-gate-issuer \
-  --network "$NET" -- --verifier "$VERIFIER" 2>/dev/null | tail -1) \
+  --network "$NET" -- --verifier "$VERIFIER" --email_verifier "$EMAIL_VERIFIER" 2>/dev/null | tail -1) \
   || die "registry deploy (the constructor refuses a verifier that holds another key)"
 note "registry=$REGISTRY"
 

@@ -56,6 +56,9 @@ export MANIFEST_FILE="$ROOT_DIR/circuits/recursion/manifest.json"
 export RELEASE_KEY="$ROOT_DIR/circuits/recursion/agg/vk"
 export AGG_TARGET="$ROOT_DIR/circuits/recursion/agg/target"
 export CONTRACT_ID_FILE="$ROOT_DIR/.contract_id.recursion"
+export EMAIL_CONTRACT_ID_FILE="$ROOT_DIR/.contract_id.email"
+export EMAIL_MANIFEST_FILE="$ROOT_DIR/circuits/email/manifest.json"
+export EMAIL_RELEASE_KEY="$ROOT_DIR/circuits/email/vk"
 export REGISTRY_ID_FILE="$ROOT_DIR/.contract_id.registry"
 
 # The registry wasm. The package "zkpor-registry" emits zkpor_registry.wasm.

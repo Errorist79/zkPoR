@@ -24,6 +24,7 @@ import {
   carriesMasterSecret,
   latestLedger,
   prove,
+  preparePriorGeneration,
   snapshotInsideWindow,
   readAuthoritySecret,
   readContext,
@@ -33,7 +34,7 @@ import {
   deploymentsPath,
   packagesDirectory,
   locateAsset,
-  readAssetRecord,
+  readStoredAttestation,
   writeCustomerPackages,
 } from "@zkpor/sdk";
 import { readdir } from "node:fs/promises";
@@ -195,12 +196,21 @@ export async function submitRun(input: {
     );
   }
   const registry = located.holder.generation.registry;
+  const directory = packagesDirectory(input.environment, customersPath);
 
   const work: RunWork = async (report, recordProof, recordWindow, recordSubmission) => {
+    const prior = await preparePriorGeneration({
+      server: input.reader.server, network: input.reader.config,
+      readOptions: input.reader.readOptions, registry, asset: context.asset,
+      outputDirectory: directory,
+    });
     const proof = await prove({
       repository: input.repository,
       contextFile: contextPath,
       customersFile: customersPath,
+      network: input.reader.config.network,
+      registry,
+      prior,
       // The secret is read here and passed on in the same expression. It
       // reaches no variable of this package.
       masterSecret: await readMasterSecret(input.environment),
@@ -240,32 +250,24 @@ export async function submitRun(input: {
         return {
           ledger: accepted.ledger,
           transactionHash: accepted.transactionHash,
+          attestationId: accepted.attestationId,
           registry,
         };
       },
       writePackages: async (accepted) => {
-        // The root comes back from the registry rather than from the proof this
-        // process just made. The generator refuses to write unless the root it
-        // recomputes from the balance file equals the root declared here, so
-        // reading it from the chain turns that refusal into a round trip: it
-        // proves that this balance file reproduces the attestation the registry
-        // holds, and not merely the one this process believes it sent.
-        const record = await readAssetRecord(
-          input.reader.server,
+        // A later attestation cannot replace the accepted target of these packages.
+        const record = await readStoredAttestation(
           input.reader.config,
-          input.reader.readOptions,
           registry,
           context.asset,
+          accepted.attestationId,
+          { ...input.reader.readOptions, server: input.reader.server },
         );
-        if (record === undefined || record.attestation === undefined) {
+        if (record === undefined) {
           throw new InfrastructureError(
             "the registry accepted the attestation and holds no record of it, so the packages of the customers cannot name a root",
           );
         }
-        const directory = packagesDirectory(input.environment, customersPath);
-        // The generator answers with the directory it filled. That directory
-        // carries the asset and the snapshot below the one this process asked
-        // for, and the layout of those levels belongs to the generator.
         return await writeCustomerPackages({
           repository: input.repository,
           contextFile: contextPath,
@@ -276,8 +278,11 @@ export async function submitRun(input: {
           masterSecret: await readMasterSecret(input.environment),
           network: input.reader.config.network,
           registry,
-          attestedRoot: record.attestation.finalRoot,
-          attestedSnapshot: record.attestation.snapshotLedger,
+          attestationId: accepted.attestationId,
+          attestedContext: record.contextHash,
+          attestedRoot: record.finalRoot,
+          attestedSnapshot: record.snapshotLedger,
+          prior,
           transactionHash: accepted.transactionHash,
           deploymentsFile: deploymentsPath(input.environment),
         });

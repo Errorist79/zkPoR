@@ -31,8 +31,11 @@ import {
 import { bytesFromHex, inRange, reduce, toHex, toHex32 } from "../src/fr.js";
 import { addressParts, encodeAddress, reserveSetHash } from "../src/address.js";
 import {
+  BALANCE_DOMAIN_TAG,
   CTX_DOMAIN_TAG,
+  LEAF_DOMAIN_TAG,
   SALT_DOMAIN_TAG,
+  balanceCommitment,
   contextHash,
   deriveSalt,
   leafHash,
@@ -76,6 +79,8 @@ describe("the constants equal the constants of the shared crate", () => {
     expect(FR_BYTES).toBe(context.constants["fr_bytes"]);
     expect(toHex(CTX_DOMAIN_TAG)).toBe(context.constants["ctx_domain_tag"]);
     expect(toHex(SALT_DOMAIN_TAG)).toBe(context.constants["salt_domain_tag"]);
+    expect(toHex(BALANCE_DOMAIN_TAG)).toBe(context.constants["balance_domain_tag"]);
+    expect(toHex(LEAF_DOMAIN_TAG)).toBe(context.constants["leaf_domain_tag"]);
     expect(POSEIDON2_STATE_WIDTH).toBe(context.constants["poseidon2_state_width"]);
     expect(MAX_RESERVE_ADDRESSES).toBe(context.constants["max_reserve_addresses"]);
     expect(ATTESTATION_MAX_AGE_LEDGERS).toBe(context.constants["attestation_max_age_ledgers"]);
@@ -143,9 +148,11 @@ describe("the context hash", () => {
  * padding rule needs the same check as the hashes.
  */
 describe("the domain tags", () => {
-  it("builds the same two tags as the shared crate", () => {
+  it("builds the same tags as the shared crate", () => {
     expect(toHex(CTX_DOMAIN_TAG)).toBe(context.constants["ctx_domain_tag"]);
     expect(toHex(SALT_DOMAIN_TAG)).toBe(context.constants["salt_domain_tag"]);
+    expect(toHex(BALANCE_DOMAIN_TAG)).toBe(context.constants["balance_domain_tag"]);
+    expect(toHex(LEAF_DOMAIN_TAG)).toBe(context.constants["leaf_domain_tag"]);
   });
 });
 
@@ -157,11 +164,12 @@ describe("the tree node", () => {
 
 describe("the leaf", () => {
   it.each(context.leaves)("hashes the case $case", (vector) => {
-    const value = leafHash({
-      id: BigInt(vector.id),
+    const commitment = balanceCommitment({
       balance: BigInt(vector.balance),
       salt: BigInt(vector.salt),
     });
+    expect(toHex(commitment)).toBe(vector.commitment);
+    const value = leafHash({ id: BigInt(vector.id), commitment });
     expect(toHex(value)).toBe(vector.leaf);
   });
 });
@@ -186,11 +194,12 @@ describe("the authentication path walk", () => {
   for (const [treeIndex, tree] of packages.trees.entries()) {
     describe(`the tree ${treeIndex}, ${tree.case}`, () => {
       it.each(tree.paths)("walks from the leaf $leaf_index to the root", (path) => {
-        const leaf = leafHash({
-          id: BigInt(path.id),
+        const commitment = balanceCommitment({
           balance: BigInt(path.balance),
           salt: BigInt(path.salt),
         });
+        expect(toHex(commitment)).toBe(path.commitment);
+        const leaf = leafHash({ id: BigInt(path.id), commitment });
         expect(toHex(leaf)).toBe(path.leaf);
         const root = rootFromPath({
           leaf,
@@ -205,11 +214,7 @@ describe("the authentication path walk", () => {
       if (listed !== undefined) {
         it("folds the listed leaves into the same root", () => {
           const leaves = listed.map((entry) =>
-            leafHash({
-              id: BigInt(entry.id),
-              balance: BigInt(entry.balance),
-              salt: BigInt(entry.salt),
-            }),
+            leafHash({ id: BigInt(entry.id), commitment: BigInt(entry.commitment) }),
           );
           expect(toHex(treeRoot(leaves))).toBe(tree.root);
         });
@@ -248,7 +253,7 @@ describe("the package layout", () => {
   it.each(packages.packages)("walks the case $case to the attested root", (vector) => {
     const entry = parsePackage(`${vector.lines.join("\n")}\n`);
     const root = rootFromPath({
-      leaf: leafHash({ id: entry.id, balance: entry.balance, salt: entry.salt }),
+      leaf: leafHash({ id: entry.id, commitment: entry.commitment }),
       leafIndex: entry.leafIndex,
       siblings: entry.siblings,
       depth: entry.siblings.length,

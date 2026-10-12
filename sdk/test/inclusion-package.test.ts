@@ -22,6 +22,8 @@ import {
   parseDeployments,
 } from "../src/deployments.js";
 import { EXIT_CODES, EXIT_NO_VERDICT, EXIT_USAGE } from "../src/inclusion.js";
+import { balanceCommitment } from "../src/hashes.js";
+import { toHex } from "../src/fr.js";
 
 /** A registry address. The value is test data. */
 const REGISTRY = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -30,13 +32,16 @@ const ASSET = "CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
 
 function fields(): Record<string, unknown> {
   return {
-    format: "zkpor-inclusion/1",
+    format: "zkpor-inclusion/2",
     network: "testnet",
     registry: REGISTRY,
     asset: ASSET,
     snapshot_ledger: 720,
+    context_hash: `0x${"0".repeat(63)}5`,
+    attestation_id: "1",
     leaf_index: 5,
     id: `0x${"0".repeat(63)}7`,
+    commitment: toHex(balanceCommitment({ balance: 100n, salt: 2n })),
     balance: "100",
     salt: `0x${"0".repeat(63)}2`,
     siblings: [`0x${"0".repeat(63)}3`, `0x${"0".repeat(63)}4`, `0x${"0".repeat(63)}5`],
@@ -52,6 +57,8 @@ describe("a package that follows the schema", () => {
     const entry = parsePackage(text());
     expect(entry.network).toBe("testnet");
     expect(entry.snapshotLedger).toBe(720);
+    expect(entry.contextHash).toBe(5n);
+    expect(entry.attestationId).toBe(1n);
     expect(entry.leafIndex).toBe(5);
     expect(entry.balance).toBe(100n);
     expect(entry.siblings).toHaveLength(3);
@@ -72,11 +79,27 @@ describe("a package that follows the schema", () => {
   });
 });
 
+describe("the commitment and attestation ID", () => {
+  it("rejects a balance that does not match the commitment", () => {
+    expect(() => parsePackage(text({ balance: "101" }))).toThrow(MalformedPackageError);
+    expect(() => parsePackage(text())).not.toThrow();
+  });
+
+  it("requires a positive decimal u64 attestation ID", () => {
+    for (const attestationId of ["0", "18446744073709551616", "-1", "1.5", ""]) {
+      expect(() => parsePackage(text({ attestation_id: attestationId }))).toThrow(
+        MalformedPackageError,
+      );
+    }
+    expect(() => parsePackage(text({ attestation_id: 1 }))).toThrow(MalformedPackageError);
+  });
+});
+
 describe("the format gate", () => {
   it("refuses an unknown format as its own class, not as a malformed package", () => {
     const cause = (() => {
       try {
-        parsePackage(text({ format: "zkpor-inclusion/2" }));
+        parsePackage(text({ format: "zkpor-inclusion/1" }));
       } catch (error) {
         return error;
       }
@@ -88,7 +111,7 @@ describe("the format gate", () => {
 
   it("refuses an unknown format before it reads a field that breaks a rule", () => {
     expect(() =>
-      parsePackage(text({ format: "zkpor-inclusion/2", balance: "not a number" })),
+      parsePackage(text({ format: "zkpor-inclusion/1", balance: "not a number" })),
     ).toThrow(UnsupportedFormatError);
   });
 
@@ -135,7 +158,8 @@ describe("the rejections of the schema", () => {
   });
 
   it("accepts the balance zero as the single digit zero", () => {
-    expect(parsePackage(text({ balance: "0" })).balance).toBe(0n);
+    const commitment = toHex(balanceCommitment({ balance: 0n, salt: 2n }));
+    expect(parsePackage(text({ balance: "0", commitment })).balance).toBe(0n);
   });
 
   it.each([

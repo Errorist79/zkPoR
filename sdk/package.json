@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "description": "Client library and command line for the zkPoR registry, the reserve consent flow, and the customer inclusion check.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Errorist79/zkPoR.git",
+    "directory": "sdk"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",

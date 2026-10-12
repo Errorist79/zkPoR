@@ -13,6 +13,7 @@ import {
   Address,
   BASE_FEE,
   Contract,
+  Keypair,
   Networks,
   StrKey,
   TransactionBuilder,
@@ -21,15 +22,19 @@ import {
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
-import { ATTESTATION_MAX_AGE_LEDGERS, HISTORY_PAGE_LIMIT } from "./constants.js";
-import { InfrastructureError, retainedLedgers } from "./network.js";
+import { ATTESTATION_MAX_AGE_LEDGERS, HISTORY_PAGE_LIMIT, MAX_U64, SUBMISSION_TIMEOUT_SECONDS } from "./constants.js";
+import { InfrastructureError, openServer, retainedLedgers } from "./network.js";
 import { isRecord, isStringList } from "./guards.js";
 import type { NetworkConfig } from "./network.js";
 import {
   ASSET_NOT_REGISTERED,
+  ATTESTATION_NOT_FOUND,
+  OBSERVATION_NOT_FOUND,
   describeRegistryError,
   registryErrorCode,
 } from "./registry-errors.js";
+import { sendAndSettle } from "./registration.js";
+import type { SubmitResult } from "./registration.js";
 
 /** The topic symbol that the registry gives every attestation event. */
 export const ATTESTATION_EVENT_TOPIC = "attestation_accepted";
@@ -46,6 +51,12 @@ export interface Attestation {
   readonly attestedLedger: number;
 }
 
+/** A fixed record from a registry that supports persistent history. */
+export interface StoredAttestation extends Attestation {
+  readonly attestationId: bigint;
+  readonly contextHash: bigint;
+}
+
 /** The record of one registered asset. */
 export interface AssetRecord {
   readonly authority: string;
@@ -55,10 +66,34 @@ export interface AssetRecord {
   readonly attestation: Attestation | undefined;
 }
 
-/** The current reserve sum, and the ledger at which the registry read it. */
+/** A live simulation. It does not create an observation record. */
 export interface ReserveObservation {
   readonly observedSum: bigint;
   readonly observedLedger: number;
+  readonly supportsRecordedObservations: boolean;
+}
+
+/** One observation that a transaction stored in the registry. */
+export interface StoredReserveObservation {
+  readonly observationId: bigint;
+  readonly observedSum: bigint;
+  readonly observedLedger: number;
+  readonly reserveSetHash: bigint;
+  readonly attestationId: bigint | undefined;
+  readonly belowAttested: boolean;
+}
+
+/** The permanent first-low marker and the number of stored observations. */
+export interface ObservationStatus {
+  readonly observationCount: bigint;
+  readonly firstLowObservation: bigint | undefined;
+}
+
+/** A bounded range whose count is fixed before the first record read. */
+export interface StoredObservationHistory {
+  readonly observations: readonly StoredReserveObservation[];
+  readonly totalCount: bigint;
+  readonly nextId: bigint | undefined;
 }
 
 /** A call that the registry refused with a contract error code. */
@@ -72,16 +107,31 @@ export class RegistryRefusedError extends Error {
 /**
  * The account that a read simulates as.
  *
- * A simulation moves no funds and pays no fee. A run against the Stellar test
- * network endpoint confirmed that a read simulates the same way as an account
- * that the network does not hold and as a funded account: both returned the
- * same answer. The address therefore only has to be well formed.
+ * A simulation moves no funds and pays no fee.
  *
  * The field stays open so a caller can name its own address, because another
  * endpoint may apply a rule of its own.
  */
 export interface ReadOptions {
   readonly readSourceAccount?: string;
+}
+
+/** A caller can reuse its configured client for persistent history reads. */
+export interface StoredReadOptions extends ReadOptions {
+  readonly server?: rpc.Server;
+}
+
+/** One bounded range of persistent record identifiers. */
+export interface StoredHistoryOptions extends StoredReadOptions {
+  readonly startId: bigint;
+  readonly count: number;
+}
+
+/** The count is fixed before the first record read. Later attestations wait for the next query. */
+export interface StoredAttestationHistory {
+  readonly attestations: readonly StoredAttestation[];
+  readonly totalCount: bigint;
+  readonly nextId: bigint | undefined;
 }
 
 /**
@@ -199,8 +249,8 @@ function variantOf(value: unknown, what: string): { name: string; payload: unkno
 /**
  * Reads one attestation out of the value that the host returned.
  *
- * The registry gives the same five fields to the asset record and to the
- * attestation event, keyed by name in both, so one reader serves both. The
+ * The asset record and attestation event share five public snapshot fields,
+ * keyed by name in both, so one reader serves both. The
  * `source` names the place a failure came from.
  *
  * The decoders below take a value and return a record. They reach no network,
@@ -223,6 +273,18 @@ export function decodeAttestation(payload: unknown, source: string): Attestation
     attestedLedger: requireNumber(
       mapField(payload, "attested_ledger", source),
       "the attested ledger",
+    ),
+  };
+}
+
+/** Reads the direct struct that get_attestation returns. */
+export function decodeStoredAttestation(payload: unknown, id: bigint): StoredAttestation {
+  return {
+    ...decodeAttestation(payload, "get_attestation"),
+    attestationId: id,
+    contextHash: requireBigint(
+      mapField(payload, "context_hash", "get_attestation"),
+      "the attested context hash",
     ),
   };
 }
@@ -271,6 +333,13 @@ export function decodeAssetRecord(returned: unknown): AssetRecord {
 
 /** Reads the reserve observation out of the value that the host returned. */
 export function decodeReserveObservation(returned: unknown): ReserveObservation {
+  const supportsRecordedObservations = isRecord(returned) &&
+    ["observation_id", "reserve_set_hash", "attestation_id", "below_attested"].some(
+      (key) => key in returned,
+    );
+  if (supportsRecordedObservations) {
+    decodeStoredObservation(returned, "observe_reserves");
+  }
   return {
     observedSum: requireBigint(
       mapField(returned, "observed_sum", "observe_reserves"),
@@ -280,7 +349,66 @@ export function decodeReserveObservation(returned: unknown): ReserveObservation 
       mapField(returned, "observed_ledger", "observe_reserves"),
       "the observed ledger",
     ),
+    supportsRecordedObservations,
   };
+}
+
+function requireOptionalId(source: unknown, key: string, method: string): bigint | undefined {
+  if (!isRecord(source) || !(key in source)) {
+    throw new InfrastructureError(`the record of the call ${method} carries no ${key}`);
+  }
+  const value: unknown = source[key];
+  if (value === null) {
+    return undefined;
+  }
+  return requireStoredId(value, key);
+}
+
+function requireStoredId(value: unknown, name: string): bigint {
+  const id = requireBigint(value, name);
+  if (id < 1n || id > MAX_U64) {
+    throw new InfrastructureError(`${name} is outside the positive u64 range`);
+  }
+  return id;
+}
+
+/** Decodes a stored observation. A simulated return is not a stored record. */
+export function decodeStoredObservation(
+  returned: unknown,
+  method = "get_observation",
+): StoredReserveObservation {
+  const belowAttested = mapField(returned, "below_attested", method);
+  if (typeof belowAttested !== "boolean") {
+    throw new InfrastructureError("the below-attested flag is not a boolean");
+  }
+  const attestationId = requireOptionalId(returned, "attestation_id", method);
+  if (belowAttested && attestationId === undefined) {
+    throw new InfrastructureError("a low observation names no baseline attestation");
+  }
+  return {
+    observationId: requireStoredId(mapField(returned, "observation_id", method), "the observation identifier"),
+    observedSum: requireBigint(mapField(returned, "observed_sum", method), "the observed sum"),
+    observedLedger: requireNumber(mapField(returned, "observed_ledger", method), "the observed ledger"),
+    reserveSetHash: requireBigint(mapField(returned, "reserve_set_hash", method), "the reserve set hash"),
+    attestationId,
+    belowAttested,
+  };
+}
+
+/** Decodes the observation count and permanent first-low marker. */
+export function decodeObservationStatus(returned: unknown): ObservationStatus {
+  const observationCount = requireBigint(
+    mapField(returned, "observation_count", "observation_status"),
+    "the observation count",
+  );
+  if (observationCount < 0n || observationCount > MAX_U64) {
+    throw new InfrastructureError("the observation count is outside the u64 range");
+  }
+  const firstLowObservation = requireOptionalId(returned, "first_low_observation", "observation_status");
+  if (firstLowObservation !== undefined && firstLowObservation > observationCount) {
+    throw new InfrastructureError("the first low observation exceeds the observation count");
+  }
+  return { observationCount, firstLowObservation };
 }
 
 /**
@@ -293,7 +421,7 @@ export function decodeReserveObservation(returned: unknown): ReserveObservation 
 export function decodeAttestationEvent(
   topics: readonly unknown[],
   data: unknown,
-): { asset: string; attestation: Attestation } {
+): { asset: string; attestation: Attestation & { readonly attestationId?: bigint } } {
   const [name, asset] = topics;
   if (name !== ATTESTATION_EVENT_TOPIC) {
     throw new InfrastructureError(
@@ -303,7 +431,94 @@ export function decodeAttestationEvent(
   if (typeof asset !== "string") {
     throw new InfrastructureError("the event carries no asset address as its second topic");
   }
+  if (isRecord(data) && "attestation_id" in data) {
+    const id = requireBigint(data["attestation_id"], "the attestation identifier");
+    requireAttestationId(id);
+    return { asset, attestation: { ...decodeAttestation(data, ATTESTATION_EVENT_TOPIC), attestationId: id } };
+  }
   return { asset, attestation: decodeAttestation(data, ATTESTATION_EVENT_TOPIC) };
+}
+
+function requireAttestationId(id: bigint): void {
+  if (id < 1n || id > MAX_U64) {
+    throw new RangeError("the attestation identifier must be a positive u64");
+  }
+}
+
+function requireObservationId(id: bigint): void {
+  if (id < 1n || id > MAX_U64) {
+    throw new RangeError("the observation identifier must be a positive u64");
+  }
+}
+
+function requireHistoryCount(count: number): void {
+  if (!Number.isInteger(count) || count < 1 || count > HISTORY_PAGE_LIMIT) {
+    throw new RangeError(`the history count must be between 1 and ${HISTORY_PAGE_LIMIT}`);
+  }
+}
+
+/** Reads one fixed record. This API requires a registry with persistent history. */
+export async function readStoredAttestation(
+  network: NetworkConfig,
+  registry: string,
+  asset: string,
+  id: bigint,
+  options: StoredReadOptions = {},
+): Promise<StoredAttestation | undefined> {
+  requireAttestationId(id);
+  const server = options.server ?? openServer(network);
+  let returned: unknown;
+  try {
+    returned = await simulateRead(server, network, options, registry, "get_attestation", [
+      nativeToScVal(Address.fromString(asset)),
+      nativeToScVal(id, { type: "u64" }),
+    ]);
+  } catch (cause) {
+    if (
+      cause instanceof RegistryRefusedError &&
+      (cause.code === ASSET_NOT_REGISTERED || cause.code === ATTESTATION_NOT_FOUND)
+    ) {
+      return undefined;
+    }
+    throw cause;
+  }
+  return decodeStoredAttestation(returned, id);
+}
+
+/** Reads a bounded range from persistent storage without an event query. */
+export async function readStoredAttestationHistory(
+  network: NetworkConfig,
+  registry: string,
+  asset: string,
+  options: StoredHistoryOptions,
+): Promise<StoredAttestationHistory> {
+  requireAttestationId(options.startId);
+  requireHistoryCount(options.count);
+  const server = options.server ?? openServer(network);
+  const totalCount = requireBigint(
+    await simulateRead(server, network, options, registry, "attestation_count", [
+      nativeToScVal(Address.fromString(asset)),
+    ]),
+    "the attestation count",
+  );
+  if (totalCount < 0n || totalCount > MAX_U64) {
+    throw new InfrastructureError("the attestation count is outside the u64 range");
+  }
+  const requestedEnd = options.startId + BigInt(options.count) - 1n;
+  const endId = requestedEnd < totalCount ? requestedEnd : totalCount;
+  const attestations: StoredAttestation[] = [];
+  for (let id = options.startId; id <= endId; id += 1n) {
+    const record = await readStoredAttestation(network, registry, asset, id, { ...options, server });
+    if (record === undefined) {
+      throw new InfrastructureError(`the attestation count includes the missing record ${id}`);
+    }
+    attestations.push(record);
+  }
+  return {
+    attestations,
+    totalCount,
+    nextId: endId < totalCount ? endId + 1n : undefined,
+  };
 }
 
 /**
@@ -352,6 +567,122 @@ export async function observeReserves(
   return decodeReserveObservation(returned);
 }
 
+/** Reads persistent status. A missing method or failed restoration remains an error. */
+export async function readObservationStatus(
+  network: NetworkConfig,
+  registry: string,
+  asset: string,
+  options: StoredReadOptions = {},
+): Promise<ObservationStatus | undefined> {
+  const server = options.server ?? openServer(network);
+  try {
+    return decodeObservationStatus(await simulateRead(server, network, options, registry, "observation_status", [
+      nativeToScVal(Address.fromString(asset)),
+    ]));
+  } catch (cause) {
+    if (cause instanceof RegistryRefusedError && cause.code === ASSET_NOT_REGISTERED) {
+      return undefined;
+    }
+    throw cause;
+  }
+}
+
+/** Reads a fixed observation. Only explicit contract not-found errors mean absence. */
+export async function readStoredObservation(
+  network: NetworkConfig,
+  registry: string,
+  asset: string,
+  id: bigint,
+  options: StoredReadOptions = {},
+): Promise<StoredReserveObservation | undefined> {
+  requireObservationId(id);
+  const server = options.server ?? openServer(network);
+  let returned: unknown;
+  try {
+    returned = await simulateRead(server, network, options, registry, "get_observation", [
+      nativeToScVal(Address.fromString(asset)),
+      nativeToScVal(id, { type: "u64" }),
+    ]);
+  } catch (cause) {
+    if (cause instanceof RegistryRefusedError &&
+      (cause.code === ASSET_NOT_REGISTERED || cause.code === OBSERVATION_NOT_FOUND)) {
+      return undefined;
+    }
+    throw cause;
+  }
+  const record = decodeStoredObservation(returned);
+  if (record.observationId !== id) {
+    throw new InfrastructureError(`the observation returned a different identifier from ${id}`);
+  }
+  return record;
+}
+
+/** Reads a bounded range from persistent storage, independent of event retention. */
+export async function readStoredObservationHistory(
+  network: NetworkConfig,
+  registry: string,
+  asset: string,
+  options: StoredHistoryOptions,
+): Promise<StoredObservationHistory> {
+  requireObservationId(options.startId);
+  requireHistoryCount(options.count);
+  const server = options.server ?? openServer(network);
+  const status = await readObservationStatus(network, registry, asset, { ...options, server });
+  if (status === undefined) {
+    throw new RegistryRefusedError(ASSET_NOT_REGISTERED);
+  }
+  const totalCount = status.observationCount;
+  const requestedEnd = options.startId + BigInt(options.count) - 1n;
+  const endId = requestedEnd < totalCount ? requestedEnd : totalCount;
+  const observations: StoredReserveObservation[] = [];
+  for (let id = options.startId; id <= endId; id += 1n) {
+    const record = await readStoredObservation(network, registry, asset, id, { ...options, server });
+    if (record === undefined) {
+      throw new InfrastructureError(`the observation count includes the missing record ${id}`);
+    }
+    observations.push(record);
+  }
+  return { observations, totalCount, nextId: endId < totalCount ? endId + 1n : undefined };
+}
+
+/** Submits a real observation transaction. Its simulated identifier is never returned. */
+export async function submitReserveObservation(
+  server: rpc.Server,
+  config: NetworkConfig,
+  input: { sourceAccount: Account; sourceSigner: Keypair; registry: string; asset: string },
+): Promise<SubmitResult> {
+  const transaction = new TransactionBuilder(input.sourceAccount, {
+    fee: BASE_FEE,
+    networkPassphrase: config.networkPassphrase,
+  })
+    .addOperation(new Contract(input.registry).call("observe_reserves", nativeToScVal(Address.fromString(input.asset))))
+    .setTimeout(SUBMISSION_TIMEOUT_SECONDS)
+    .build();
+  let answer: rpc.Api.SimulateTransactionResponse;
+  try {
+    answer = await server.simulateTransaction(transaction);
+  } catch (cause) {
+    throw new InfrastructureError("the client cannot simulate the observation transaction", { cause });
+  }
+  if (rpc.Api.isSimulationError(answer)) {
+    const code = registryErrorCode(answer.error);
+    if (code !== undefined) {
+      throw new RegistryRefusedError(code);
+    }
+    throw new InfrastructureError(`the observation simulation failed: ${answer.error}`);
+  }
+  if (answer.result === undefined) {
+    throw new InfrastructureError("the observation simulation returned no value");
+  }
+  const native: unknown = scValToNative(answer.result.retval);
+  if (!decodeReserveObservation(native).supportsRecordedObservations) {
+    throw new InfrastructureError("the registry does not support recorded observations");
+  }
+  const ready = rpc.assembleTransaction(transaction, answer).build();
+  ready.sign(input.sourceSigner);
+  return sendAndSettle(server, ready);
+}
+
 /** True when the solvency claim of a snapshot has lapsed at the current ledger. */
 export function solvencyLapsed(snapshotLedger: number, currentLedger: number): boolean {
   return currentLedger > snapshotLedger + ATTESTATION_MAX_AGE_LEDGERS;
@@ -359,6 +690,7 @@ export function solvencyLapsed(snapshotLedger: number, currentLedger: number): b
 
 /** One attestation that the event stream records, with the ledger of its event. */
 export interface AttestationEvent extends Attestation {
+  readonly attestationId?: bigint;
   readonly ledger: number;
   readonly transactionHash: string;
 }
@@ -412,8 +744,8 @@ function ledgerOfEventCursor(cursor: string): number | undefined {
 /**
  * Reads the attestation history of one asset from the event stream.
  *
- * The asset entry holds the latest attestation only, so the events are the one
- * record of the earlier attestations.
+ * This reader also supports legacy registries whose earlier attestations exist
+ * only in events. Persistent history uses readStoredAttestationHistory.
  *
  * A caller that names no ledger gets the whole window that the endpoint keeps.
  * That boundary is the endpoint's and not ours, which is the reason to take it:

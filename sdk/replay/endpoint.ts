@@ -1,9 +1,8 @@
 /**
- * An endpoint that answers a read from a recording, and never from a chain.
+ * An endpoint that answers a read from test data, and never from a chain.
  *
- * A recording is not the chain. Every answer here is one this repository wrote
- * down, so a check that passes against it proves that the client reads and
- * refuses correctly. It proves nothing about what any network holds now.
+ * Synthetic answers test how the client accepts and refuses a package.
+ * They do not report what a network holds.
  *
  * The client library reaches this file through no import of its own. It is a
  * separate entry point, `@zkpor/sdk/replay`, so a program gets it only when the
@@ -17,7 +16,7 @@
  * That last point is why it exists. No test could see which generation a read
  * resolves to: the suite ran against an address that answers nothing, so every
  * resolution reached the same failure and the failure named no registry. A
- * resolver that picked the oldest recorded generation instead of the newest
+ * resolver that picked the oldest test generation instead of the newest
  * passed the whole suite.
  *
  * One rule for every caller. This endpoint answers from the process that
@@ -28,16 +27,14 @@
 
 import { createServer } from "node:http";
 import type { Server } from "node:http";
-import { Address, nativeToScVal, xdr } from "@stellar/stellar-sdk";
+import { Address, nativeToScVal, scValToNative, xdr } from "@stellar/stellar-sdk";
 
 /**
  * The entry of one asset, as the registry answers it.
  *
  * A record carries the authority, the tier, the reserve addresses, the hash of
- * that set, and the attestation slot. A caller that leaves the attestation out
- * gets an empty slot, which is the smallest record a client accepts and enough
- * to ask which registry answered. A caller that gives one gets a filled slot,
- * which is what a check of a package needs.
+ * that set, and the current attestation slot. A caller that leaves the
+ * attestation out gets an empty slot.
  */
 /** One entry of a map, which the record and the attestation both build. */
 function entry(name: string, val: xdr.ScVal): xdr.ScMapEntry {
@@ -98,6 +95,25 @@ export function assetRecordXdr(input: {
   return record.toXDR("base64");
 }
 
+/** One stored attestation, as the registry answers its historical getter. */
+export function storedAttestationXdr(input: {
+  contextHash: bigint;
+  finalRoot: bigint;
+  totalLiabilities: bigint;
+  snapshotLedger: number;
+  reserveSum: bigint;
+  attestedLedger: number;
+}): string {
+  return xdr.ScVal.scvMap([
+    entry("attested_ledger", nativeToScVal(input.attestedLedger, { type: "u32" })),
+    entry("context_hash", nativeToScVal(input.contextHash, { type: "u256" })),
+    entry("final_root", nativeToScVal(input.finalRoot, { type: "u256" })),
+    entry("reserve_sum", nativeToScVal(input.reserveSum, { type: "u128" })),
+    entry("snapshot_ledger", nativeToScVal(input.snapshotLedger, { type: "u32" })),
+    entry("total_liabilities", nativeToScVal(input.totalLiabilities, { type: "u128" })),
+  ]).toXDR("base64");
+}
+
 /** One endpoint, and what it was asked. */
 export interface FakeEndpoint {
   /** The address to put in the environment of a run. */
@@ -112,7 +128,7 @@ export interface FakeEndpoint {
 /**
  * The ledger that this endpoint reports when a caller names none.
  *
- * A caller that also records an attestation should name one, because a current
+ * A caller that also supplies an attestation should name one, because a current
  * ledger older than the snapshot of that attestation describes a chain that
  * cannot exist, and a reader of the answer sees it.
  */
@@ -129,7 +145,11 @@ const RETAINED = 120_960;
  * address. A value of any other shape is not a call this endpoint can answer,
  * and it returns `undefined` rather than guessing.
  */
-function contractOf(envelopeXdr: string): string | undefined {
+function invocationOf(envelopeXdr: string): {
+  contract: string;
+  method: string;
+  args: readonly unknown[];
+} | undefined {
   let envelope: xdr.TransactionEnvelope;
   try {
     envelope = xdr.TransactionEnvelope.fromXDR(envelopeXdr, "base64");
@@ -149,7 +169,12 @@ function contractOf(envelopeXdr: string): string | undefined {
   if (host.switch().name !== "hostFunctionTypeInvokeContract") {
     return undefined;
   }
-  return Address.fromScAddress(host.invokeContract().contractAddress()).toString();
+  const invocation = host.invokeContract();
+  return {
+    contract: Address.fromScAddress(invocation.contractAddress()).toString(),
+    method: invocation.functionName().toString(),
+    args: invocation.args().map((value): unknown => scValToNative(value)),
+  };
 }
 
 /**
@@ -163,6 +188,8 @@ function contractOf(envelopeXdr: string): string | undefined {
 export async function fakeEndpoint(input: {
   /** The contracts that answer with a record, and the record each one holds. */
   holds?: Readonly<Record<string, string>>;
+  /** The contracts that answer one exact historical getter call. */
+  attestations?: Readonly<Record<string, { asset: string; id: bigint; xdr: string }>>;
   refuseWith?: Readonly<Record<string, number>>;
   fallback: number;
   /** The ledger this endpoint reports as the latest one. */
@@ -219,12 +246,23 @@ export async function fakeEndpoint(input: {
           typeof params === "object" && params !== null && "transaction" in params
             ? params["transaction"]
             : undefined;
-        const contract = typeof envelope === "string" ? contractOf(envelope) : undefined;
-        if (contract !== undefined) {
-          asked.push(contract);
+        const invocation = typeof envelope === "string" ? invocationOf(envelope) : undefined;
+        if (invocation !== undefined) {
+          asked.push(invocation.contract);
         }
-        const holds = input.holds ?? {};
-        const held = contract !== undefined ? holds[contract] : undefined;
+        let held: string | undefined;
+        if (invocation?.method === "get_attestation") {
+          const attestation = input.attestations?.[invocation.contract];
+          if (
+            attestation !== undefined &&
+            attestation.asset === invocation.args[0] &&
+            attestation.id === invocation.args[1]
+          ) {
+            held = attestation.xdr;
+          }
+        } else if (invocation !== undefined) {
+          held = input.holds?.[invocation.contract];
+        }
         if (held !== undefined) {
           answer({
             latestLedger,
@@ -237,7 +275,9 @@ export async function fakeEndpoint(input: {
         }
         const refusals = input.refuseWith ?? {};
         const code =
-          contract !== undefined && contract in refusals ? refusals[contract] : input.fallback;
+          invocation !== undefined && invocation.contract in refusals
+            ? refusals[invocation.contract]
+            : input.fallback;
         answer({
           latestLedger,
           error: `HostError: Error(Contract, #${String(code)})`,

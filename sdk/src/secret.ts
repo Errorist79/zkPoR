@@ -19,7 +19,7 @@
 import { Keypair } from "@stellar/stellar-sdk";
 import { readFile, stat } from "node:fs/promises";
 import { MASTER_SECRET_ENV, MASTER_SECRET_FILE_ENV, SECRET_FILE_MODE } from "./constants.js";
-import { AUTHORITY_SECRET_ENV, RESERVE_SECRET_ENV } from "./config.js";
+import { AUTHORITY_SECRET_ENV, DISPUTER_SECRET_ENV, RESERVE_SECRET_ENV } from "./config.js";
 import { bytesFromHex, reduce } from "./fr.js";
 import { FR_BYTES } from "./constants.js";
 
@@ -152,5 +152,18 @@ export function readReserveKeypair(environment: NodeJS.ProcessEnv = process.env)
     return Keypair.fromSecret(secret);
   } catch {
     throw new SecretError(`${RESERVE_SECRET_ENV} does not carry a Stellar secret key`);
+  }
+}
+
+/** Reads the account key that authorizes the deposit of one dispute. */
+export function readDisputerKeypair(environment: NodeJS.ProcessEnv = process.env): Keypair {
+  const secret = environment[DISPUTER_SECRET_ENV];
+  if (secret === undefined || secret.length === 0) {
+    throw new SecretError(`set ${DISPUTER_SECRET_ENV}; no argument carries the disputer key`);
+  }
+  try {
+    return Keypair.fromSecret(secret);
+  } catch {
+    throw new SecretError(`${DISPUTER_SECRET_ENV} does not carry a Stellar secret key`);
   }
 }

@@ -18,8 +18,8 @@
 //!             holds no direction bit.
 //!
 //!   packages  Run AFTER the attestation transaction is confirmed. Writes one
-//!             inclusion package for each customer row, and one bookkeeping
-//!             record beside them. This tool has no network access: the caller
+//!             inclusion package for each customer row, and one redacted tree
+//!             beside them. This tool has no network access: the caller
 //!             reads the registry entry and passes the attested root and the
 //!             attested snapshot. Nothing reaches the disk until the
 //!             recomputed root equals the attested one, because a package
@@ -63,14 +63,19 @@ use std::{
     process::Command,
 };
 use zkpor_context::{
-    context_hash, derive_salt, fr_modulus, fr_reduce, leaf_hash, reserve_set_hash, FR_BYTES,
-    PADDING_LEAF_BALANCE, PADDING_LEAF_ID,
+    balance_commitment, context_hash, derive_salt, fr_modulus, fr_reduce, leaf_hash,
+    reserve_set_hash, FR_BYTES, PADDING_LEAF_BALANCE, PADDING_LEAF_ID,
 };
 use zkpor_package::{
     deployments,
     fr::{fr_hex, hex_bytes, parse_fr, to_big, to_fr},
+    identity::{
+        derive_identifier, prepare_identifier_email, IdentifierRule, IDENTIFIER_RULE,
+        LEGACY_IDENTIFIER_RULE,
+    },
     new_env,
-    schema::{json_string, package_filename, Package, JSON_INDENT, PACKAGE_FORMAT},
+    retained::{AnswerRequest, RetainedTree, RETAINED_TREE_FORMAT},
+    schema::{package_filename, Package},
     tree::{path_in_levels, root_from_path, subtree_root, tree_levels},
 };
 
@@ -96,9 +101,9 @@ const INNER_PUBLIC_INPUTS: [&str; 3] = ["batch_slot", "subroot", "subtotal"];
 /// The committed record of the deployment generations, in order. A package
 /// names a registry, and that pointer comes from the file every client trusts.
 const DEPLOYMENTS_FILE: &str = "scripts/deployments.json";
-/// The authority-side record of one generation run. It holds the root, so it
-/// is bookkeeping and it reaches no customer.
+/// The authority-side redacted tree of one generation run.
 const GENERATION_FILE: &str = "generation.json";
+const IDENTIFIER_EMAIL_DRAFT_FORMAT: &str = "zkpor-identifier-email/1";
 /// Mode of every directory that the generation step creates, and of every file
 /// it writes. A package holds one customer's balance.
 const PACKAGE_DIR_MODE: u32 = 0o700;
@@ -191,24 +196,182 @@ fn assert_identifier_rules(env: &Env, rows: &[(BigUint, u64)]) {
 /// rules run before the reader returns. An invalid list therefore never
 /// becomes a tree: a tree that a wrong list builds is already wrong, and an
 /// attestation over it can leave a customer without a provable leaf.
-fn read_customers(env: &Env, path: &Path) -> Vec<(BigUint, u64)> {
-    let mut rows = Vec::new();
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CustomerEntry {
+    id: BigUint,
+    balance: u64,
+    identifier_rule: IdentifierRule,
+}
+
+const VERSIONED_CUSTOMER_HEADER: &str = "id,balance,identifier_rule,email,code";
+const LEGACY_CUSTOMER_HEADER: &str = "id,balance";
+
+fn versioned_decimal(value: &str) -> bool {
+    !value.is_empty()
+        && (value == "0" || !value.starts_with('0'))
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn read_customer_entries(env: &Env, path: &Path) -> Vec<CustomerEntry> {
     let text = fs::read_to_string(path).unwrap_or_else(|_| panic!("read {}", path.display()));
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with("id,") {
-            continue;
+    let mut lines = text.lines().enumerate().filter_map(|(number, line)| {
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            None
+        } else {
+            Some((number + 1, line))
         }
-        let (id, bal) = line.split_once(',').expect("id,balance");
-        let id = id
-            .trim()
-            .parse::<BigUint>()
-            .expect("id is a non-negative integer");
-        let bal = bal.trim().parse::<u64>().expect("balance is u64");
-        rows.push((id, bal));
+    });
+    let first = lines.next();
+    let versioned = first.is_some_and(|(_, line)| line == VERSIONED_CUSTOMER_HEADER);
+    let legacy_header = first.is_some_and(|(_, line)| line == LEGACY_CUSTOMER_HEADER);
+    let data = first
+        .filter(|_| !versioned && !legacy_header)
+        .into_iter()
+        .chain(lines);
+    let mut entries = Vec::new();
+    for (number, line) in data {
+        if versioned {
+            let fields: Vec<&str> = line.split(',').collect();
+            assert_eq!(fields.len(), 5, "row {number} needs five customer fields");
+            assert!(
+                versioned_decimal(fields[1]),
+                "row {number} needs a decimal balance"
+            );
+            let balance = fields[1]
+                .parse::<u64>()
+                .unwrap_or_else(|_| panic!("row {number} needs a u64 balance"));
+            let (id, identifier_rule) = match fields[2] {
+                LEGACY_IDENTIFIER_RULE => {
+                    assert!(
+                        fields[3].is_empty() && fields[4].is_empty(),
+                        "row {number} is legacy and cannot carry an email or code"
+                    );
+                    assert!(
+                        versioned_decimal(fields[0]),
+                        "row {number} needs a decimal identifier"
+                    );
+                    let id = fields[0]
+                        .parse::<BigUint>()
+                        .unwrap_or_else(|_| panic!("row {number} needs a decimal identifier"));
+                    (id, IdentifierRule::Legacy)
+                }
+                IDENTIFIER_RULE => {
+                    let id = derive_identifier(env, fields[3], fields[4])
+                        .unwrap_or_else(|reason| panic!("row {number}: {reason}"));
+                    if !fields[0].is_empty() {
+                        assert!(
+                            versioned_decimal(fields[0]),
+                            "row {number} needs a decimal identifier"
+                        );
+                        let supplied = fields[0]
+                            .parse::<BigUint>()
+                            .unwrap_or_else(|_| panic!("row {number} needs a decimal identifier"));
+                        assert_eq!(
+                            supplied, id,
+                            "row {number} identifier differs from its email and code"
+                        );
+                    }
+                    (id, IdentifierRule::EmailCodeV1)
+                }
+                _ => panic!("row {number} has an unsupported identifier rule"),
+            };
+            entries.push(CustomerEntry {
+                id,
+                balance,
+                identifier_rule,
+            });
+        } else {
+            let (id, balance) = line
+                .split_once(',')
+                .unwrap_or_else(|| panic!("row {number} needs id,balance"));
+            let id = id
+                .trim()
+                .parse::<BigUint>()
+                .unwrap_or_else(|_| panic!("row {number} needs a decimal identifier"));
+            let balance = balance
+                .trim()
+                .parse::<u64>()
+                .unwrap_or_else(|_| panic!("row {number} needs a u64 balance"));
+            entries.push(CustomerEntry {
+                id,
+                balance,
+                identifier_rule: IdentifierRule::Legacy,
+            });
+        }
     }
+    let rows: Vec<(BigUint, u64)> = entries
+        .iter()
+        .map(|entry| (entry.id.clone(), entry.balance))
+        .collect();
     assert_identifier_rules(env, &rows);
-    rows
+    entries
+}
+
+fn read_customers(env: &Env, path: &Path) -> Vec<(BigUint, u64)> {
+    read_customer_entries(env, path)
+        .into_iter()
+        .map(|entry| (entry.id, entry.balance))
+        .collect()
+}
+
+struct PriorInput {
+    manifest_file: PathBuf,
+    id: u64,
+    root: BigUint,
+    context: BigUint,
+}
+
+fn prior_input(args: &[String]) -> Option<PriorInput> {
+    let names = [
+        "--prior-manifest",
+        "--prior-attestation-id",
+        "--prior-root",
+        "--prior-context",
+    ];
+    if !names.iter().any(|name| args.iter().any(|arg| arg == name)) {
+        return None;
+    }
+    let env = new_env();
+    Some(PriorInput {
+        manifest_file: PathBuf::from(flag_value(args, "--prior-manifest")),
+        id: flag_value(args, "--prior-attestation-id")
+            .parse::<u64>()
+            .ok()
+            .filter(|id| *id > 0)
+            .expect("the prior attestation ID is a positive u64"),
+        root: parse_fr(&env, &flag_value(args, "--prior-root"))
+            .expect("the prior root is a field element"),
+        context: parse_fr(&env, &flag_value(args, "--prior-context"))
+            .expect("the prior context is a field element"),
+    })
+}
+
+fn check_prior(
+    env: &Env,
+    prior: &PriorInput,
+    network: &str,
+    registry: &str,
+    asset: &str,
+    current: &[(BigUint, u64)],
+    capacity: usize,
+) {
+    let text = fs::read_to_string(&prior.manifest_file)
+        .unwrap_or_else(|_| panic!("read {}", prior.manifest_file.display()));
+    let tree = RetainedTree::parse(env, &text).expect("the prior redacted tree is complete");
+    assert_eq!(tree.binding.network, network);
+    assert_eq!(tree.binding.registry, registry);
+    assert_eq!(tree.binding.asset, asset);
+    assert_eq!(tree.binding.attestation_id, prior.id);
+    assert_eq!(tree.binding.root, prior.root);
+    assert_eq!(tree.binding.context_hash, prior.context);
+    assert_eq!(tree.binding.tree_depth, capacity.trailing_zeros());
+    let current_ids: HashSet<BigUint> = current.iter().map(|(id, _)| id.clone()).collect();
+    for id in tree.identifiers() {
+        assert!(
+            current_ids.contains(id),
+            "the current customer file omits prior identifier {id}; keep a closed account as an explicit zero row"
+        );
+    }
 }
 
 /// Fills the customer list up to the tree capacity with padding leaves.
@@ -573,18 +736,41 @@ fn leaf_of_row(
     row: &(BigUint, u64),
     global_index: usize,
 ) -> (U256, U256) {
-    let (id, balance) = row;
+    let (id, _) = row;
     let salt = derive_salt(env, master_secret, context, global_index as u64);
-    let leaf = leaf_hash(env, &to_fr(env, id), *balance, &salt);
+    let commitment = commitment_of_row(env, row, &salt);
+    let leaf = leaf_hash(env, &to_fr(env, id), &commitment);
     (salt, leaf)
 }
 
-fn cmd_witness(context_file: &Path, customers_file: &Path) {
+fn commitment_of_row(env: &Env, row: &(BigUint, u64), salt: &U256) -> U256 {
+    balance_commitment(env, row.1, salt)
+}
+
+fn cmd_witness(
+    context_file: &Path,
+    customers_file: &Path,
+    prior: Option<&PriorInput>,
+    network: Option<&str>,
+    registry: Option<&str>,
+) {
     let (b, k, capacity) = read_shape();
     let env = new_env();
-    let context = read_context(&env, context_file).hash;
+    let context = read_context(&env, context_file);
     let master_secret = read_master_secret(&env);
-    let rows = pad_to_capacity(read_customers(&env, customers_file), capacity);
+    let customers = read_customers(&env, customers_file);
+    if let Some(prior) = prior {
+        check_prior(
+            &env,
+            prior,
+            network.expect("a prior tree needs the network"),
+            registry.expect("a prior tree needs the registry"),
+            &context.asset,
+            &customers,
+            capacity,
+        );
+    }
+    let rows = pad_to_capacity(customers, capacity);
 
     fs::write(
         repo_path("circuits/recursion/common/src/params.nr"),
@@ -605,7 +791,7 @@ fn cmd_witness(context_file: &Path, customers_file: &Path) {
             let global_index = batch * b + j;
             let row = &rows[global_index];
             let (id, balance) = row;
-            let (salt, leaf) = leaf_of_row(&env, &master_secret, &context, row, global_index);
+            let (salt, leaf) = leaf_of_row(&env, &master_secret, &context.hash, row, global_index);
             leaves.push(leaf);
             ids.push(id.clone());
             balances.push(*balance);
@@ -710,6 +896,10 @@ fn cmd_path(context_file: &Path, customers_file: &Path, customer_id: &str) {
     println!("id = {id}");
     println!("balance = {balance}");
     println!("salt = {}", to_big(&salt));
+    println!(
+        "commitment = {}",
+        to_big(&balance_commitment(&env, balance, &salt))
+    );
     println!("leaf = {}", to_big(&leaves[global_index]));
     println!("root = {root}");
     println!("siblings = {}", fmt_field_array(&siblings));
@@ -717,14 +907,43 @@ fn cmd_path(context_file: &Path, customers_file: &Path, customer_id: &str) {
 
 /// The authority-side record of one generation run. It holds the root, so it
 /// stays with the authority and reaches no customer.
-fn generation_json(count: usize, root: &BigUint, transaction_hash: &str) -> String {
-    let pad = " ".repeat(JSON_INDENT);
+fn generation_json(
+    request: &GenerationRequest,
+    registry: &str,
+    asset: &str,
+    count: usize,
+    context: &BigUint,
+    rows: &[(BigUint, u64)],
+    commitments: &[BigUint],
+) -> String {
+    assert_eq!(rows.len(), commitments.len(), "every leaf has a commitment");
+    let leaves: Vec<serde_json::Value> = rows
+        .iter()
+        .zip(commitments)
+        .map(|((id, _), commitment)| {
+            serde_json::json!({
+                "id": fr_hex(id),
+                "commitment": fr_hex(commitment),
+            })
+        })
+        .collect();
+    let manifest = serde_json::json!({
+        "format": RETAINED_TREE_FORMAT,
+        "network": request.network,
+        "registry": registry,
+        "asset": asset,
+        "attestation_id": request.attested.id.to_string(),
+        "snapshot_ledger": request.attested.snapshot_ledger,
+        "context_hash": fr_hex(context),
+        "root": fr_hex(&request.attested.root),
+        "tree_depth": rows.len().trailing_zeros(),
+        "count": count,
+        "transaction_hash": &request.attested.transaction_hash,
+        "leaves": leaves,
+    });
     format!(
-        "{{\n{pad}\"count\": {count},\n{pad}\"format\": {},\n{pad}\"root\": {},\n\
-         {pad}\"transaction_hash\": {}\n}}\n",
-        json_string(PACKAGE_FORMAT),
-        json_string(&fr_hex(root)),
-        json_string(transaction_hash),
+        "{}\n",
+        serde_json::to_string_pretty(&manifest).expect("write the redacted tree")
     )
 }
 
@@ -757,9 +976,59 @@ fn write_private(path: &Path, text: &str) {
         .unwrap_or_else(|_| panic!("write {}", path.display()));
 }
 
+fn write_private_new(path: &Path, text: &str) {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(PACKAGE_FILE_MODE)
+        .open(path)
+        .expect("create a new private output file");
+    file.write_all(text.as_bytes())
+        .expect("write the private output file");
+}
+
+fn cmd_answer(tree: &Path, request: &Path, output: &Path) {
+    let env = new_env();
+    let request_text = fs::read_to_string(request).expect("read the answer request");
+    let request = AnswerRequest::parse(&env, &request_text).expect("validate the answer request");
+    let tree_text = fs::read_to_string(tree).expect("read the retained redacted tree");
+    let tree = RetainedTree::parse(&env, &tree_text).expect("validate the retained redacted tree");
+    let answer = tree
+        .answer(&request)
+        .expect("answer from the fixed attestation tree");
+    write_private_new(output, &answer);
+    println!("redacted inclusion answer prepared");
+}
+
+fn cmd_prepare_identifier_email(input: &Path, output: &Path) {
+    let text = fs::read_to_string(input).expect("read the private identifier email input");
+    let value: serde_json::Value =
+        serde_json::from_str(&text).expect("the identifier email input is JSON");
+    let email = value
+        .get("email")
+        .and_then(serde_json::Value::as_str)
+        .expect("the identifier email input needs an email string");
+    let draft =
+        prepare_identifier_email(&new_env(), email).expect("prepare the identifier email draft");
+    let output_text = serde_json::to_string_pretty(&serde_json::json!({
+        "format": IDENTIFIER_EMAIL_DRAFT_FORMAT,
+        "identifier_rule": draft.identifier_rule,
+        "email": draft.email,
+        "code": draft.code,
+        "id": draft.id.to_string(),
+        "subject": draft.subject,
+        "body": draft.body,
+    }))
+    .expect("serialize the identifier email draft");
+    write_private_new(output, &(output_text + "\n"));
+    println!("private identifier email draft prepared");
+}
+
 /// The values that a read of the registry entry supplies. No value here comes
 /// from a person: a typed ledger number proves nothing about the chain.
 struct AttestedEntry {
+    id: u64,
+    context: BigUint,
     root: BigUint,
     snapshot_ledger: u32,
     transaction_hash: String,
@@ -777,6 +1046,7 @@ struct GenerationRequest<'a> {
     /// chain state that this attestation never reached.
     registry: &'a str,
     attested: &'a AttestedEntry,
+    prior: Option<&'a PriorInput>,
     /// Where to write the directory that this run filled, when the caller asks
     /// for it. The caller names the file, so it reads back a path it can use
     /// without reading anything this tool prints.
@@ -834,15 +1104,44 @@ fn write_packages(
         "the context file names snapshot {}, and the registry attested {}",
         context.snapshot_ledger, request.attested.snapshot_ledger
     );
+    assert_eq!(
+        to_big(&context.hash),
+        request.attested.context,
+        "the context file does not match the stored attestation"
+    );
 
-    let customers = read_customers(env, request.customers_file);
+    let customer_entries = read_customer_entries(env, request.customers_file);
+    let customers: Vec<(BigUint, u64)> = customer_entries
+        .iter()
+        .map(|entry| (entry.id.clone(), entry.balance))
+        .collect();
+    match request.prior {
+        Some(prior) => {
+            assert_eq!(prior.id.checked_add(1), Some(request.attested.id));
+            check_prior(
+                env,
+                prior,
+                request.network,
+                &generation.registry,
+                &context.asset,
+                &customers,
+                capacity,
+            );
+        }
+        None => assert_eq!(
+            request.attested.id, 1,
+            "a later attestation needs the prior redacted tree"
+        ),
+    }
     let customer_count = customers.len();
     let rows = pad_to_capacity(customers, capacity);
 
     let mut leaves = Vec::with_capacity(capacity);
     let mut salts = Vec::with_capacity(customer_count);
+    let mut commitments = Vec::with_capacity(capacity);
     for (index, row) in rows.iter().enumerate() {
         let (salt, leaf) = leaf_of_row(env, master_secret, &context.hash, row, index);
+        commitments.push(to_big(&commitment_of_row(env, row, &salt)));
         if index < customer_count {
             salts.push(to_big(&salt));
         }
@@ -861,17 +1160,38 @@ fn write_packages(
         fr_hex(&request.attested.root)
     );
 
+    assert!(
+        !request.network.is_empty()
+            && request
+                .network
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-'),
+        "the network name is one path component"
+    );
     let directory = request
         .out
         .join("packages")
+        .join(request.network)
+        .join(&generation.registry)
         .join(&context.asset)
-        .join(context.snapshot_ledger.to_string());
+        .join(request.attested.id.to_string());
     // The output directory belongs to the operator, so it keeps its own mode.
     // Every directory below it holds packages, and the tool owns those.
     fs::create_dir_all(request.out).unwrap_or_else(|_| panic!("create {}", request.out.display()));
     for level in [
         request.out.join("packages"),
-        request.out.join("packages").join(&context.asset),
+        request.out.join("packages").join(request.network),
+        request
+            .out
+            .join("packages")
+            .join(request.network)
+            .join(&generation.registry),
+        request
+            .out
+            .join("packages")
+            .join(request.network)
+            .join(&generation.registry)
+            .join(&context.asset),
         directory.clone(),
     ] {
         create_dir_private(&level);
@@ -882,12 +1202,16 @@ fn write_packages(
         let siblings: Vec<BigUint> = path_in_levels(&levels, index).iter().map(to_big).collect();
         let leaf_index = index as u32;
         let package = Package {
+            identifier_rule: customer_entries[index].identifier_rule,
             network: request.network.to_string(),
             registry: generation.registry.clone(),
             asset: context.asset.clone(),
             snapshot_ledger: context.snapshot_ledger,
+            context_hash: to_big(&context.hash),
+            attestation_id: request.attested.id,
             leaf_index,
             id: rows[index].0.clone(),
+            commitment: commitments[index].clone(),
             balance: rows[index].1,
             salt: salt.clone(),
             siblings,
@@ -899,7 +1223,15 @@ fn write_packages(
     }
     write_private(
         &directory.join(GENERATION_FILE),
-        &generation_json(customer_count, &root, &request.attested.transaction_hash),
+        &generation_json(
+            request,
+            &generation.registry,
+            &context.asset,
+            customer_count,
+            &to_big(&context.hash),
+            &rows,
+            &commitments,
+        ),
     );
     // The sentence below is for an operator who watches a run. A caller that
     // needs the path asks for the report file instead, because a sentence that
@@ -1208,6 +1540,8 @@ fn position_constant(name: &str) -> String {
 }
 
 fn write_registry_params(key_sha256: &str, inner_key_hash: &BigUint, positions: &[(&str, usize)]) {
+    let (_, _, capacity) = read_shape();
+    let merkle_path_depth = capacity.trailing_zeros();
     let mut key_bytes = [0u8; FR_BYTES];
     for (index, cell) in key_bytes.iter_mut().enumerate() {
         *cell = u8::from_str_radix(&key_sha256[index * 2..index * 2 + 2], 16)
@@ -1237,6 +1571,8 @@ fn write_registry_params(key_sha256: &str, inner_key_hash: &BigUint, positions: 
              /// Number of elements of the public input byte string of the terminal\n\
              /// proof. Each element is {FR_BYTES} bytes big-endian.\n\
              pub const PUBLIC_INPUT_COUNT: u32 = {};\n\
+             /// Number of sibling hashes in one customer path.\n\
+             pub const MERKLE_PATH_DEPTH: u32 = {merkle_path_depth};\n\
              \n\
              /// Position of each element inside that byte string. A consumer reads\n\
              /// the positions here, because two elements can hold one value and a\n\
@@ -1257,12 +1593,14 @@ fn write_registry_params(key_sha256: &str, inner_key_hash: &BigUint, positions: 
     .expect("write the registry parameters");
 }
 
-const USAGE: &str = "usage: recursion-gen witness <context.toml> <customers.csv>\n\
+const USAGE: &str = "usage: recursion-gen prepare-identifier-email <input.json> <new-private-output.json>\n\
+                            recursion-gen answer <generation.json> <request.json> <new-answer.json>\n\
+                            recursion-gen witness <context.toml> <customers.csv> [--network <name> --registry <address> --prior-manifest <file> --prior-attestation-id <id> --prior-root <hex> --prior-context <hex>]\n\
                             recursion-gen path <context.toml> <customers.csv> <customer_id>\n\
                             recursion-gen packages <context.toml> <customers.csv> <out_dir> \
-                            --network <name> --registry <address> --attested-root <hex> \
-                            --attested-snapshot <ledger> --transaction <hash> \
-                            [--deployments <file>] [--report-file <file>]\n\
+                            --network <name> --registry <address> --attested-root <hex> --attested-context <hex> \
+                            --attested-snapshot <ledger> --attestation-id <id> --transaction <hash> \
+                            [--deployments <file>] [--report-file <file>] [--prior-manifest <file> --prior-attestation-id <id> --prior-root <hex> --prior-context <hex>]\n\
                             recursion-gen assemble <context.toml> [out_dir]\n\
                             recursion-gen manifest <inner_out_dir> <agg_target_dir>";
 
@@ -1291,8 +1629,31 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let arg = |i: usize| args.get(i).map(PathBuf::from);
     match args.get(1).map(String::as_str) {
+        Some("answer") => match (arg(2), arg(3), arg(4)) {
+            (Some(tree), Some(request), Some(output)) if args.len() == 5 => {
+                cmd_answer(&tree, &request, &output)
+            }
+            _ => usage(),
+        },
+        Some("prepare-identifier-email") => match (arg(2), arg(3)) {
+            (Some(input), Some(output)) if args.len() == 4 => {
+                cmd_prepare_identifier_email(&input, &output)
+            }
+            _ => usage(),
+        },
         Some("witness") => match (arg(2), arg(3)) {
-            (Some(context), Some(customers)) => cmd_witness(&context, &customers),
+            (Some(context), Some(customers)) => {
+                let prior = prior_input(&args);
+                let network = optional_flag_value(&args, "--network");
+                let registry = optional_flag_value(&args, "--registry");
+                cmd_witness(
+                    &context,
+                    &customers,
+                    prior.as_ref(),
+                    network.as_deref(),
+                    registry.as_deref(),
+                );
+            }
             _ => usage(),
         },
         Some("path") => match (arg(2), arg(3), args.get(4)) {
@@ -1303,8 +1664,15 @@ fn main() {
             (Some(context), Some(customers), Some(out)) => {
                 let snapshot = flag_value(&args, "--attested-snapshot");
                 let attested = AttestedEntry {
+                    id: flag_value(&args, "--attestation-id")
+                        .parse::<u64>()
+                        .ok()
+                        .filter(|id| *id > 0)
+                        .expect("the attestation ID is a positive u64"),
                     root: parse_fr(&new_env(), &flag_value(&args, "--attested-root"))
                         .unwrap_or_else(|reason| panic!("the attested root: {reason}")),
+                    context: parse_fr(&new_env(), &flag_value(&args, "--attested-context"))
+                        .unwrap_or_else(|reason| panic!("the attested context: {reason}")),
                     snapshot_ledger: snapshot
                         .trim()
                         .parse()
@@ -1317,6 +1685,7 @@ fn main() {
                 let deployments = optional_flag_value(&args, "--deployments")
                     .map(PathBuf::from)
                     .unwrap_or_else(|| repo_path(DEPLOYMENTS_FILE));
+                let prior = prior_input(&args);
                 cmd_packages(
                     &context,
                     &GenerationRequest {
@@ -1326,6 +1695,7 @@ fn main() {
                         network: &flag_value(&args, "--network"),
                         registry: &flag_value(&args, "--registry"),
                         attested: &attested,
+                        prior: prior.as_ref(),
                         report_file: report_file.as_deref(),
                     },
                 );
@@ -1356,7 +1726,7 @@ fn usage() -> ! {
 mod tests {
     use super::*;
     use zkpor_context::node_hash;
-    use zkpor_package::schema::PACKAGE_EXTENSION;
+    use zkpor_package::schema::{PACKAGE_EXTENSION, PACKAGE_FORMAT};
 
     fn rows(count: usize) -> Vec<(BigUint, u64)> {
         (0..count)
@@ -1433,7 +1803,8 @@ mod tests {
             .map(|i| {
                 let id = to_fr(env, &BigUint::from(i as u64 + 1));
                 let salt = to_fr(env, &BigUint::from(i as u64 + 1000));
-                leaf_hash(env, &id, i as u64 * 7 + 1, &salt)
+                let commitment = balance_commitment(env, i as u64 * 7 + 1, &salt);
+                leaf_hash(env, &id, &commitment)
             })
             .collect()
     }
@@ -1531,6 +1902,40 @@ mod tests {
     }
 
     #[test]
+    fn a_mixed_file_keeps_legacy_ids_and_derives_email_ids() {
+        let env = new_env();
+        let code =
+            zkpor_package::identity::encode_code(&[0u8; zkpor_package::identity::IDENTIFIER_BYTES]);
+        let expected = derive_identifier(&env, "Alice@example.com", &code).unwrap();
+        let path = write_temp(
+            "zkpor_mixed_identity_rows.csv",
+            &format!(
+                "{VERSIONED_CUSTOMER_HEADER}\n1,0,{LEGACY_IDENTIFIER_RULE},,\n,90,{IDENTIFIER_RULE},Alice@EXAMPLE.COM,{code}\n"
+            ),
+        );
+        let entries = read_customer_entries(&env, &path);
+        assert_eq!(entries[0].id, BigUint::from(1u8));
+        assert_eq!(entries[0].balance, 0);
+        assert_eq!(entries[0].identifier_rule, IdentifierRule::Legacy);
+        assert_eq!(entries[1].id, expected);
+        assert_eq!(entries[1].identifier_rule, IdentifierRule::EmailCodeV1);
+    }
+
+    #[test]
+    fn a_supplied_email_id_must_match_the_email_and_code() {
+        let code =
+            zkpor_package::identity::encode_code(&[0u8; zkpor_package::identity::IDENTIFIER_BYTES]);
+        let path = write_temp(
+            "zkpor_wrong_identity_row.csv",
+            &format!(
+                "{VERSIONED_CUSTOMER_HEADER}\n1,90,{IDENTIFIER_RULE},Alice@example.com,{code}\n"
+            ),
+        );
+        let rejected = std::panic::catch_unwind(|| read_customer_entries(&new_env(), &path));
+        assert!(rejected.is_err());
+    }
+
+    #[test]
     #[should_panic(expected = "must not be zero")]
     fn the_reader_rejects_the_padding_identifier() {
         read_list("zkpor_rows_zero.csv", "0");
@@ -1619,6 +2024,8 @@ mod tests {
                 .map(|(index, row)| leaf_of_row(&env, &master_secret, &context.hash, row, index).1)
                 .collect();
             AttestedEntry {
+                id: 1,
+                context: to_big(&context.hash),
                 root: to_big(&folded_root(&env, &leaves, b)),
                 snapshot_ledger: context.snapshot_ledger,
                 transaction_hash: TEST_TRANSACTION.to_string(),
@@ -1653,12 +2060,15 @@ mod tests {
                 network: TEST_NETWORK,
                 registry,
                 attested,
+                prior: None,
                 report_file: None,
             },
         );
         out.join("packages")
+            .join(TEST_NETWORK)
+            .join(registry)
             .join(&context.asset)
-            .join(context.snapshot_ledger.to_string())
+            .join(attested.id.to_string())
     }
 
     /// One generation over the fixture, done once for every test that reads it.
@@ -1674,10 +2084,120 @@ mod tests {
         })
     }
 
+    #[test]
+    fn a_prior_tree_requires_every_identifier_and_all_leaves() {
+        let env = new_env();
+        let context = fixture_context(&env);
+        let directory = generated();
+        let prior = PriorInput {
+            manifest_file: directory.join(GENERATION_FILE),
+            id: fixture_attestation().id,
+            root: fixture_attestation().root.clone(),
+            context: fixture_attestation().context.clone(),
+        };
+        let (_, _, capacity) = read_shape();
+        let mut current = fixture_rows(&env);
+        current[0].1 = 0;
+        check_prior(
+            &env,
+            &prior,
+            TEST_NETWORK,
+            TEST_REGISTRY,
+            &context.asset,
+            &current,
+            capacity,
+        );
+
+        current.remove(0);
+        let omitted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            check_prior(
+                &env,
+                &prior,
+                TEST_NETWORK,
+                TEST_REGISTRY,
+                &context.asset,
+                &current,
+                capacity,
+            );
+        }));
+        assert!(
+            omitted.is_err(),
+            "a missing prior identifier must stop generation"
+        );
+
+        let text = fs::read_to_string(&prior.manifest_file).expect("the prior tree");
+        let mut manifest: serde_json::Value =
+            serde_json::from_str(&text).expect("the prior tree JSON");
+        manifest["leaves"].as_array_mut().expect("the leaves").pop();
+        let truncated = PriorInput {
+            manifest_file: write_temp(
+                "zkpor_prior_truncated.json",
+                &serde_json::to_string(&manifest).expect("the truncated tree JSON"),
+            ),
+            ..prior
+        };
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            check_prior(
+                &env,
+                &truncated,
+                TEST_NETWORK,
+                TEST_REGISTRY,
+                &context.asset,
+                &current,
+                capacity,
+            );
+        }));
+        assert!(
+            refused.is_err(),
+            "a truncated prior tree must stop generation"
+        );
+    }
+
+    #[test]
+    fn a_retained_tree_produces_a_private_answer_without_customer_secrets() {
+        let env = new_env();
+        let tree_file = generated().join(GENERATION_FILE);
+        let manifest: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&tree_file).expect("the retained tree"))
+                .expect("the retained tree JSON");
+        let request = serde_json::json!({
+            "network": manifest["network"], "registry": manifest["registry"],
+            "asset": manifest["asset"], "attestation_id": manifest["attestation_id"],
+            "context_hash": manifest["context_hash"], "root": manifest["root"],
+            "snapshot_ledger": manifest["snapshot_ledger"], "tree_depth": manifest["tree_depth"],
+            "identifier": fr_hex(&fixture_rows(&env)[0].0),
+        });
+        let request_file = write_temp("zkpor_answer_request.json", &request.to_string());
+        let output = env::temp_dir().join("zkpor_private_answer.json");
+        let _ = fs::remove_file(&output);
+        cmd_answer(&tree_file, &request_file, &output);
+        let answer: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&output).expect("the answer"))
+                .expect("the answer JSON");
+        let fields: HashSet<&str> = answer
+            .as_object()
+            .expect("the answer object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            fields,
+            HashSet::from(["id", "commitment", "position", "path"])
+        );
+        assert_eq!(
+            fs::metadata(&output).unwrap().permissions().mode() & 0o777,
+            PACKAGE_FILE_MODE
+        );
+        assert!(
+            std::panic::catch_unwind(|| cmd_answer(&tree_file, &request_file, &output)).is_err()
+        );
+        fs::remove_file(output).expect("remove the test answer");
+    }
+
     /// The report file names the directory that this run filled.
     ///
     /// A caller that needs the path must not read the sentence this tool
-    /// prints. The path holds the asset and the snapshot below the directory
+    /// prints. The path holds the network, registry, asset, and attestation ID
     /// the caller asked for, and a caller that rebuilt those levels itself
     /// would hold a second copy of a layout that belongs here.
     #[test]
@@ -1700,6 +2220,7 @@ mod tests {
                 network: TEST_NETWORK,
                 registry: TEST_REGISTRY,
                 attested: fixture_attestation(),
+                prior: None,
                 report_file: Some(&report),
             },
         );
@@ -1708,8 +2229,10 @@ mod tests {
         assert_eq!(
             directory,
             out.join("packages")
+                .join(TEST_NETWORK)
+                .join(TEST_REGISTRY)
                 .join(&context.asset)
-                .join(context.snapshot_ledger.to_string())
+                .join(fixture_attestation().id.to_string())
         );
         assert!(
             !package_files(&directory).is_empty(),
@@ -1757,7 +2280,7 @@ mod tests {
     }
 
     /// The load-bearing test. Every package verifies against the root that the
-    /// fold produced, and every field holds what section 10.2 fixes.
+    /// fold produced, and every field holds the package format.
     #[test]
     fn every_package_holds_the_fixed_fields_and_verifies_against_the_attested_root() {
         let env = new_env();
@@ -1787,7 +2310,10 @@ mod tests {
                 object.keys().collect::<Vec<_>>(),
                 std::vec![
                     "asset",
+                    "attestation_id",
                     "balance",
+                    "commitment",
+                    "context_hash",
                     "format",
                     "id",
                     "leaf_index",
@@ -1805,6 +2331,8 @@ mod tests {
             assert_eq!(json["registry"], TEST_REGISTRY);
             assert_eq!(json["asset"], context.asset);
             assert_eq!(json["snapshot_ledger"], context.snapshot_ledger);
+            assert_eq!(json["context_hash"], fr_hex(&to_big(&context.hash)));
+            assert_eq!(json["attestation_id"], fixture_attestation().id.to_string());
             assert_eq!(json["leaf_index"], index);
             assert_eq!(json["balance"], balance.to_string());
             assert_eq!(hex_value(json["id"].as_str().expect("id is a string")), *id);
@@ -1816,7 +2344,9 @@ mod tests {
                 .map(|value| to_fr(&env, &hex_value(value.as_str().expect("a sibling"))))
                 .collect();
             let salt = to_fr(&env, &hex_value(json["salt"].as_str().expect("salt")));
-            let leaf = leaf_hash(&env, &to_fr(&env, id), *balance, &salt);
+            let commitment = balance_commitment(&env, *balance, &salt);
+            assert_eq!(json["commitment"], fr_hex(&to_big(&commitment)));
+            let leaf = leaf_hash(&env, &to_fr(&env, id), &commitment);
             assert_eq!(
                 to_big(&root_of_path(&env, &leaf, index, &siblings, depth)),
                 *attested,
@@ -1830,9 +2360,21 @@ mod tests {
         let text = fs::read_to_string(generated().join(GENERATION_FILE)).expect("the record");
         let json: serde_json::Value = serde_json::from_str(&text).expect("the record is JSON");
         assert_eq!(json["count"], fixture_rows(&new_env()).len());
-        assert_eq!(json["format"], PACKAGE_FORMAT);
+        assert_eq!(json["attestation_id"], fixture_attestation().id.to_string());
+        assert_eq!(
+            json["context_hash"],
+            fr_hex(&to_big(&fixture_context(&new_env()).hash))
+        );
+        assert_eq!(json["format"], RETAINED_TREE_FORMAT);
         assert_eq!(json["root"], fr_hex(&fixture_attestation().root));
         assert_eq!(json["transaction_hash"], TEST_TRANSACTION);
+        assert_eq!(json["network"], TEST_NETWORK);
+        assert_eq!(json["registry"], TEST_REGISTRY);
+        assert_eq!(json["asset"], fixture_context(&new_env()).asset);
+        assert_eq!(
+            json["leaves"].as_array().expect("redacted leaves").len(),
+            read_shape().2
+        );
     }
 
     #[test]
@@ -1900,6 +2442,8 @@ mod tests {
     fn a_snapshot_that_the_chain_did_not_attest_is_refused() {
         let depth = read_shape().2.trailing_zeros() as usize;
         let attested = AttestedEntry {
+            id: fixture_attestation().id,
+            context: fixture_attestation().context.clone(),
             root: fixture_attestation().root.clone(),
             snapshot_ledger: fixture_attestation().snapshot_ledger + 1,
             transaction_hash: TEST_TRANSACTION.to_string(),
@@ -1981,6 +2525,8 @@ mod tests {
             let env = new_env();
             let context = fixture_context(&env);
             let attested = AttestedEntry {
+                id: fixture_attestation().id,
+                context: fixture_attestation().context.clone(),
                 root: &fixture_attestation().root + BigUint::from(1u32),
                 snapshot_ledger: fixture_attestation().snapshot_ledger,
                 transaction_hash: TEST_TRANSACTION.to_string(),
@@ -1996,6 +2542,7 @@ mod tests {
                     network: TEST_NETWORK,
                     registry: TEST_REGISTRY,
                     attested: &attested,
+                    prior: None,
                     report_file: None,
                 },
             );
@@ -2052,10 +2599,12 @@ mod tests {
         let record = directory.join("calls");
         let _ = fs::remove_file(&record);
         let entry = format!(
-            "{{\"attestation\": {{\"Filled\": {{\"final_root\": \"{}\", \
+            "{{\"context_hash\": \"{}\", \"final_root\": \"{}\", \
              \"total_liabilities\": \"1290\", \"snapshot_ledger\": {}, \
-             \"attested_ledger\": {STUB_ATTESTED_LEDGER}, \"reserve_sum\": \"2000\"}}}}}}",
-            attested.root, attested.snapshot_ledger
+             \"attested_ledger\": {STUB_ATTESTED_LEDGER}, \"reserve_sum\": \"2000\"}}",
+            to_big(&fixture_context(&new_env()).hash),
+            attested.root,
+            attested.snapshot_ledger
         );
         let program = directory.join("stellar");
         fs::write(
@@ -2153,6 +2702,8 @@ mod tests {
             "the command read another registry: {calls}"
         );
         assert!(calls.contains(&format!("--asset {}", fixture_context(&new_env()).asset)));
+        assert!(calls.contains("get_attestation"));
+        assert!(calls.contains(&format!("--id {}", attested.id)));
 
         // A rejection that travels through the file. One digit of one sibling
         // changes, and nothing else does.
